@@ -1,0 +1,185 @@
+import type { LlmClient } from "../llm/client";
+import type { AgentContext, AgentState } from "../types/agent";
+import type { AgentConfig } from "../types/config";
+
+import { buildSystemPrompt } from "../prompts/system";
+import { allTools } from "../tools";
+import { AgentError } from "../utils/errors";
+import { log, logError, logStep } from "../utils/logger";
+import { executeAndAnalyze } from "./executor";
+import { Memory } from "./memory";
+import { plan } from "./planner";
+import { addStep, createInitialContext, transitionState } from "./state";
+
+export interface AgentResult {
+  success: boolean;
+  finalState: AgentState;
+  context: AgentContext;
+  message: string;
+}
+
+export async function runAgentLoop(
+  client: LlmClient,
+  config: AgentConfig,
+  task: string
+): Promise<AgentResult> {
+  log(`Starting agent loop for task: ${task}`);
+
+  const memory = new Memory();
+  let context = createInitialContext(task, config.maxSteps);
+
+  // Build dynamic system prompt with runtime context
+  const systemPrompt = buildSystemPrompt({
+    availableTools: allTools.map((tool) => tool.name),
+    currentDirectory: process.cwd(),
+    maxSteps: config.maxSteps,
+    verbose: config.verbose,
+  });
+
+  // Initialize with system prompt
+  memory.addMessage("system", systemPrompt);
+
+  try {
+    while (context.currentStep < context.maxSteps) {
+      const stepNumber = context.currentStep + 1;
+      logStep(stepNumber, `Starting step ${stepNumber}/${context.maxSteps}`);
+
+      // Planning phase
+      context = transitionState(context, "planning");
+      const planResult = await plan(client, context, memory);
+
+      // Add planning reasoning to memory
+      memory.addMessage("assistant", `Planning: ${planResult.reasoning}`);
+
+      // Handle different plan outcomes
+      if (planResult.action === "complete") {
+        context = addStep(context, {
+          reasoning: planResult.reasoning,
+          state: "completed",
+          step: stepNumber,
+          toolCall: null,
+          toolResult: null,
+        });
+        return {
+          context,
+          finalState: "completed",
+          message: planResult.reasoning,
+          success: true,
+        };
+      }
+
+      if (planResult.action === "blocked") {
+        context = addStep(context, {
+          reasoning: planResult.reasoning,
+          state: "blocked",
+          step: stepNumber,
+          toolCall: null,
+          toolResult: null,
+        });
+        return {
+          context,
+          finalState: "blocked",
+          message: planResult.reasoning,
+          success: false,
+        };
+      }
+
+      // Execution phase
+      if (!planResult.toolCall) {
+        logStep(stepNumber, "No tool call specified, continuing...");
+        context = addStep(context, {
+          reasoning: planResult.reasoning,
+          state: "executing",
+          step: stepNumber,
+          toolCall: null,
+          toolResult: null,
+        });
+        continue;
+      }
+
+      context = transitionState(context, "executing");
+
+      try {
+        // Execute the tool and get LLM analysis
+        const execution = await executeAndAnalyze(client, {
+          arguments: planResult.toolCall.arguments,
+          name: planResult.toolCall.name,
+        });
+
+        // Add tool result and analysis to memory
+        memory.addMessage(
+          "tool",
+          `Tool ${planResult.toolCall.name} result: ${execution.toolResult.output}`
+        );
+        memory.addMessage("assistant", `Execution analysis: ${execution.analysis}`);
+
+        // Record step
+        context = addStep(context, {
+          reasoning: planResult.reasoning,
+          state: "executing",
+          step: stepNumber,
+          toolCall: {
+            arguments: planResult.toolCall.arguments,
+            name: planResult.toolCall.name,
+          },
+          toolResult: execution.toolResult,
+        });
+
+        // If tool failed and retry is suggested, log it
+        if (!execution.toolResult.success) {
+          logStep(
+            stepNumber,
+            `Tool execution failed: ${execution.toolResult.error ?? "Unknown error"}. Retry suggested: ${execution.shouldRetry}`
+          );
+          // Continue to next step - planner will decide on retry or alternative approach
+        }
+      } catch (error) {
+        logError(`Step ${stepNumber} failed`, error);
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+
+        context = addStep(context, {
+          reasoning: planResult.reasoning,
+          state: "error",
+          step: stepNumber,
+          toolCall: planResult.toolCall
+            ? {
+                arguments: planResult.toolCall.arguments,
+                name: planResult.toolCall.name,
+              }
+            : null,
+          toolResult: {
+            error: errorMessage,
+            output: "",
+            success: false,
+          },
+        });
+
+        // If it's a critical error, stop
+        if (error instanceof AgentError && error.code === "VALIDATION_ERROR") {
+          return {
+            context,
+            finalState: "error",
+            message: `Validation error: ${errorMessage}`,
+            success: false,
+          };
+        }
+      }
+    }
+
+    // Max steps reached
+    return {
+      context,
+      finalState: "blocked",
+      message: `Maximum steps (${context.maxSteps}) reached without completing the task`,
+      success: false,
+    };
+  } catch (error) {
+    logError("Agent loop failed", error);
+    return {
+      context,
+      finalState: "error",
+      message: error instanceof Error ? error.message : "Unknown error occurred",
+      success: false,
+    };
+  }
+}

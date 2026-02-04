@@ -27,15 +27,20 @@ export default [
                 sourceType: "module"
             },
             globals: {
-                console: "readonly",
-                process: "readonly",
+                Bun: "readonly",
                 Buffer: "readonly",
-                __dirname: "readonly",
-                __filename: "readonly",
+                clearTimeout: "readonly",
+                console: "readonly",
+                exports: "readonly",
+                fetch: "readonly",
                 global: "readonly",
                 module: "readonly",
+                process: "readonly",
                 require: "readonly",
-                exports: "readonly"
+                setTimeout: "readonly",
+                Timer: "readonly",
+                __dirname: "readonly",
+                __filename: "readonly"
             }
         },
         plugins: {
@@ -44,7 +49,14 @@ export default [
         },
         rules: {
             /* 🧠 TypeScript sanity */
-            "@typescript-eslint/no-unused-vars": ["error"],
+            "no-unused-vars": "off",
+            "@typescript-eslint/no-unused-vars": [
+                "error",
+                {
+                    argsIgnorePattern: "^_",
+                    varsIgnorePattern: "^_"
+                }
+            ],
             "@typescript-eslint/no-explicit-any": "warn",
 
             /* 🔥 Perfectionist rules */
