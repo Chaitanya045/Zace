@@ -46,7 +46,7 @@ export async function runAgentLoop(
 
       // Planning phase
       context = transitionState(context, "planning");
-      const planResult = await plan(client, context, memory);
+      const planResult = await plan(client, context, memory, { stream: config.stream });
 
       // Add planning reasoning to memory
       memory.addMessage("assistant", `Planning: ${planResult.reasoning}`);
@@ -104,7 +104,7 @@ export async function runAgentLoop(
         const execution = await executeAndAnalyze(client, {
           arguments: planResult.toolCall.arguments,
           name: planResult.toolCall.name,
-        });
+        }, { stream: config.stream });
 
         // Add tool result and analysis to memory
         memory.addMessage(

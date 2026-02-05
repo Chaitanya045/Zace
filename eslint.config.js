@@ -33,6 +33,7 @@ export default [
                 console: "readonly",
                 exports: "readonly",
                 fetch: "readonly",
+                TextDecoder: "readonly",
                 global: "readonly",
                 module: "readonly",
                 process: "readonly",

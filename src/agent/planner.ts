@@ -15,10 +15,15 @@ export interface PlanResult {
   toolCall?: { arguments: Record<string, unknown>; name: string };
 }
 
+type PlanOptions = {
+  stream?: boolean;
+};
+
 export async function plan(
   client: LlmClient,
   context: AgentContext,
-  memory: { getMessages: () => LlmMessage[] }
+  memory: { getMessages: () => LlmMessage[] },
+  options?: PlanOptions
 ): Promise<PlanResult> {
   logStep(context.currentStep + 1, "Planning next action");
 
@@ -37,7 +42,23 @@ export async function plan(
     { content: prompt, role: "user" as const },
   ];
 
-  const response = await client.chat({ messages });
+  if (options?.stream) {
+    process.stdout.write("\n\n[LLM:planner]\n");
+  }
+  const response = await client.chat(
+    { messages },
+    options?.stream
+      ? {
+          onToken: (token) => {
+            process.stdout.write(token);
+          },
+          stream: true,
+        }
+      : undefined
+  );
+  if (options?.stream) {
+    process.stdout.write("\n");
+  }
   const content = response.content.trim();
 
   // Parse the response

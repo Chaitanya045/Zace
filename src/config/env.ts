@@ -3,6 +3,7 @@ import { z } from "zod";
 const envSchema = z.object({
 
     AGENT_MAX_STEPS: z.coerce.number().int().positive().default(10),
+    AGENT_STREAM: z.coerce.boolean().default(false),
     AGENT_VERBOSE: z.coerce.boolean().default(false),
     LLM_PROVIDER: z.literal("openrouter"),
 

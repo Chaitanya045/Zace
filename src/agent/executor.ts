@@ -13,6 +13,10 @@ export interface ExecutionResult {
   toolResult: ToolResult;
 }
 
+type ExecuteOptions = {
+  stream?: boolean;
+};
+
 export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
   logStep(0, `Executing tool: ${toolCall.name}`);
 
@@ -52,7 +56,8 @@ export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
 
 export async function executeAndAnalyze(
   client: LlmClient,
-  toolCall: ToolCall
+  toolCall: ToolCall,
+  options?: ExecuteOptions
 ): Promise<ExecutionResult> {
   // Execute the tool
   const toolResult = await executeToolCall(toolCall);
@@ -71,7 +76,23 @@ export async function executeAndAnalyze(
     { content: prompt, role: "user" as const },
   ];
 
-  const response = await client.chat({ messages });
+  if (options?.stream) {
+    process.stdout.write(`\n\n[LLM:executor:${toolCall.name}]\n`);
+  }
+  const response = await client.chat(
+    { messages },
+    options?.stream
+      ? {
+          onToken: (token) => {
+            process.stdout.write(token);
+          },
+          stream: true,
+        }
+      : undefined
+  );
+  if (options?.stream) {
+    process.stdout.write("\n");
+  }
   const analysis = response.content.trim();
 
   log(`Executor analysis: ${analysis.slice(0, 200)}...`);

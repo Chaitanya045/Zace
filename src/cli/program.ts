@@ -13,11 +13,15 @@ export function runCli(): void {
     .description("CLI coding agent")
     .version("0.1.0")
     .argument("<task>", "Task for the coding agent")
+    .option("-s, --stream", "Stream LLM output as it is generated")
     .option("-v, --verbose", "Verbose output")
-    .action(async (task: string, options: { verbose?: boolean }) => {
+    .action(async (task: string, options: { stream?: boolean; verbose?: boolean }) => {
       try {
         // Load and validate configuration
         const config = getAgentConfig();
+        if (options.stream) {
+          config.stream = true;
+        }
         if (options.verbose) {
           config.verbose = true;
         }
