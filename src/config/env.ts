@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const envSchema = z.object({
 
+    AGENT_EXECUTOR_ANALYSIS: z.enum(["always", "never", "on_failure"]).default("on_failure"),
     AGENT_MAX_STEPS: z.coerce.number().int().positive().default(10),
     AGENT_STREAM: z.coerce.boolean().default(false),
     AGENT_VERBOSE: z.coerce.boolean().default(false),

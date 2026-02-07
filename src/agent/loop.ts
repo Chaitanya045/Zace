@@ -6,7 +6,7 @@ import { buildSystemPrompt } from "../prompts/system";
 import { allTools } from "../tools";
 import { AgentError } from "../utils/errors";
 import { log, logError, logStep } from "../utils/logger";
-import { executeAndAnalyze } from "./executor";
+import { analyzeToolResult, executeToolCall } from "./executor";
 import { Memory } from "./memory";
 import { plan } from "./planner";
 import { addStep, createInitialContext, transitionState } from "./state";
@@ -100,18 +100,32 @@ export async function runAgentLoop(
       context = transitionState(context, "executing");
 
       try {
-        // Execute the tool and get LLM analysis
-        const execution = await executeAndAnalyze(client, {
+        const toolCall = {
           arguments: planResult.toolCall.arguments,
           name: planResult.toolCall.name,
-        }, { stream: config.stream });
+        };
 
-        // Add tool result and analysis to memory
+        // Execute the tool
+        const toolResult = await executeToolCall(toolCall);
+
+        // Add tool result to memory
         memory.addMessage(
           "tool",
-          `Tool ${planResult.toolCall.name} result: ${execution.toolResult.output}`
+          `Tool ${planResult.toolCall.name} result: ${toolResult.output}`
         );
-        memory.addMessage("assistant", `Execution analysis: ${execution.analysis}`);
+
+        // Optionally analyze tool result (to control cost)
+        const shouldAnalyze =
+          config.executorAnalysis === "always" ||
+          (config.executorAnalysis === "on_failure" && !toolResult.success);
+
+        const analysis = shouldAnalyze
+          ? await analyzeToolResult(client, toolCall, toolResult, { stream: config.stream })
+          : null;
+
+        if (analysis) {
+          memory.addMessage("assistant", `Execution analysis: ${analysis.analysis}`);
+        }
 
         // Record step
         context = addStep(context, {
@@ -122,14 +136,14 @@ export async function runAgentLoop(
             arguments: planResult.toolCall.arguments,
             name: planResult.toolCall.name,
           },
-          toolResult: execution.toolResult,
+          toolResult,
         });
 
         // If tool failed and retry is suggested, log it
-        if (!execution.toolResult.success) {
+        if (!toolResult.success) {
           logStep(
             stepNumber,
-            `Tool execution failed: ${execution.toolResult.error ?? "Unknown error"}. Retry suggested: ${execution.shouldRetry}`
+            `Tool execution failed: ${toolResult.error ?? "Unknown error"}. Retry suggested: ${analysis ? String(analysis.shouldRetry) : "unknown"}`
           );
           // Continue to next step - planner will decide on retry or alternative approach
         }

@@ -13,6 +13,11 @@ export interface ExecutionResult {
   toolResult: ToolResult;
 }
 
+export interface ToolAnalysisResult {
+  analysis: string;
+  shouldRetry: boolean;
+}
+
 type ExecuteOptions = {
   stream?: boolean;
 };
@@ -54,17 +59,15 @@ export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
   }
 }
 
-export async function executeAndAnalyze(
+export async function analyzeToolResult(
   client: LlmClient,
   toolCall: ToolCall,
+  toolResult: ToolResult,
   options?: ExecuteOptions
-): Promise<ExecutionResult> {
-  // Execute the tool
-  const toolResult = await executeToolCall(toolCall);
-
+): Promise<ToolAnalysisResult> {
   // Use LLM to analyze the result
   const prompt = buildExecutorPrompt(toolCall, toolResult);
-  
+
   // Build focused system prompt for execution analysis
   const systemPrompt = buildSystemPrompt({
     availableTools: [toolCall.name],
@@ -106,6 +109,21 @@ export async function executeAndAnalyze(
   return {
     analysis,
     shouldRetry,
+  };
+}
+
+export async function executeAndAnalyze(
+  client: LlmClient,
+  toolCall: ToolCall,
+  options?: ExecuteOptions
+): Promise<ExecutionResult> {
+  // Execute the tool
+  const toolResult = await executeToolCall(toolCall);
+  const analysis = await analyzeToolResult(client, toolCall, toolResult, options);
+
+  return {
+    analysis: analysis.analysis,
+    shouldRetry: analysis.shouldRetry,
     toolResult,
   };
 }

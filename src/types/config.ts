@@ -1,6 +1,7 @@
 import { env } from "../config/env";
 
 export type AgentConfig = {
+  executorAnalysis: "always" | "never" | "on_failure";
   maxSteps: number;
   stream: boolean;
   verbose: boolean;
@@ -11,6 +12,7 @@ export type AgentConfig = {
 
 export function getAgentConfig(): AgentConfig {
   return {
+    executorAnalysis: env.AGENT_EXECUTOR_ANALYSIS,
     llmApiKey: env.OPENROUTER_API_KEY,
     llmModel: env.OPENROUTER_MODEL,
     llmProvider: env.LLM_PROVIDER,
