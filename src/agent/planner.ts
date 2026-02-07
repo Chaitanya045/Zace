@@ -3,8 +3,6 @@ import type { LlmMessage } from "../llm/types";
 import type { AgentContext } from "../types/agent";
 
 import { buildPlannerPrompt } from "../prompts/planner";
-import { buildSystemPrompt } from "../prompts/system";
-import { allTools } from "../tools";
 import { toolCallSchema } from "../types/tool";
 import { ValidationError } from "../utils/errors";
 import { logStep } from "../utils/logger";
@@ -28,16 +26,8 @@ export async function plan(
   logStep(context.currentStep + 1, "Planning next action");
 
   const prompt = buildPlannerPrompt(context);
-  
-  // Build dynamic system prompt for planning context
-  const systemPrompt = buildSystemPrompt({
-    availableTools: allTools.map((tool) => tool.name),
-    currentDirectory: process.cwd(),
-    maxSteps: context.maxSteps,
-  });
 
   const messages = [
-    { content: systemPrompt, role: "system" as const },
     ...memory.getMessages(),
     { content: prompt, role: "user" as const },
   ];
