@@ -86,11 +86,11 @@ export async function analyzeToolResult(
     { messages },
     options?.stream
       ? {
-          onToken: (token) => {
-            process.stdout.write(token);
-          },
-          stream: true,
-        }
+        onToken: (token) => {
+          process.stdout.write(token);
+        },
+        stream: true,
+      }
       : undefined
   );
   if (options?.stream) {
@@ -103,10 +103,10 @@ export async function analyzeToolResult(
   // Determine if retry is needed based on failure and analysis
   const retrySignals = [
     /\bretry\b/i,
-    /\btry again\b/i,
-    /\battempt again\b/i,
+    /\btry\s+again\b/i,
+    /\battempt\s+again\b/i,
     /\bre-?execute\b/i,
-    /\brun (?:once )?more\b/i,
+    /\brun\s+(?:once\s+)?more\b/i,
     /\bre-?run\b/i,
     /\bretrying\b/i,
   ];
