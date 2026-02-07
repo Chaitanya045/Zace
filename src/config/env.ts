@@ -1,8 +1,16 @@
 import { z } from "zod";
 
+export const EXECUTOR_ANALYSIS_MODES = ["always", "never", "on_failure"] as const;
+
+export type ExecutorAnalysisMode = (typeof EXECUTOR_ANALYSIS_MODES)[number];
+
+export function isExecutorAnalysisMode(value: string): value is ExecutorAnalysisMode {
+  return (EXECUTOR_ANALYSIS_MODES as readonly string[]).includes(value);
+}
+
 const envSchema = z.object({
 
-    AGENT_EXECUTOR_ANALYSIS: z.enum(["always", "never", "on_failure"]).default("on_failure"),
+    AGENT_EXECUTOR_ANALYSIS: z.enum(EXECUTOR_ANALYSIS_MODES).default("on_failure"),
     AGENT_MAX_STEPS: z.coerce.number().int().positive().default(10),
     AGENT_STREAM: z.coerce.boolean().default(false),
     AGENT_VERBOSE: z.coerce.boolean().default(false),

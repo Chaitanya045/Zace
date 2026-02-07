@@ -1,7 +1,7 @@
-import { env } from "../config/env";
+import { env, type ExecutorAnalysisMode } from "../config/env";
 
 export type AgentConfig = {
-  executorAnalysis: "always" | "never" | "on_failure";
+  executorAnalysis: ExecutorAnalysisMode;
   maxSteps: number;
   stream: boolean;
   verbose: boolean;

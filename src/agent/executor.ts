@@ -101,10 +101,20 @@ export async function analyzeToolResult(
   log(`Executor analysis: ${analysis.slice(0, 200)}...`);
 
   // Determine if retry is needed based on failure and analysis
+  const retrySignals = [
+    /\bretry\b/i,
+    /\btry again\b/i,
+    /\battempt again\b/i,
+    /\bre-?execute\b/i,
+    /\brun (?:once )?more\b/i,
+    /\bre-?run\b/i,
+    /\bretrying\b/i,
+  ];
+
+  const analysisSuggestsRetry = retrySignals.some((re) => re.test(analysis));
   const shouldRetry =
     !toolResult.success &&
-    (analysis.toLowerCase().includes("retry") ||
-      analysis.toLowerCase().includes("try again"));
+    analysisSuggestsRetry;
 
   return {
     analysis,

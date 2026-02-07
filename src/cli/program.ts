@@ -1,6 +1,7 @@
 import { Command } from "commander";
 
 import { runAgentLoop } from "../agent/loop";
+import { EXECUTOR_ANALYSIS_MODES, isExecutorAnalysisMode } from "../config/env";
 import { LlmClient } from "../llm/client";
 import { getAgentConfig } from "../types/config";
 import { initializeLogger } from "../utils/logger";
@@ -28,13 +29,9 @@ export function runCli(): void {
           // Load and validate configuration
           const config = getAgentConfig();
           if (options.executorAnalysis) {
-            if (
-              options.executorAnalysis !== "always" &&
-              options.executorAnalysis !== "never" &&
-              options.executorAnalysis !== "on_failure"
-            ) {
+            if (!isExecutorAnalysisMode(options.executorAnalysis)) {
               throw new Error(
-                `Invalid --executor-analysis value: ${options.executorAnalysis}. Expected: always | on_failure | never`
+                `Invalid --executor-analysis value: ${options.executorAnalysis}. Expected: ${EXECUTOR_ANALYSIS_MODES.join(" | ")}`
               );
             }
             config.executorAnalysis = options.executorAnalysis;
