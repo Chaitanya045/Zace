@@ -1,7 +1,11 @@
 import type { ScriptMetadata } from "../types/agent";
 
+export const SCRIPT_DIRECTORY_PATH = ".zace/runtime/scripts";
+export const SCRIPT_REGISTRY_PATH = `${SCRIPT_DIRECTORY_PATH}/registry.tsv`;
+
 const REGISTER_MARKER = /^ZACE_SCRIPT_REGISTER\|([^|\r\n]+)\|([^|\r\n]+)\|(.+)$/;
 const USE_MARKER = /^ZACE_SCRIPT_USE\|([^|\r\n]+)$/;
+const REGISTRY_HEADER = "id\tpath\tpurpose\tlast_touched_step\ttimes_used";
 
 export interface ScriptCatalogUpdateResult {
   catalog: Map<string, ScriptMetadata>;
@@ -96,4 +100,42 @@ export function updateScriptCatalogFromOutput(
     catalog,
     notes,
   };
+}
+
+function sanitizeTsvField(value: string): string {
+  return value.replaceAll("\n", " ").replaceAll("\r", " ").replaceAll("\t", " ").trim();
+}
+
+export function serializeScriptCatalog(catalog: Map<string, ScriptMetadata>): string {
+  const rows = Array.from(catalog.values())
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((script) => {
+      const id = sanitizeTsvField(script.id);
+      const path = sanitizeTsvField(script.path);
+      const purpose = sanitizeTsvField(script.purpose);
+      return `${id}\t${path}\t${purpose}\t${script.lastTouchedStep}\t${script.timesUsed}`;
+    });
+
+  if (rows.length === 0) {
+    return `${REGISTRY_HEADER}\n`;
+  }
+
+  return `${REGISTRY_HEADER}\n${rows.join("\n")}\n`;
+}
+
+export function buildRegistrySyncCommand(catalog: Map<string, ScriptMetadata>): string {
+  const content = serializeScriptCatalog(catalog);
+  let marker = "ZACE_REGISTRY_EOF";
+  let suffix = 0;
+
+  while (content.includes(marker)) {
+    suffix += 1;
+    marker = `ZACE_REGISTRY_EOF_${suffix}`;
+  }
+
+  return `
+mkdir -p ${SCRIPT_DIRECTORY_PATH}
+cat > ${SCRIPT_REGISTRY_PATH} <<'${marker}'
+${content}${marker}
+`.trim();
 }

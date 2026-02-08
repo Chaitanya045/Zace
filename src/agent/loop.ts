@@ -9,7 +9,12 @@ import { log, logError, logStep } from "../utils/logger";
 import { analyzeToolResult, executeToolCall } from "./executor";
 import { Memory } from "./memory";
 import { plan } from "./planner";
-import { updateScriptCatalogFromOutput } from "./scripts";
+import {
+  buildRegistrySyncCommand,
+  SCRIPT_DIRECTORY_PATH,
+  SCRIPT_REGISTRY_PATH,
+  updateScriptCatalogFromOutput,
+} from "./scripts";
 import { addStep, createInitialContext, transitionState, updateScriptCatalog } from "./state";
 
 export interface AgentResult {
@@ -20,8 +25,8 @@ export interface AgentResult {
 }
 
 const DISCOVER_SCRIPTS_COMMAND = `
-mkdir -p .zace/runtime/scripts
-for path in .zace/runtime/scripts/*.sh; do
+mkdir -p ${SCRIPT_DIRECTORY_PATH}
+for path in ${SCRIPT_DIRECTORY_PATH}/*.sh; do
   [ -f "$path" ] || continue
   id="$(basename "$path" .sh)"
   purpose="$(grep -m1 '^# zace-purpose:' "$path" | sed 's/^# zace-purpose:[[:space:]]*//')"
@@ -31,6 +36,16 @@ for path in .zace/runtime/scripts/*.sh; do
   echo "ZACE_SCRIPT_REGISTER|$id|$path|$purpose"
 done
 `.trim();
+
+async function syncScriptRegistry(catalog: AgentContext["scriptCatalog"]): Promise<void> {
+  await executeToolCall({
+    arguments: {
+      command: buildRegistrySyncCommand(catalog),
+      timeout: 30_000,
+    },
+    name: "execute_command",
+  });
+}
 
 export async function runAgentLoop(
   client: LlmClient,
@@ -67,10 +82,11 @@ export async function runAgentLoop(
       0
     );
     context = updateScriptCatalog(context, discoveredCatalogUpdate.catalog);
+    await syncScriptRegistry(context.scriptCatalog);
     if (discoveredCatalogUpdate.notes.length > 0) {
       memory.addMessage(
         "assistant",
-        `Startup script discovery:\n${discoveredCatalogUpdate.notes.map((note) => `- ${note}`).join("\n")}`
+        `Startup script discovery complete. Registered or updated ${discoveredCatalogUpdate.notes.length} scripts in ${SCRIPT_REGISTRY_PATH}.`
       );
     }
 
@@ -155,9 +171,10 @@ export async function runAgentLoop(
         );
         context = updateScriptCatalog(context, scriptCatalogUpdate.catalog);
         if (scriptCatalogUpdate.notes.length > 0) {
+          await syncScriptRegistry(context.scriptCatalog);
           memory.addMessage(
             "assistant",
-            `Script catalog updates:\n${scriptCatalogUpdate.notes.map((note) => `- ${note}`).join("\n")}`
+            `Script registry updated with ${scriptCatalogUpdate.notes.length} marker events at ${SCRIPT_REGISTRY_PATH}.`
           );
         }
 
