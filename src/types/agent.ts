@@ -2,18 +2,27 @@ import type { ToolCall, ToolResult } from "./tool";
 
 export type AgentState = "blocked" | "completed" | "error" | "executing" | "planning";
 
+export interface ScriptMetadata {
+  id: string;
+  lastTouchedStep: number;
+  path: string;
+  purpose: string;
+  timesUsed: number;
+}
+
 export interface AgentStep {
-  step: number;
+  reasoning: string;
   state: AgentState;
+  step: number;
   toolCall: null | ToolCall;
   toolResult: null | ToolResult;
-  reasoning: string;
 }
 
 export interface AgentContext {
-  task: string;
   currentStep: number;
   maxSteps: number;
-  steps: AgentStep[];
   fileSummaries: Map<string, string>;
+  scriptCatalog: Map<string, ScriptMetadata>;
+  steps: AgentStep[];
+  task: string;
 }

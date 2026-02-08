@@ -9,7 +9,8 @@ import { log, logError, logStep } from "../utils/logger";
 import { analyzeToolResult, executeToolCall } from "./executor";
 import { Memory } from "./memory";
 import { plan } from "./planner";
-import { addStep, createInitialContext, transitionState } from "./state";
+import { updateScriptCatalogFromOutput } from "./scripts";
+import { addStep, createInitialContext, transitionState, updateScriptCatalog } from "./state";
 
 export interface AgentResult {
   success: boolean;
@@ -17,6 +18,19 @@ export interface AgentResult {
   context: AgentContext;
   message: string;
 }
+
+const DISCOVER_SCRIPTS_COMMAND = `
+mkdir -p .zace/runtime/scripts
+for path in .zace/runtime/scripts/*.sh; do
+  [ -f "$path" ] || continue
+  id="$(basename "$path" .sh)"
+  purpose="$(grep -m1 '^# zace-purpose:' "$path" | sed 's/^# zace-purpose:[[:space:]]*//')"
+  if [ -z "$purpose" ]; then
+    purpose="Existing runtime script"
+  fi
+  echo "ZACE_SCRIPT_REGISTER|$id|$path|$purpose"
+done
+`.trim();
 
 export async function runAgentLoop(
   client: LlmClient,
@@ -40,6 +54,26 @@ export async function runAgentLoop(
   memory.addMessage("system", systemPrompt);
 
   try {
+    const discoveredScripts = await executeToolCall({
+      arguments: {
+        command: DISCOVER_SCRIPTS_COMMAND,
+        timeout: 30_000,
+      },
+      name: "execute_command",
+    });
+    const discoveredCatalogUpdate = updateScriptCatalogFromOutput(
+      context.scriptCatalog,
+      discoveredScripts.output,
+      0
+    );
+    context = updateScriptCatalog(context, discoveredCatalogUpdate.catalog);
+    if (discoveredCatalogUpdate.notes.length > 0) {
+      memory.addMessage(
+        "assistant",
+        `Startup script discovery:\n${discoveredCatalogUpdate.notes.map((note) => `- ${note}`).join("\n")}`
+      );
+    }
+
     while (context.currentStep < context.maxSteps) {
       const stepNumber = context.currentStep + 1;
       logStep(stepNumber, `Starting step ${stepNumber}/${context.maxSteps}`);
@@ -113,6 +147,19 @@ export async function runAgentLoop(
           "tool",
           `Tool ${planResult.toolCall.name} result: ${toolResult.output}`
         );
+
+        const scriptCatalogUpdate = updateScriptCatalogFromOutput(
+          context.scriptCatalog,
+          toolResult.output,
+          stepNumber
+        );
+        context = updateScriptCatalog(context, scriptCatalogUpdate.catalog);
+        if (scriptCatalogUpdate.notes.length > 0) {
+          memory.addMessage(
+            "assistant",
+            `Script catalog updates:\n${scriptCatalogUpdate.notes.map((note) => `- ${note}`).join("\n")}`
+          );
+        }
 
         // Optionally analyze tool result (to control cost)
         const shouldAnalyze =

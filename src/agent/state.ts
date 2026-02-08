@@ -1,10 +1,11 @@
-import type { AgentContext, AgentState, AgentStep } from "../types/agent";
+import type { AgentContext, AgentState, AgentStep, ScriptMetadata } from "../types/agent";
 
 export function createInitialContext(task: string, maxSteps: number): AgentContext {
   return {
     currentStep: 0,
     fileSummaries: new Map(),
     maxSteps,
+    scriptCatalog: new Map(),
     steps: [],
     task,
   };
@@ -25,6 +26,16 @@ export function updateFileSummaries(
   return {
     ...context,
     fileSummaries: new Map([...context.fileSummaries, ...summaries]),
+  };
+}
+
+export function updateScriptCatalog(
+  context: AgentContext,
+  scriptCatalog: Map<string, ScriptMetadata>
+): AgentContext {
+  return {
+    ...context,
+    scriptCatalog,
   };
 }
 

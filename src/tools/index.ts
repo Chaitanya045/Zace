@@ -2,12 +2,9 @@ import { z } from "zod";
 
 import type { Tool } from "../types/tool";
 
-import { fsTools } from "./fs";
-import { gitTools } from "./git";
-import { searchTools } from "./search";
 import { shellTools } from "./shell";
 
-export const allTools: Tool[] = [...fsTools, ...shellTools, ...gitTools, ...searchTools];
+export const allTools: Tool[] = [...shellTools];
 
 export function getToolByName(name: string): Tool | undefined {
   return allTools.find((tool) => tool.name === name);
