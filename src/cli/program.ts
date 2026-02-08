@@ -10,7 +10,7 @@ export function runCli(): void {
   const program = new Command();
 
   program
-    .name("forge")
+    .name("zace")
     .description("CLI coding agent")
     .version("0.1.0")
     .argument("<task>", "Task for the coding agent")
@@ -50,7 +50,7 @@ export function runCli(): void {
           const client = new LlmClient(config);
 
           // Run the agent loop
-          console.log(`\n🔨 Forge: ${task}\n`);
+          console.log(`\n🔨 Zace: ${task}\n`);
           const result = await runAgentLoop(client, config, task);
 
           // Output results

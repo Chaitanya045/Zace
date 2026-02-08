@@ -1,4 +1,4 @@
-# AGENTS.md – Forge Coding Agent Repository Overview
+# AGENTS.md – Zace Coding Agent Repository Overview
 
 ## Agent Personality
 
@@ -19,16 +19,16 @@ You are an **autonomous coding agent operating in a local codebase**.
 
 ## Project Description
 
-**Forge** is a CLI coding agent built with **Bun** and **TypeScript**.
+**Zace** is a CLI coding agent built with **Bun** and **TypeScript**.
 
-Forge operates as a **planner–executor agent** that:
+Zace operates as a **planner–executor agent** that:
 
 - Interprets a user’s task
 - Plans incremental code changes
 - Uses a constrained set of tools (filesystem, shell, git)
 - Iterates until the task is complete or blocked
 
-Forge is designed to be:
+Zace is designed to be:
 
 - Deterministic
 - Auditable
@@ -148,7 +148,7 @@ src/
 
 ### 2. Memory Model
 
-Forge uses **ephemeral, in-memory memory by default**:
+Zace uses **ephemeral, in-memory memory by default**:
 
 - Messages exist only for the lifetime of a single run
 - File summaries are cached during execution
@@ -277,7 +277,7 @@ If you are uncertain:
 
 ## Final Note
 
-Forge is intentionally conservative.
+Zace is intentionally conservative.
 
 Speed, intelligence, and persistence come after:
 

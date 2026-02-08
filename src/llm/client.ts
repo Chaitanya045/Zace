@@ -40,8 +40,8 @@ export class LlmClient {
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": "https://github.com/forge-agent",
-          "X-Title": "Forge CLI Agent",
+          "HTTP-Referer": "https://github.com/zace-agent",
+          "X-Title": "Zace CLI Agent",
         },
         method: "POST",
       });
@@ -86,8 +86,8 @@ export class LlmClient {
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/forge-agent",
-        "X-Title": "Forge CLI Agent",
+        "HTTP-Referer": "https://github.com/zace-agent",
+        "X-Title": "Zace CLI Agent",
       },
       method: "POST",
     });

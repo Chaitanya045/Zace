@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "forge",
+      "name": "zace",
       "dependencies": {
         "commander": "^14.0.3",
         "dotenv": "^17.2.3",
