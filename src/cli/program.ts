@@ -5,11 +5,18 @@ import { createInterface } from "node:readline/promises";
 import { runAgentLoop } from "../agent/loop";
 import { EXECUTOR_ANALYSIS_MODES, isExecutorAnalysisMode } from "../config/env";
 import { LlmClient } from "../llm/client";
+import {
+  appendSessionEntries,
+  getSessionFilePath,
+  normalizeSessionId,
+  readSessionEntries,
+} from "../tools/session";
 import { getAgentConfig } from "../types/config";
 import { initializeLogger } from "../utils/logger";
 
 type CliOptions = {
   executorAnalysis?: string;
+  session?: string;
   stream?: boolean;
   verbose?: boolean;
 };
@@ -29,6 +36,7 @@ function applyCommonOptions(command: Command): Command {
       "--executor-analysis <mode>",
       "Executor LLM analysis mode: always | on_failure | never"
     )
+    .option("--session <id>", "Persist and resume conversation from a session id")
     .option("-s, --stream", "Stream LLM output as it is generated")
     .option("-v, --verbose", "Verbose output");
 }
@@ -50,6 +58,14 @@ function applyRuntimeOptions(config: ReturnType<typeof getAgentConfig>, options:
   if (options.verbose) {
     config.verbose = true;
   }
+}
+
+function resolveSessionId(options: CliOptions): string | undefined {
+  if (!options.session) {
+    return undefined;
+  }
+
+  return normalizeSessionId(options.session);
 }
 
 function buildChatTaskWithFollowUp(
@@ -103,13 +119,101 @@ function getResultIcon(success: boolean, finalState: string): string {
   return success ? "✅" : "❌";
 }
 
-async function runChatMode(client: LlmClient, config: ReturnType<typeof getAgentConfig>): Promise<void> {
+async function loadSessionState(
+  sessionId: string
+): Promise<{ pendingFollowUpQuestion?: string; turns: ChatTurn[] }> {
+  const entries = await readSessionEntries(sessionId);
+  const turns = entries
+    .filter((entry) => entry.type === "run")
+    .map((entry) => ({
+      assistant: entry.assistantMessage,
+      finalState: entry.finalState,
+      steps: entry.steps,
+      user: entry.userMessage,
+    }));
+
+  const lastTurn = turns[turns.length - 1];
+  return {
+    pendingFollowUpQuestion:
+      lastTurn?.finalState === "waiting_for_user" ? lastTurn.assistant : undefined,
+    turns,
+  };
+}
+
+async function persistSessionTurn(
+  sessionId: string,
+  userMessage: string,
+  task: string,
+  result: Awaited<ReturnType<typeof runAgentLoop>>,
+  startedAt: Date,
+  endedAt: Date
+): Promise<void> {
+  const startedAtIso = startedAt.toISOString();
+  const endedAtIso = endedAt.toISOString();
+  const durationMs = Math.max(0, endedAt.getTime() - startedAt.getTime());
+  const summary = result.message;
+
+  await appendSessionEntries(sessionId, [
+    {
+      content: userMessage,
+      role: "user",
+      timestamp: startedAtIso,
+      type: "message",
+    },
+    {
+      content: result.message,
+      role: "assistant",
+      timestamp: endedAtIso,
+      type: "message",
+    },
+    {
+      finalState: result.finalState,
+      success: result.success,
+      summary,
+      timestamp: endedAtIso,
+      type: "summary",
+    },
+    {
+      assistantMessage: result.message,
+      durationMs,
+      endedAt: endedAtIso,
+      finalState: result.finalState,
+      sessionId,
+      startedAt: startedAtIso,
+      steps: result.context.steps.length,
+      success: result.success,
+      summary,
+      task,
+      type: "run",
+      userMessage,
+    },
+  ]);
+}
+
+async function runChatMode(
+  client: LlmClient,
+  config: ReturnType<typeof getAgentConfig>,
+  sessionId?: string
+): Promise<void> {
   const turns: ChatTurn[] = [];
   let pendingFollowUpQuestion: string | undefined;
   const rl = createInterface({ input, output });
 
+  if (sessionId) {
+    const sessionState = await loadSessionState(sessionId);
+    turns.push(...sessionState.turns);
+    pendingFollowUpQuestion = sessionState.pendingFollowUpQuestion;
+  }
+
   console.log("\n💬 Zace chat mode");
   console.log("Commands: /status, /reset, /exit\n");
+  if (sessionId) {
+    console.log(`Session: ${sessionId} (${getSessionFilePath(sessionId)})`);
+    console.log(`Loaded turns: ${turns.length}\n`);
+    if (pendingFollowUpQuestion) {
+      console.log(`Pending follow-up question: ${pendingFollowUpQuestion}\n`);
+    }
+  }
 
   try {
     while (true) {
@@ -128,7 +232,11 @@ async function runChatMode(client: LlmClient, config: ReturnType<typeof getAgent
       if (message === "/reset") {
         turns.length = 0;
         pendingFollowUpQuestion = undefined;
-        console.log("\nSession context cleared.\n");
+        if (sessionId) {
+          console.log("\nSession context cleared in memory (session file unchanged).\n");
+        } else {
+          console.log("\nSession context cleared.\n");
+        }
         continue;
       }
 
@@ -140,11 +248,17 @@ async function runChatMode(client: LlmClient, config: ReturnType<typeof getAgent
       const task = buildChatTaskWithFollowUp(turns, message, pendingFollowUpQuestion);
       console.log(`\n🔨 Zace: ${message}\n`);
 
+      const startedAt = new Date();
       const result = await runAgentLoop(client, config, task);
+      const endedAt = new Date();
 
       console.log(`\n${getResultIcon(result.success, result.finalState)} ${result.message}\n`);
       console.log(`Steps executed: ${result.context.steps.length}`);
       console.log(`Final state: ${result.finalState}\n`);
+
+      if (sessionId) {
+        await persistSessionTurn(sessionId, message, task, result, startedAt, endedAt);
+      }
 
       if (result.finalState === "waiting_for_user") {
         pendingFollowUpQuestion = result.message;
@@ -178,6 +292,15 @@ export function runCli(): void {
           // Load and validate configuration
           const config = getAgentConfig();
           applyRuntimeOptions(config, options);
+          const sessionId = resolveSessionId(options);
+          let pendingFollowUpQuestion: string | undefined;
+          let turns: ChatTurn[] = [];
+
+          if (sessionId) {
+            const sessionState = await loadSessionState(sessionId);
+            turns = sessionState.turns;
+            pendingFollowUpQuestion = sessionState.pendingFollowUpQuestion;
+          }
 
           // Initialize logger
           initializeLogger(config);
@@ -187,7 +310,17 @@ export function runCli(): void {
 
           // Run the agent loop
           console.log(`\n🔨 Zace: ${task}\n`);
-          const result = await runAgentLoop(client, config, task);
+          const taskWithContext = sessionId
+            ? buildChatTaskWithFollowUp(turns, task, pendingFollowUpQuestion)
+            : task;
+          const startedAt = new Date();
+          const result = await runAgentLoop(client, config, taskWithContext);
+          const endedAt = new Date();
+
+          if (sessionId) {
+            await persistSessionTurn(sessionId, task, taskWithContext, result, startedAt, endedAt);
+            console.log(`Session saved: ${sessionId} (${getSessionFilePath(sessionId)})`);
+          }
 
           // Output results
           console.log(`\n${getResultIcon(result.success, result.finalState)} ${result.message}\n`);
@@ -219,11 +352,12 @@ export function runCli(): void {
     try {
       const config = getAgentConfig();
       applyRuntimeOptions(config, options);
+      const sessionId = resolveSessionId(options);
 
       initializeLogger(config);
 
       const client = new LlmClient(config);
-      await runChatMode(client, config);
+      await runChatMode(client, config, sessionId);
 
       process.exit(0);
     } catch (error) {

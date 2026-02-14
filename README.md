@@ -48,15 +48,28 @@ Run the agent:
 bun run src/index.ts "your task here"
 ```
 
+Start interactive chat mode:
+
+```bash
+bun run src/index.ts chat
+```
+
 With common options:
 
 ```bash
 bun run src/index.ts "fix lint errors" --stream --verbose --executor-analysis always
 ```
 
+Resume a persistent conversation:
+
+```bash
+bun run src/index.ts chat --session my_session
+```
+
 CLI options:
 
 - `--executor-analysis <mode>`: `always | on_failure | never`
+- `--session <id>`: persist and resume conversation from `.zace/sessions/<id>.jsonl`
 - `-s, --stream`: stream model output
 - `-v, --verbose`: verbose logs
 
@@ -71,6 +84,19 @@ The planner is instructed to create and reuse scripts when needed.
   - `ZACE_SCRIPT_USE|<script_id>`
 
 Zace discovers existing scripts on startup and syncs registry metadata during execution.
+
+## Sessions
+
+Session files are stored as JSONL:
+
+- Directory: `.zace/sessions`
+- File: `.zace/sessions/<session-id>.jsonl`
+- Stored records:
+  - user/assistant messages
+  - run summaries
+  - run metadata (state, steps, duration, timestamps, task)
+
+Use the same `--session <id>` value across runs to continue conversation context.
 
 ## Development
 
