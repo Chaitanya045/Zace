@@ -124,6 +124,22 @@ export async function runAgentLoop(
         };
       }
 
+      if (planResult.action === "ask_user") {
+        context = addStep(context, {
+          reasoning: planResult.reasoning,
+          state: "waiting_for_user",
+          step: stepNumber,
+          toolCall: null,
+          toolResult: null,
+        });
+        return {
+          context,
+          finalState: "waiting_for_user",
+          message: planResult.reasoning,
+          success: false,
+        };
+      }
+
       // Execution phase
       if (!planResult.toolCall) {
         logStep(stepNumber, "No tool call specified, continuing...");

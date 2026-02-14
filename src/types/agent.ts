@@ -1,6 +1,12 @@
 import type { ToolCall, ToolResult } from "./tool";
 
-export type AgentState = "blocked" | "completed" | "error" | "executing" | "planning";
+export type AgentState =
+  | "blocked"
+  | "completed"
+  | "error"
+  | "executing"
+  | "planning"
+  | "waiting_for_user";
 
 export interface ScriptMetadata {
   id: string;

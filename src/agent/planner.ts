@@ -8,7 +8,7 @@ import { ValidationError } from "../utils/errors";
 import { logStep } from "../utils/logger";
 
 export interface PlanResult {
-  action: "blocked" | "complete" | "continue";
+  action: "ask_user" | "blocked" | "complete" | "continue";
   reasoning: string;
   toolCall?: { arguments: Record<string, unknown>; name: string };
 }
@@ -63,6 +63,13 @@ export async function plan(
     return {
       action: "blocked",
       reasoning: content.replace("BLOCKED:", "").trim(),
+    };
+  }
+
+  if (content.startsWith("ASK_USER:")) {
+    return {
+      action: "ask_user",
+      reasoning: content.replace("ASK_USER:", "").trim(),
     };
   }
 

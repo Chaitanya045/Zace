@@ -46,11 +46,12 @@ INSTRUCTIONS:
    ZACE_SCRIPT_REGISTER|<script_id>|<script_path>|<purpose>
 6. For script runs, prefer including:
    ZACE_SCRIPT_USE|<script_id>
-7. If the task is complete, respond with "COMPLETE: <summary>"
-8. If blocked or uncertain, respond with "BLOCKED: <reason>"
-9. Otherwise, respond with "CONTINUE: <reasoning>" followed by a tool call in JSON format:
+7. If user clarification is required, respond with "ASK_USER: <single clear question>"
+8. If the task is complete, respond with "COMPLETE: <summary>"
+9. If blocked and cannot proceed without non-user intervention, respond with "BLOCKED: <reason>"
+10. Otherwise, respond with "CONTINUE: <reasoning>" followed by a tool call in JSON format:
    {"name": "tool_name", "arguments": {...}}
-10. Keep each step small and deterministic. Prefer one command per step.
+11. Keep each step small and deterministic. Prefer one command per step.
 
 Your response should be clear and actionable.`;
 

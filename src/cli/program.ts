@@ -52,9 +52,13 @@ function applyRuntimeOptions(config: ReturnType<typeof getAgentConfig>, options:
   }
 }
 
-function buildChatTask(turns: ChatTurn[], userInput: string): string {
+function buildChatTaskWithFollowUp(
+  turns: ChatTurn[],
+  userInput: string,
+  followUpQuestion?: string
+): string {
   const recentTurns = turns.slice(-MAX_CHAT_CONTEXT_TURNS);
-  if (recentTurns.length === 0) {
+  if (recentTurns.length === 0 && !followUpQuestion) {
     return userInput;
   }
 
@@ -65,13 +69,15 @@ function buildChatTask(turns: ChatTurn[], userInput: string): string {
     )
     .join("\n\n");
 
+  const followUpContext = followUpQuestion
+    ? `\n\nAGENT FOLLOW-UP QUESTION:\n${followUpQuestion}\n\nUSER FOLLOW-UP ANSWER:\n${userInput}`
+    : `\n\nCURRENT USER MESSAGE:\n${userInput}`;
+
   return `Continue this interactive conversation using the recent context.
 
 RECENT CONVERSATION:
 ${history}
-
-CURRENT USER MESSAGE:
-${userInput}`;
+${followUpContext}`;
 }
 
 function printChatStatus(turns: ChatTurn[]): void {
@@ -89,8 +95,17 @@ function printChatStatus(turns: ChatTurn[]): void {
   console.log(`Last response: ${lastTurn.assistant}\n`);
 }
 
+function getResultIcon(success: boolean, finalState: string): string {
+  if (finalState === "waiting_for_user") {
+    return "❓";
+  }
+
+  return success ? "✅" : "❌";
+}
+
 async function runChatMode(client: LlmClient, config: ReturnType<typeof getAgentConfig>): Promise<void> {
   const turns: ChatTurn[] = [];
+  let pendingFollowUpQuestion: string | undefined;
   const rl = createInterface({ input, output });
 
   console.log("\n💬 Zace chat mode");
@@ -112,6 +127,7 @@ async function runChatMode(client: LlmClient, config: ReturnType<typeof getAgent
 
       if (message === "/reset") {
         turns.length = 0;
+        pendingFollowUpQuestion = undefined;
         console.log("\nSession context cleared.\n");
         continue;
       }
@@ -121,14 +137,21 @@ async function runChatMode(client: LlmClient, config: ReturnType<typeof getAgent
         continue;
       }
 
-      const task = buildChatTask(turns, message);
+      const task = buildChatTaskWithFollowUp(turns, message, pendingFollowUpQuestion);
       console.log(`\n🔨 Zace: ${message}\n`);
 
       const result = await runAgentLoop(client, config, task);
 
-      console.log(`\n${result.success ? "✅" : "❌"} ${result.message}\n`);
+      console.log(`\n${getResultIcon(result.success, result.finalState)} ${result.message}\n`);
       console.log(`Steps executed: ${result.context.steps.length}`);
       console.log(`Final state: ${result.finalState}\n`);
+
+      if (result.finalState === "waiting_for_user") {
+        pendingFollowUpQuestion = result.message;
+        console.log("Agent needs clarification. Reply with your answer.\n");
+      } else {
+        pendingFollowUpQuestion = undefined;
+      }
 
       turns.push({
         assistant: result.message,
@@ -167,7 +190,7 @@ export function runCli(): void {
           const result = await runAgentLoop(client, config, task);
 
           // Output results
-          console.log(`\n${result.success ? "✅" : "❌"} ${result.message}\n`);
+          console.log(`\n${getResultIcon(result.success, result.finalState)} ${result.message}\n`);
 
           if (result.context.steps.length > 0) {
             console.log(`Steps executed: ${result.context.steps.length}`);
