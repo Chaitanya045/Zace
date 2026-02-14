@@ -49,9 +49,13 @@ export async function runAgentLoop(
   // Build dynamic system prompt with runtime context
   const systemPrompt = buildSystemPrompt({
     availableTools: allTools.map((tool) => tool.name),
+    commandAllowPatterns: config.commandAllowPatterns,
+    commandDenyPatterns: config.commandDenyPatterns,
     currentDirectory: process.cwd(),
     maxSteps: config.maxSteps,
     platform: process.platform,
+    requireRiskyConfirmation: config.requireRiskyConfirmation,
+    riskyConfirmationToken: config.riskyConfirmationToken,
     verbose: config.verbose,
   });
 

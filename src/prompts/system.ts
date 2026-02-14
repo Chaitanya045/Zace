@@ -1,8 +1,12 @@
 export interface SystemPromptContext {
+  commandAllowPatterns?: string[];
+  commandDenyPatterns?: string[];
   availableTools?: string[];
   currentDirectory?: string;
   maxSteps?: number;
   platform?: string;
+  requireRiskyConfirmation?: boolean;
+  riskyConfirmationToken?: string;
   taskType?: "code" | "debug" | "general" | "refactor";
   verbose?: boolean;
 }
@@ -62,6 +66,21 @@ export function buildSystemPrompt(context?: SystemPromptContext): string {
 
   if (context?.platform) {
     prompt += `\n\nCURRENT PLATFORM: ${context.platform}`;
+  }
+
+  if (context?.requireRiskyConfirmation && context?.riskyConfirmationToken) {
+    prompt +=
+      `\n\nCOMMAND SAFETY POLICY:` +
+      `\n- Risky commands require explicit confirmation token: ${context.riskyConfirmationToken}` +
+      `\n- Risky categories include rm, force git operations, and broad recursive chmod/chown.`;
+  }
+
+  if (context?.commandDenyPatterns && context.commandDenyPatterns.length > 0) {
+    prompt += `\n- Deny patterns: ${context.commandDenyPatterns.join(" ;; ")}`;
+  }
+
+  if (context?.commandAllowPatterns && context.commandAllowPatterns.length > 0) {
+    prompt += `\n- Allow patterns: ${context.commandAllowPatterns.join(" ;; ")}`;
   }
 
   if (context?.maxSteps) {

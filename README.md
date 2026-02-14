@@ -38,6 +38,12 @@ AGENT_EXECUTOR_ANALYSIS=on_failure
 AGENT_STREAM=false
 AGENT_VERBOSE=false
 LLM_PROVIDER=openrouter
+
+# command safety policy
+AGENT_REQUIRE_RISKY_CONFIRMATION=true
+AGENT_RISKY_CONFIRMATION_TOKEN=ZACE_APPROVE_RISKY
+AGENT_COMMAND_ALLOW_PATTERNS=
+AGENT_COMMAND_DENY_PATTERNS=
 ```
 
 ## Usage
@@ -72,6 +78,44 @@ CLI options:
 - `--session <id>`: persist and resume conversation from `.zace/sessions/<id>.jsonl`
 - `-s, --stream`: stream model output
 - `-v, --verbose`: verbose logs
+
+## Command safety policy
+
+Zace enforces command policy at execution time.
+
+- Risky commands require explicit confirmation token by default:
+  - `rm`
+  - force git operations (for example `git push --force`, `git reset --hard`)
+  - broad recursive `chmod`/`chown`
+- Deny patterns can hard-block commands.
+- Allow patterns can restrict execution to an approved set.
+
+Environment variables:
+
+- `AGENT_REQUIRE_RISKY_CONFIRMATION` (`true|false`)
+- `AGENT_RISKY_CONFIRMATION_TOKEN` (default: `ZACE_APPROVE_RISKY`)
+- `AGENT_COMMAND_ALLOW_PATTERNS` (regex list separated by `;;`)
+- `AGENT_COMMAND_DENY_PATTERNS` (regex list separated by `;;`)
+
+Starter patterns (also included in `.env.example`):
+
+- Denylist:
+  - `\bsudo\b`
+  - `\bsu\b`
+  - `\bcurl\b[^\n]*\|\s*(?:sh|bash|zsh|pwsh|powershell)\b`
+  - `\bwget\b[^\n]*\|\s*(?:sh|bash|zsh|pwsh|powershell)\b`
+  - `\bmkfs\b`
+  - `\bdd\b`
+  - `\bshutdown\b`
+  - `\breboot\b`
+  - `\bpoweroff\b`
+- Optional strict allowlist (set only if you want explicit command whitelisting):
+  - `^rg\b`
+  - `^grep\b`
+  - `^git\s+status\b`
+  - `^git\s+diff\b`
+  - `^bun\s+lint(?::fix)?\b`
+  - `^bun\s+-e\b`
 
 ## Runtime script protocol
 
