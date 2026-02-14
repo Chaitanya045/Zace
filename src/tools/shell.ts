@@ -35,7 +35,7 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
     const { command, cwd, env, timeout } = executeCommandSchema.parse(args);
     logToolCall("execute_command", { command, cwd, env, shell: getShellLabel(), timeout });
 
-    const proc = getShellCommand(command).cwd(cwd ?? process.cwd()).quiet();
+    const proc = getShellCommand(command).cwd(cwd ?? process.cwd()).quiet().nothrow();
 
     // Set custom environment variables if provided
     if (env) {

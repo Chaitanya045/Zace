@@ -109,7 +109,7 @@ function sanitizeTsvField(value: string): string {
 function buildBunEvalCommand(source: string): string {
   const sourceBase64 = Buffer.from(source, "utf8").toString("base64");
   const loader =
-    "const source = Buffer.from(process.argv[1], \"base64\").toString(\"utf8\");(0, eval)(source);";
+    "const source = Buffer.from(process.argv[1], \"base64\").toString(\"utf8\");const moduleBase64 = Buffer.from(source).toString(\"base64\");await import(\"data:text/javascript;base64,\" + moduleBase64);";
   return `bun -e '${loader}' '${sourceBase64}'`;
 }
 
@@ -134,7 +134,7 @@ export function buildRegistrySyncCommand(catalog: Map<string, ScriptMetadata>): 
   const content = serializeScriptCatalog(catalog);
   const contentBase64 = Buffer.from(content, "utf8").toString("base64");
   const source = `
-const { mkdirSync, writeFileSync } = require("node:fs");
+import { mkdirSync, writeFileSync } from "node:fs";
 mkdirSync(${JSON.stringify(SCRIPT_DIRECTORY_PATH)}, { recursive: true });
 const content = Buffer.from(${JSON.stringify(contentBase64)}, "base64").toString("utf8");
 writeFileSync(${JSON.stringify(SCRIPT_REGISTRY_PATH)}, content, "utf8");
@@ -145,8 +145,8 @@ writeFileSync(${JSON.stringify(SCRIPT_REGISTRY_PATH)}, content, "utf8");
 
 export function buildDiscoverScriptsCommand(): string {
   const source = `
-const { mkdirSync, readdirSync, readFileSync, statSync } = require("node:fs");
-const { join } = require("node:path");
+import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 const scriptDirectoryPath = ${JSON.stringify(SCRIPT_DIRECTORY_PATH)};
 mkdirSync(scriptDirectoryPath, { recursive: true });
 
