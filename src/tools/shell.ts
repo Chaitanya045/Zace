@@ -14,12 +14,28 @@ const executeCommandSchema = z.object({
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
+function getShellCommand(command: string): ReturnType<typeof Bun.$> {
+  if (process.platform === "win32") {
+    return Bun.$`powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ${command}`;
+  }
+
+  return Bun.$`sh -c ${command}`;
+}
+
+function getShellLabel(): string {
+  if (process.platform === "win32") {
+    return "powershell";
+  }
+
+  return "sh";
+}
+
 async function executeCommand(args: unknown): Promise<ToolResult> {
   try {
     const { command, cwd, env, timeout } = executeCommandSchema.parse(args);
-    logToolCall("execute_command", { command, cwd, env, timeout });
+    logToolCall("execute_command", { command, cwd, env, shell: getShellLabel(), timeout });
 
-    const proc = Bun.$`sh -c ${command}`.cwd(cwd ?? process.cwd()).quiet();
+    const proc = getShellCommand(command).cwd(cwd ?? process.cwd()).quiet();
 
     // Set custom environment variables if provided
     if (env) {

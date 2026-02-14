@@ -2,6 +2,7 @@ export interface SystemPromptContext {
   availableTools?: string[];
   currentDirectory?: string;
   maxSteps?: number;
+  platform?: string;
   taskType?: "code" | "debug" | "general" | "refactor";
   verbose?: boolean;
 }
@@ -22,19 +23,28 @@ CRITICAL RULES:
 5. Prefer correctness, determinism, and clarity over cleverness
 6. Follow existing patterns in the repository strictly
 
+SEARCH COMMAND GUIDANCE:
+1. Prefer ripgrep (rg) for searching files and text because it is fast and recursive.
+2. If rg is unavailable, use grep on Unix-like systems.
+3. On Windows, use rg first, otherwise use PowerShell Select-String or findstr.
+4. Choose search commands that are compatible with the current platform.
+
 RUNTIME SCRIPT PROTOCOL:
 1. The primary tool is shell execution. Build capabilities by authoring scripts at runtime.
 2. Store reusable scripts in .zace/runtime/scripts.
 3. Script metadata is stored in .zace/runtime/scripts/registry.tsv (TSV format).
    Query that file before creating new scripts.
-4. Scripts must start with:
+4. On Unix-like platforms, use .sh scripts with:
    #!/usr/bin/env bash
    set -euo pipefail
    # zace-purpose: <one line purpose>
-5. Reuse scripts before creating new ones.
-6. When creating or updating a script, print exactly one registration line:
+5. On Windows platforms, prefer .ps1 scripts with:
+   $ErrorActionPreference = "Stop"
+   # zace-purpose: <one line purpose>
+6. Reuse scripts before creating new ones.
+7. When creating or updating a script, print exactly one registration line:
    ZACE_SCRIPT_REGISTER|<script_id>|<script_path>|<purpose>
-7. When running a known script, prefer printing:
+8. When running a known script, prefer printing:
    ZACE_SCRIPT_USE|<script_id>
 
 You are not a chatbot. You are an autonomous coding agent operating in a local codebase.`;
@@ -48,6 +58,10 @@ export function buildSystemPrompt(context?: SystemPromptContext): string {
 
   if (context?.currentDirectory) {
     prompt += `\n\nCURRENT DIRECTORY: ${context.currentDirectory}`;
+  }
+
+  if (context?.platform) {
+    prompt += `\n\nCURRENT PLATFORM: ${context.platform}`;
   }
 
   if (context?.maxSteps) {

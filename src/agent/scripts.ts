@@ -106,6 +106,13 @@ function sanitizeTsvField(value: string): string {
   return value.replaceAll("\n", " ").replaceAll("\r", " ").replaceAll("\t", " ").trim();
 }
 
+function buildBunEvalCommand(source: string): string {
+  const sourceBase64 = Buffer.from(source, "utf8").toString("base64");
+  const loader =
+    "const source = Buffer.from(process.argv[1], \"base64\").toString(\"utf8\");(0, eval)(source);";
+  return `bun -e '${loader}' '${sourceBase64}'`;
+}
+
 export function serializeScriptCatalog(catalog: Map<string, ScriptMetadata>): string {
   const rows = Array.from(catalog.values())
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -125,17 +132,58 @@ export function serializeScriptCatalog(catalog: Map<string, ScriptMetadata>): st
 
 export function buildRegistrySyncCommand(catalog: Map<string, ScriptMetadata>): string {
   const content = serializeScriptCatalog(catalog);
-  let marker = "ZACE_REGISTRY_EOF";
-  let suffix = 0;
+  const contentBase64 = Buffer.from(content, "utf8").toString("base64");
+  const source = `
+const { mkdirSync, writeFileSync } = require("node:fs");
+mkdirSync(${JSON.stringify(SCRIPT_DIRECTORY_PATH)}, { recursive: true });
+const content = Buffer.from(${JSON.stringify(contentBase64)}, "base64").toString("utf8");
+writeFileSync(${JSON.stringify(SCRIPT_REGISTRY_PATH)}, content, "utf8");
+`.trim();
 
-  while (content.includes(marker)) {
-    suffix += 1;
-    marker = `ZACE_REGISTRY_EOF_${suffix}`;
+  return buildBunEvalCommand(source);
+}
+
+export function buildDiscoverScriptsCommand(): string {
+  const source = `
+const { mkdirSync, readdirSync, readFileSync, statSync } = require("node:fs");
+const { join } = require("node:path");
+const scriptDirectoryPath = ${JSON.stringify(SCRIPT_DIRECTORY_PATH)};
+mkdirSync(scriptDirectoryPath, { recursive: true });
+
+for (const entry of readdirSync(scriptDirectoryPath)) {
+  if (!entry.endsWith(".ps1") && !entry.endsWith(".sh")) {
+    continue;
   }
 
-  return `
-mkdir -p ${SCRIPT_DIRECTORY_PATH}
-cat > ${SCRIPT_REGISTRY_PATH} <<'${marker}'
-${content}${marker}
+  const fullPath = join(scriptDirectoryPath, entry);
+  if (!statSync(fullPath).isFile()) {
+    continue;
+  }
+
+  const id = entry.replace(/\\.(ps1|sh)$/iu, "");
+  let content = "";
+  let purpose = "Existing runtime script";
+  try {
+    content = readFileSync(fullPath, "utf8");
+  } catch (_error) {
+    content = "";
+  }
+
+  for (const line of content.split(/\\r?\\n/u)) {
+    if (!line.startsWith("# zace-purpose:")) {
+      continue;
+    }
+
+    const parsedPurpose = line.replace("# zace-purpose:", "").trim();
+    if (parsedPurpose.length > 0) {
+      purpose = parsedPurpose;
+    }
+    break;
+  }
+
+  console.log("ZACE_SCRIPT_REGISTER|" + id + "|" + fullPath + "|" + purpose);
+}
 `.trim();
+
+  return buildBunEvalCommand(source);
 }

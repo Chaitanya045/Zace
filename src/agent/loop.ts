@@ -10,8 +10,8 @@ import { analyzeToolResult, executeToolCall } from "./executor";
 import { Memory } from "./memory";
 import { plan } from "./planner";
 import {
+  buildDiscoverScriptsCommand,
   buildRegistrySyncCommand,
-  SCRIPT_DIRECTORY_PATH,
   SCRIPT_REGISTRY_PATH,
   updateScriptCatalogFromOutput,
 } from "./scripts";
@@ -24,18 +24,7 @@ export interface AgentResult {
   message: string;
 }
 
-const DISCOVER_SCRIPTS_COMMAND = `
-mkdir -p ${SCRIPT_DIRECTORY_PATH}
-for path in ${SCRIPT_DIRECTORY_PATH}/*.sh; do
-  [ -f "$path" ] || continue
-  id="$(basename "$path" .sh)"
-  purpose="$(grep -m1 '^# zace-purpose:' "$path" | sed 's/^# zace-purpose:[[:space:]]*//')"
-  if [ -z "$purpose" ]; then
-    purpose="Existing runtime script"
-  fi
-  echo "ZACE_SCRIPT_REGISTER|$id|$path|$purpose"
-done
-`.trim();
+const DISCOVER_SCRIPTS_COMMAND = buildDiscoverScriptsCommand();
 
 async function syncScriptRegistry(catalog: AgentContext["scriptCatalog"]): Promise<void> {
   await executeToolCall({
@@ -62,6 +51,7 @@ export async function runAgentLoop(
     availableTools: allTools.map((tool) => tool.name),
     currentDirectory: process.cwd(),
     maxSteps: config.maxSteps,
+    platform: process.platform,
     verbose: config.verbose,
   });
 
