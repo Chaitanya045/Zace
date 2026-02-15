@@ -83,10 +83,8 @@ CLI options:
 
 Zace enforces command policy at execution time.
 
-- Risky commands require explicit confirmation token by default:
-  - `rm`
-  - force git operations (for example `git push --force`, `git reset --hard`)
-  - broad recursive `chmod`/`chown`
+- Destructive command detection is LLM-driven.
+- If a command is classified destructive, Zace asks for explicit confirmation using `AGENT_RISKY_CONFIRMATION_TOKEN`.
 - Deny patterns can hard-block commands.
 - Allow patterns can restrict execution to an approved set.
 
@@ -116,6 +114,29 @@ Starter patterns (also included in `.env.example`):
   - `^git\s+diff\b`
   - `^bun\s+lint(?::fix)?\b`
   - `^bun\s+-e\b`
+
+## Completion gates
+
+Zace now enforces completion gates before accepting `COMPLETE`.
+
+- No hard-coded lint/typecheck/test commands are used.
+- Gates are LLM-driven unless explicitly provided by the user.
+- Planner can infer checks from any language/project layout and include them in the completion response:
+  - `GATES: <command_1>;;<command_2>`
+- If any gate fails, the agent continues working instead of completing.
+- If no gates are required, planner can explicitly respond with:
+  - `GATES: none`
+- If no gates are supplied, completion is blocked until gates are provided (or explicitly set to `none`).
+- The agent should only return `BLOCKED` with an explicit reason if it cannot make the gates pass.
+
+Task-defined gates:
+
+- Add a line in your task:
+  - `DONE_CRITERIA: cmd:make lint;;cmd:make test`
+- Or custom commands:
+  - `DONE_CRITERIA: cmd:pnpm lint,cmd:pnpm test`
+- You can also use `;;` as separator for long commands:
+  - `DONE_CRITERIA: cmd:poetry run ruff check .;;cmd:poetry run pytest`
 
 ## Runtime script protocol
 

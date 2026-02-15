@@ -3,8 +3,14 @@ import type { AgentContext } from "../types/agent";
 import { SCRIPT_REGISTRY_PATH } from "../agent/scripts";
 import { getToolDescriptions } from "../tools";
 
-export function buildPlannerPrompt(context: AgentContext): string {
+export function buildPlannerPrompt(context: AgentContext, completionCriteria?: string[]): string {
   const { currentStep, fileSummaries, maxSteps, steps, task } = context;
+  const criteria = completionCriteria && completionCriteria.length > 0
+    ? completionCriteria
+    : ["No completion gates configured"];
+  const completionCriteriaText = criteria
+    .map((criterion) => `- ${criterion}`)
+    .join("\n");
 
   const stepHistory = steps
     .slice(-3)
@@ -33,6 +39,9 @@ SCRIPT REGISTRY:
 - TSV columns: id, path, purpose, last_touched_step, times_used
 - Query scripts by running shell commands against this file (rg/awk/sed) before deciding to create a new script.
 
+COMPLETION GATES:
+${completionCriteriaText}
+
 AVAILABLE TOOLS:
 ${getToolDescriptions()}
 
@@ -47,11 +56,18 @@ INSTRUCTIONS:
 6. For script runs, prefer including:
    ZACE_SCRIPT_USE|<script_id>
 7. If user clarification is required, respond with "ASK_USER: <single clear question>"
-8. If the task is complete, respond with "COMPLETE: <summary>"
-9. If blocked and cannot proceed without non-user intervention, respond with "BLOCKED: <reason>"
-10. Otherwise, respond with "CONTINUE: <reasoning>" followed by a tool call in JSON format:
+8. Destructive shell commands require explicit user confirmation before execution.
+   After user confirms, include the configured confirmation token in the command as a shell comment.
+9. Do not respond with COMPLETE unless all completion gates pass.
+10. If completion gates are missing and validation should run, discover project-specific check commands and include them when completing:
+   GATES: <command_1>;;<command_2> (single line, shell commands only)
+11. If no validation gates are required, include:
+   GATES: none
+12. If the task is complete, respond with "COMPLETE: <summary>" and include a GATES line when applicable.
+13. If blocked and cannot proceed without non-user intervention, respond with "BLOCKED: <reason>"
+14. Otherwise, respond with "CONTINUE: <reasoning>" followed by a tool call in JSON format:
    {"name": "tool_name", "arguments": {...}}
-11. Keep each step small and deterministic. Prefer one command per step.
+15. Keep each step small and deterministic. Prefer one command per step.
 
 Your response should be clear and actionable.`;
 

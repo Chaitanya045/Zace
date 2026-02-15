@@ -14,14 +14,6 @@ const executeCommandSchema = z.object({
 });
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const RISKY_COMMAND_PATTERNS: Array<{ reason: string; regex: RegExp }> = [
-  { reason: "rm command", regex: /\brm\b/iu },
-  { reason: "force git push", regex: /\bgit\s+push\b[^\n]*\s--force(?:-with-lease)?\b/iu },
-  { reason: "git reset --hard", regex: /\bgit\s+reset\b[^\n]*\s--hard\b/iu },
-  { reason: "git clean with force", regex: /\bgit\s+clean\b[^\n]*\s-[^\n]*f/iu },
-  { reason: "recursive chmod", regex: /\bchmod\b[^\n]*\s-R\b/iu },
-  { reason: "recursive chown", regex: /\bchown\b[^\n]*\s-R\b/iu },
-];
 
 function compilePolicyRegexes(patterns: string[], policyName: string): RegExp[] {
   return patterns.map((pattern) => {
@@ -55,16 +47,6 @@ function getShellLabel(): string {
   return "sh";
 }
 
-function getRiskyReasons(command: string): string[] {
-  return RISKY_COMMAND_PATTERNS.filter((entry) => entry.regex.test(command)).map(
-    (entry) => entry.reason
-  );
-}
-
-function hasToken(command: string, token: string): boolean {
-  return command.includes(token);
-}
-
 function evaluateCommandPolicy(command: string): ToolResult | undefined {
   const denyMatch = denyPolicyRegexes.find((regex) => regex.test(command));
   if (denyMatch) {
@@ -82,19 +64,6 @@ function evaluateCommandPolicy(command: string): ToolResult | undefined {
         error: "Command blocked by allow policy",
         output:
           "Command did not match any allow patterns. Update AGENT_COMMAND_ALLOW_PATTERNS to permit it.",
-        success: false,
-      };
-    }
-  }
-
-  if (env.AGENT_REQUIRE_RISKY_CONFIRMATION) {
-    const riskyReasons = getRiskyReasons(command);
-    if (riskyReasons.length > 0 && !hasToken(command, env.AGENT_RISKY_CONFIRMATION_TOKEN)) {
-      return {
-        error: "Explicit confirmation required for risky command",
-        output:
-          `Risky command detected (${riskyReasons.join(", ")}). ` +
-          `Add confirmation token "${env.AGENT_RISKY_CONFIRMATION_TOKEN}" to proceed.`,
         success: false,
       };
     }

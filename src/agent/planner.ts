@@ -9,11 +9,14 @@ import { logStep } from "../utils/logger";
 
 export interface PlanResult {
   action: "ask_user" | "blocked" | "complete" | "continue";
+  completionGateCommands?: string[];
+  completionGatesDeclaredNone?: boolean;
   reasoning: string;
   toolCall?: { arguments: Record<string, unknown>; name: string };
 }
 
 type PlanOptions = {
+  completionCriteria?: string[];
   stream?: boolean;
 };
 
@@ -25,7 +28,7 @@ export async function plan(
 ): Promise<PlanResult> {
   logStep(context.currentStep + 1, "Planning next action");
 
-  const prompt = buildPlannerPrompt(context);
+  const prompt = buildPlannerPrompt(context, options?.completionCriteria);
 
   const messages = [
     ...memory.getMessages(),
@@ -53,9 +56,42 @@ export async function plan(
 
   // Parse the response
   if (content.startsWith("COMPLETE:")) {
+    const completionBody = content.replace("COMPLETE:", "").trim();
+    const completionGateCommands: string[] = [];
+    let completionGatesDeclaredNone = false;
+    const reasoningLines: string[] = [];
+
+    for (const line of completionBody.split(/\r?\n/u)) {
+      const trimmedLine = line.trim();
+      if (!trimmedLine.toUpperCase().startsWith("GATES:")) {
+        reasoningLines.push(line);
+        continue;
+      }
+
+      const gateCommandsRaw = trimmedLine.slice("GATES:".length).trim();
+      if (!gateCommandsRaw) {
+        continue;
+      }
+
+      if (gateCommandsRaw.toLowerCase() === "none") {
+        completionGatesDeclaredNone = true;
+        continue;
+      }
+
+      const parsedGateCommands = gateCommandsRaw
+        .split(";;")
+        .map((command) => command.trim())
+        .filter((command) => command.length > 0);
+      completionGateCommands.push(...parsedGateCommands);
+    }
+
+    const reasoning = reasoningLines.join("\n").trim() || "Task complete";
+
     return {
       action: "complete",
-      reasoning: content.replace("COMPLETE:", "").trim(),
+      completionGateCommands,
+      completionGatesDeclaredNone,
+      reasoning,
     };
   }
 

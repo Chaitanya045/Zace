@@ -15,8 +15,10 @@ INSTRUCTIONS:
 1. Analyze the tool result
 2. Determine if the action succeeded or failed
 3. Provide a brief summary of what happened
-4. Suggest next steps if applicable
+4. Decide whether retrying the same command is likely to help
+5. Respond with strict JSON only using this schema:
+   {"analysis":"<short summary>","shouldRetry":true|false}
 
-Your response should be concise and focused on the execution outcome.`;
+Do not include markdown, prose, or code fences outside the JSON object.`;
 
 }

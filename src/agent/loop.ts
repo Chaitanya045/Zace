@@ -1,14 +1,21 @@
 import type { LlmClient } from "../llm/client";
 import type { AgentContext, AgentState } from "../types/agent";
 import type { AgentConfig } from "../types/config";
+import type { ToolResult } from "../types/tool";
 
 import { buildSystemPrompt } from "../prompts/system";
 import { allTools } from "../tools";
 import { AgentError } from "../utils/errors";
 import { log, logError, logStep } from "../utils/logger";
+import {
+  describeCompletionPlan,
+  resolveCompletionPlan,
+  type CompletionGate,
+} from "./completion";
 import { analyzeToolResult, executeToolCall } from "./executor";
 import { Memory } from "./memory";
 import { plan } from "./planner";
+import { assessCommandSafety } from "./safety";
 import {
   buildDiscoverScriptsCommand,
   buildRegistrySyncCommand,
@@ -36,6 +43,107 @@ async function syncScriptRegistry(catalog: AgentContext["scriptCatalog"]): Promi
   });
 }
 
+type CompletionGateResult = {
+  gate: CompletionGate;
+  result: ToolResult;
+};
+
+async function runCompletionGates(gates: CompletionGate[]): Promise<CompletionGateResult[]> {
+  const results: CompletionGateResult[] = [];
+
+  for (const gate of gates) {
+    let result: ToolResult;
+    try {
+      result = await executeToolCall({
+        arguments: {
+          command: gate.command,
+        },
+        name: "execute_command",
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown gate execution error";
+      result = {
+        error: errorMessage,
+        output: errorMessage,
+        success: false,
+      };
+    }
+    results.push({ gate, result });
+  }
+
+  return results;
+}
+
+function parsePlannerCompletionGates(commands: string[] | undefined): CompletionGate[] {
+  if (!commands || commands.length === 0) {
+    return [];
+  }
+
+  const gates: CompletionGate[] = [];
+  const seenCommands = new Set<string>();
+
+  for (const rawCommand of commands) {
+    const command = rawCommand.trim();
+    if (!command || seenCommands.has(command)) {
+      continue;
+    }
+
+    seenCommands.add(command);
+    gates.push({
+      command,
+      label: `planner:${gates.length + 1}`,
+    });
+  }
+
+  return gates;
+}
+
+function buildCompletionFailureMessage(gateResults: CompletionGateResult[]): string {
+  const failedGates = gateResults.filter((gateResult) => !gateResult.result.success);
+  if (failedGates.length === 0) {
+    return "All completion gates passed.";
+  }
+
+  return failedGates
+    .map((gateResult) => {
+      const output = gateResult.result.output.replace(/\s+/gu, " ").trim();
+      const detail = output.length > 180 ? `${output.slice(0, 180)}...` : output;
+      return `${gateResult.gate.label} failed (${gateResult.gate.command}): ${detail}`;
+    })
+    .join(" | ");
+}
+
+function getExecuteCommandText(argumentsObject: Record<string, unknown>): string | undefined {
+  const commandValue = argumentsObject.command;
+  if (typeof commandValue !== "string") {
+    return undefined;
+  }
+
+  const command = commandValue.trim();
+  if (!command) {
+    return undefined;
+  }
+
+  return command;
+}
+
+async function getDestructiveCommandReason(
+  client: LlmClient,
+  config: AgentConfig,
+  command: string
+): Promise<null | string> {
+  if (!config.requireRiskyConfirmation || command.includes(config.riskyConfirmationToken)) {
+    return null;
+  }
+
+  const safetyAssessment = await assessCommandSafety(client, command);
+  if (!safetyAssessment.isDestructive) {
+    return null;
+  }
+
+  return safetyAssessment.reason;
+}
+
 export async function runAgentLoop(
   client: LlmClient,
   config: AgentConfig,
@@ -45,12 +153,16 @@ export async function runAgentLoop(
 
   const memory = new Memory();
   let context = createInitialContext(task, config.maxSteps);
+  let completionPlan = resolveCompletionPlan(task);
+  let lastCompletionGateFailure: null | string = null;
+  const getCompletionCriteria = (): string[] => describeCompletionPlan(completionPlan);
 
   // Build dynamic system prompt with runtime context
   const systemPrompt = buildSystemPrompt({
     availableTools: allTools.map((tool) => tool.name),
     commandAllowPatterns: config.commandAllowPatterns,
     commandDenyPatterns: config.commandDenyPatterns,
+    completionCriteria: getCompletionCriteria(),
     currentDirectory: process.cwd(),
     maxSteps: config.maxSteps,
     platform: process.platform,
@@ -90,13 +202,97 @@ export async function runAgentLoop(
 
       // Planning phase
       context = transitionState(context, "planning");
-      const planResult = await plan(client, context, memory, { stream: config.stream });
+      const planResult = await plan(client, context, memory, {
+        completionCriteria: getCompletionCriteria(),
+        stream: config.stream,
+      });
 
       // Add planning reasoning to memory
       memory.addMessage("assistant", `Planning: ${planResult.reasoning}`);
 
       // Handle different plan outcomes
       if (planResult.action === "complete") {
+        const plannerCompletionGates = parsePlannerCompletionGates(planResult.completionGateCommands);
+        if (completionPlan.gates.length === 0 && plannerCompletionGates.length > 0) {
+          completionPlan = {
+            ...completionPlan,
+            gates: plannerCompletionGates,
+          };
+          memory.addMessage(
+            "assistant",
+            `Planner supplied completion gates: ${describeCompletionPlan(completionPlan).join(" | ")}`
+          );
+        }
+
+        if (completionPlan.gates.length === 0 && !planResult.completionGatesDeclaredNone) {
+          const failureMessage =
+            "No completion gates available. Provide `GATES: <command_1>;;<command_2>` with COMPLETE, use DONE_CRITERIA, or explicitly declare `GATES: none`.";
+          lastCompletionGateFailure = failureMessage;
+          context = addStep(context, {
+            reasoning: `Completion requested without gates. ${failureMessage}`,
+            state: "executing",
+            step: stepNumber,
+            toolCall: null,
+            toolResult: null,
+          });
+          memory.addMessage(
+            "assistant",
+            `Completion gate check result: ${failureMessage}`
+          );
+          logStep(stepNumber, `Completion blocked by missing gates: ${failureMessage}`);
+          continue;
+        }
+
+        if (completionPlan.gates.length > 0) {
+          for (const gate of completionPlan.gates) {
+            const destructiveReason = await getDestructiveCommandReason(client, config, gate.command);
+            if (!destructiveReason) {
+              continue;
+            }
+
+            const confirmationMessage =
+              `Destructive completion gate requires confirmation: ${destructiveReason}\n` +
+              `Command: ${gate.command}\n` +
+              `Reply with "${config.riskyConfirmationToken}" and ask me to continue.`;
+            memory.addMessage("assistant", confirmationMessage);
+            context = addStep(context, {
+              reasoning: `Waiting for explicit confirmation before running destructive completion gate. ${destructiveReason}`,
+              state: "waiting_for_user",
+              step: stepNumber,
+              toolCall: null,
+              toolResult: null,
+            });
+            return {
+              context,
+              finalState: "waiting_for_user",
+              message: confirmationMessage,
+              success: false,
+            };
+          }
+
+          const gateResults = await runCompletionGates(completionPlan.gates);
+          const failureMessage = buildCompletionFailureMessage(gateResults);
+
+          memory.addMessage(
+            "assistant",
+            `Completion gate check result: ${failureMessage}`
+          );
+
+          const hasFailure = gateResults.some((gateResult) => !gateResult.result.success);
+          if (hasFailure) {
+            lastCompletionGateFailure = failureMessage;
+            context = addStep(context, {
+              reasoning: `Completion requested but gates failed. ${failureMessage}`,
+              state: "executing",
+              step: stepNumber,
+              toolCall: null,
+              toolResult: null,
+            });
+            logStep(stepNumber, `Completion blocked by gates: ${failureMessage}`);
+            continue;
+          }
+        }
+
         context = addStep(context, {
           reasoning: planResult.reasoning,
           state: "completed",
@@ -104,6 +300,7 @@ export async function runAgentLoop(
           toolCall: null,
           toolResult: null,
         });
+        lastCompletionGateFailure = null;
         return {
           context,
           finalState: "completed",
@@ -155,6 +352,39 @@ export async function runAgentLoop(
           toolResult: null,
         });
         continue;
+      }
+
+      if (
+        config.requireRiskyConfirmation &&
+        planResult.toolCall.name === "execute_command"
+      ) {
+        const command = getExecuteCommandText(planResult.toolCall.arguments);
+        if (command) {
+          const destructiveReason = await getDestructiveCommandReason(client, config, command);
+          if (destructiveReason) {
+            const confirmationMessage =
+              `Destructive command requires confirmation: ${destructiveReason}\n` +
+              `Command: ${command}\n` +
+              `Reply with "${config.riskyConfirmationToken}" and ask me to continue.`;
+            memory.addMessage("assistant", confirmationMessage);
+            context = addStep(context, {
+              reasoning: `Waiting for explicit confirmation before running destructive command. ${destructiveReason}`,
+              state: "waiting_for_user",
+              step: stepNumber,
+              toolCall: {
+                arguments: planResult.toolCall.arguments,
+                name: planResult.toolCall.name,
+              },
+              toolResult: null,
+            });
+            return {
+              context,
+              finalState: "waiting_for_user",
+              message: confirmationMessage,
+              success: false,
+            };
+          }
+        }
       }
 
       context = transitionState(context, "executing");
@@ -255,10 +485,14 @@ export async function runAgentLoop(
     }
 
     // Max steps reached
+    const maxStepsMessage = lastCompletionGateFailure
+      ? `Maximum steps (${context.maxSteps}) reached. Last completion gate failure: ${lastCompletionGateFailure}`
+      : `Maximum steps (${context.maxSteps}) reached without completing the task`;
+
     return {
       context,
       finalState: "blocked",
-      message: `Maximum steps (${context.maxSteps}) reached without completing the task`,
+      message: maxStepsMessage,
       success: false,
     };
   } catch (error) {

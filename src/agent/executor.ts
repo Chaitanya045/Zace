@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type { LlmClient } from "../llm/client";
 import type { ToolCall, ToolResult } from "../types/tool";
 
@@ -21,6 +23,11 @@ export interface ToolAnalysisResult {
 type ExecuteOptions = {
   stream?: boolean;
 };
+
+const executorAnalysisSchema = z.object({
+  analysis: z.string().min(1),
+  shouldRetry: z.boolean(),
+});
 
 export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
   logStep(0, `Executing tool: ${toolCall.name}`);
@@ -97,28 +104,35 @@ export async function analyzeToolResult(
     process.stdout.write("\n");
   }
   const analysis = response.content.trim();
+  const jsonMatch = analysis.match(/\{[\s\S]*\}/u);
 
-  log(`Executor analysis: ${analysis.slice(0, 200)}...`);
+  let parsedAnalysis: ToolAnalysisResult;
+  if (!jsonMatch) {
+    parsedAnalysis = {
+      analysis,
+      shouldRetry: false,
+    };
+  } else {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const validated = executorAnalysisSchema.parse(parsed);
+      parsedAnalysis = {
+        analysis: validated.analysis,
+        shouldRetry: validated.shouldRetry && !toolResult.success,
+      };
+    } catch {
+      parsedAnalysis = {
+        analysis,
+        shouldRetry: false,
+      };
+    }
+  }
 
-  // Determine if retry is needed based on failure and analysis
-  const retrySignals = [
-    /\bretry\b/i,
-    /\btry\s+again\b/i,
-    /\battempt\s+again\b/i,
-    /\bre-?execute\b/i,
-    /\brun\s+(?:once\s+)?more\b/i,
-    /\bre-?run\b/i,
-    /\bretrying\b/i,
-  ];
-
-  const analysisSuggestsRetry = retrySignals.some((re) => re.test(analysis));
-  const shouldRetry =
-    !toolResult.success &&
-    analysisSuggestsRetry;
+  log(`Executor analysis: ${parsedAnalysis.analysis.slice(0, 200)}...`);
 
   return {
-    analysis,
-    shouldRetry,
+    analysis: parsedAnalysis.analysis,
+    shouldRetry: parsedAnalysis.shouldRetry,
   };
 }
 

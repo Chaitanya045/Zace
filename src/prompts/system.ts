@@ -2,12 +2,12 @@ export interface SystemPromptContext {
   commandAllowPatterns?: string[];
   commandDenyPatterns?: string[];
   availableTools?: string[];
+  completionCriteria?: string[];
   currentDirectory?: string;
   maxSteps?: number;
   platform?: string;
   requireRiskyConfirmation?: boolean;
   riskyConfirmationToken?: string;
-  taskType?: "code" | "debug" | "general" | "refactor";
   verbose?: boolean;
 }
 
@@ -68,11 +68,17 @@ export function buildSystemPrompt(context?: SystemPromptContext): string {
     prompt += `\n\nCURRENT PLATFORM: ${context.platform}`;
   }
 
+  if (context?.completionCriteria && context.completionCriteria.length > 0) {
+    prompt +=
+      `\n\nCOMPLETION GATES (MUST PASS BEFORE COMPLETE):` +
+      `\n${context.completionCriteria.map((criterion) => `- ${criterion}`).join("\n")}`;
+  }
+
   if (context?.requireRiskyConfirmation && context?.riskyConfirmationToken) {
     prompt +=
       `\n\nCOMMAND SAFETY POLICY:` +
       `\n- Risky commands require explicit confirmation token: ${context.riskyConfirmationToken}` +
-      `\n- Risky categories include rm, force git operations, and broad recursive chmod/chown.`;
+      `\n- Risk is identified by an LLM safety check before command execution.`;
   }
 
   if (context?.commandDenyPatterns && context.commandDenyPatterns.length > 0) {
@@ -85,19 +91,6 @@ export function buildSystemPrompt(context?: SystemPromptContext): string {
 
   if (context?.maxSteps) {
     prompt += `\n\nMAXIMUM STEPS: ${context.maxSteps} (plan accordingly to complete within this limit)`;
-  }
-
-  if (context?.taskType) {
-    const taskGuidance = {
-      code: "Focus on writing clean, tested, and well-documented code.",
-      debug: "Prioritize finding root causes over quick fixes. Use git diff to understand recent changes.",
-      general: "",
-      refactor: "Maintain backward compatibility. Make small, incremental changes with tests.",
-    };
-    const guidance = taskGuidance[context.taskType];
-    if (guidance) {
-      prompt += `\n\nTASK GUIDANCE: ${guidance}`;
-    }
   }
 
   return prompt;
