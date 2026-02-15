@@ -144,6 +144,69 @@ async function getDestructiveCommandReason(
   return safetyAssessment.reason;
 }
 
+function parseNonNegativeInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  const parsed = Math.trunc(value);
+  if (parsed < 0) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function getRetryConfiguration(
+  toolCall: { arguments: Record<string, unknown>; name: string },
+  maxStepRetries: number
+): {
+  maxRetries: number;
+  retryMaxDelayMs?: number;
+} {
+  if (toolCall.name !== "execute_command") {
+    return {
+      maxRetries: maxStepRetries,
+    };
+  }
+
+  const requestedMaxRetries = parseNonNegativeInteger(toolCall.arguments.maxRetries);
+  const retryMaxDelayMs = parseNonNegativeInteger(toolCall.arguments.retryMaxDelayMs);
+
+  return {
+    maxRetries: requestedMaxRetries === undefined
+      ? maxStepRetries
+      : Math.min(requestedMaxRetries, maxStepRetries),
+    retryMaxDelayMs,
+  };
+}
+
+function getRetryDelayMs(
+  retryDelayMs: number | undefined,
+  retryMaxDelayMs: number | undefined
+): number {
+  if (typeof retryDelayMs !== "number" || !Number.isFinite(retryDelayMs)) {
+    return 0;
+  }
+
+  const normalizedDelay = Math.max(0, Math.trunc(retryDelayMs));
+  if (retryMaxDelayMs === undefined) {
+    return normalizedDelay;
+  }
+
+  return Math.min(normalizedDelay, retryMaxDelayMs);
+}
+
+async function sleep(delayMs: number): Promise<void> {
+  if (delayMs <= 0) {
+    return;
+  }
+
+  await new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
+}
+
 export async function runAgentLoop(
   client: LlmClient,
   config: AgentConfig,
@@ -395,40 +458,78 @@ export async function runAgentLoop(
           name: planResult.toolCall.name,
         };
 
-        // Execute the tool
-        const toolResult = await executeToolCall(toolCall);
+        const maxStepRetries = Math.max(0, context.maxSteps - stepNumber);
+        const retryConfiguration = getRetryConfiguration(toolCall, maxStepRetries);
 
-        // Add tool result to memory
-        memory.addMessage(
-          "tool",
-          `Tool ${planResult.toolCall.name} result: ${toolResult.output}`
-        );
+        let attempt = 0;
+        let analysis: Awaited<ReturnType<typeof analyzeToolResult>> | null = null;
+        let toolResult: ToolResult = {
+          error: "Tool was not executed",
+          output: "",
+          success: false,
+        };
 
-        const scriptCatalogUpdate = updateScriptCatalogFromOutput(
-          context.scriptCatalog,
-          toolResult.output,
-          stepNumber
-        );
-        context = updateScriptCatalog(context, scriptCatalogUpdate.catalog);
-        if (scriptCatalogUpdate.notes.length > 0) {
-          await syncScriptRegistry(context.scriptCatalog);
+        while (true) {
+          attempt += 1;
+          toolResult = await executeToolCall(toolCall);
+
+          memory.addMessage(
+            "tool",
+            `Tool ${planResult.toolCall.name} attempt ${String(attempt)} result: ${toolResult.output}`
+          );
+
+          const scriptCatalogUpdate = updateScriptCatalogFromOutput(
+            context.scriptCatalog,
+            toolResult.output,
+            stepNumber
+          );
+          context = updateScriptCatalog(context, scriptCatalogUpdate.catalog);
+          if (scriptCatalogUpdate.notes.length > 0) {
+            await syncScriptRegistry(context.scriptCatalog);
+            memory.addMessage(
+              "assistant",
+              `Script registry updated with ${scriptCatalogUpdate.notes.length} marker events at ${SCRIPT_REGISTRY_PATH}.`
+            );
+          }
+
+          const retriesUsed = attempt - 1;
+          const retryEvaluationNeeded = !toolResult.success && retriesUsed < retryConfiguration.maxRetries;
+          const shouldAnalyze =
+            config.executorAnalysis === "always" ||
+            (config.executorAnalysis === "on_failure" && !toolResult.success) ||
+            retryEvaluationNeeded;
+
+          analysis = shouldAnalyze
+            ? await analyzeToolResult(client, toolCall, toolResult, {
+                retryContext: {
+                  attempt,
+                  maxRetries: retryConfiguration.maxRetries,
+                },
+                stream: config.stream,
+              })
+            : null;
+
+          if (analysis) {
+            memory.addMessage("assistant", `Execution analysis: ${analysis.analysis}`);
+          }
+
+          if (toolResult.success || !retryEvaluationNeeded || !analysis?.shouldRetry) {
+            break;
+          }
+
+          const retryDelayMs = getRetryDelayMs(
+            analysis.retryDelayMs,
+            retryConfiguration.retryMaxDelayMs
+          );
           memory.addMessage(
             "assistant",
-            `Script registry updated with ${scriptCatalogUpdate.notes.length} marker events at ${SCRIPT_REGISTRY_PATH}.`
+            `Retrying tool ${planResult.toolCall.name} after ${String(retryDelayMs)}ms (attempt ${String(attempt + 1)} of ${String(retryConfiguration.maxRetries + 1)}).`
           );
-        }
-
-        // Optionally analyze tool result (to control cost)
-        const shouldAnalyze =
-          config.executorAnalysis === "always" ||
-          (config.executorAnalysis === "on_failure" && !toolResult.success);
-
-        const analysis = shouldAnalyze
-          ? await analyzeToolResult(client, toolCall, toolResult, { stream: config.stream })
-          : null;
-
-        if (analysis) {
-          memory.addMessage("assistant", `Execution analysis: ${analysis.analysis}`);
+          logStep(
+            stepNumber,
+            `Retry scheduled for tool ${planResult.toolCall.name}: delay=${String(retryDelayMs)}ms, attempt=${String(attempt + 1)}`
+          );
+          await sleep(retryDelayMs);
         }
 
         // Record step

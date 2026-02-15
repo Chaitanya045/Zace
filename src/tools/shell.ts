@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 
 import type { Tool, ToolResult } from "../types/tool";
@@ -10,10 +13,14 @@ const executeCommandSchema = z.object({
   command: z.string().min(1),
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
+  maxRetries: z.number().int().nonnegative().optional(),
+  outputLimitChars: z.number().int().positive().optional(),
+  retryMaxDelayMs: z.number().int().nonnegative().optional(),
   timeout: z.number().int().positive().optional(),
 });
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+const ZACE_MARKER_LINE_REGEX = /^ZACE_[A-Z0-9_]+\|.*$/u;
 
 function compilePolicyRegexes(patterns: string[], policyName: string): RegExp[] {
   return patterns.map((pattern) => {
@@ -72,10 +79,118 @@ function evaluateCommandPolicy(command: string): ToolResult | undefined {
   return undefined;
 }
 
+type CommandArtifacts = {
+  combinedPath: string;
+  stderrPath: string;
+  stdoutPath: string;
+};
+
+function truncateOutput(output: string, limit: number): { output: string; truncated: boolean } {
+  if (output.length <= limit) {
+    return {
+      output,
+      truncated: false,
+    };
+  }
+
+  return {
+    output: `${output.slice(0, limit)}\n...[truncated ${String(output.length - limit)} chars]`,
+    truncated: true,
+  };
+}
+
+function collectZaceMarkerLines(stdout: string, stderr: string): string[] {
+  const markerLines: string[] = [];
+  const seen = new Set<string>();
+
+  for (const line of `${stdout}\n${stderr}`.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed || !ZACE_MARKER_LINE_REGEX.test(trimmed) || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    markerLines.push(trimmed);
+  }
+
+  return markerLines;
+}
+
+async function writeCommandArtifacts(
+  command: string,
+  stdout: string,
+  stderr: string
+): Promise<CommandArtifacts> {
+  const artifactDirectoryPath = resolve(env.AGENT_COMMAND_ARTIFACTS_DIR);
+  const artifactId = randomUUID();
+  const stdoutPath = join(artifactDirectoryPath, `${artifactId}.stdout.log`);
+  const stderrPath = join(artifactDirectoryPath, `${artifactId}.stderr.log`);
+  const combinedPath = join(artifactDirectoryPath, `${artifactId}.combined.log`);
+
+  const combinedOutput = [
+    `COMMAND: ${command}`,
+    "",
+    "[STDOUT]",
+    stdout,
+    "",
+    "[STDERR]",
+    stderr,
+    "",
+  ].join("\n");
+
+  await mkdir(artifactDirectoryPath, { recursive: true });
+  await Promise.all([
+    writeFile(stdoutPath, stdout, "utf8"),
+    writeFile(stderrPath, stderr, "utf8"),
+    writeFile(combinedPath, combinedOutput, "utf8"),
+  ]);
+
+  return {
+    combinedPath,
+    stderrPath,
+    stdoutPath,
+  };
+}
+
+function buildRenderedOutput(
+  stderr: string,
+  stdout: string,
+  artifacts: CommandArtifacts,
+  outputLimitChars: number
+): {
+  output: string;
+  stderrTruncated: boolean;
+  stdoutTruncated: boolean;
+} {
+  const truncatedStdout = truncateOutput(stdout, outputLimitChars);
+  const truncatedStderr = truncateOutput(stderr, outputLimitChars);
+  const markerLines = collectZaceMarkerLines(stdout, stderr);
+
+  const sections = [
+    `[stdout]\n${truncatedStdout.output || "(empty)"}`,
+    `[stderr]\n${truncatedStderr.output || "(empty)"}`,
+    `[artifacts]\nstdout: ${artifacts.stdoutPath}\nstderr: ${artifacts.stderrPath}\ncombined: ${artifacts.combinedPath}`,
+  ];
+
+  if (markerLines.length > 0) {
+    sections.push(markerLines.join("\n"));
+  }
+
+  if (truncatedStdout.truncated || truncatedStderr.truncated) {
+    sections.unshift(`Output truncated to ${String(outputLimitChars)} chars per stream.`);
+  }
+
+  return {
+    output: sections.join("\n\n"),
+    stderrTruncated: truncatedStderr.truncated,
+    stdoutTruncated: truncatedStdout.truncated,
+  };
+}
+
 async function executeCommand(args: unknown): Promise<ToolResult> {
   try {
-    const { command, cwd, env, timeout } = executeCommandSchema.parse(args);
-    logToolCall("execute_command", { command, cwd, env, shell: getShellLabel(), timeout });
+    const { command, cwd, env: commandEnv, outputLimitChars, timeout } = executeCommandSchema.parse(args);
+    const effectiveOutputLimitChars = outputLimitChars ?? env.AGENT_TOOL_OUTPUT_LIMIT_CHARS;
+    logToolCall("execute_command", { command, cwd, env: commandEnv, outputLimitChars, shell: getShellLabel(), timeout });
 
     const policyResult = evaluateCommandPolicy(command);
     if (policyResult) {
@@ -86,8 +201,8 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
     const proc = getShellCommand(command).cwd(cwd ?? process.cwd()).quiet().nothrow();
 
     // Set custom environment variables if provided
-    if (env) {
-      proc.env(env as Record<string, string | undefined>);
+    if (commandEnv) {
+      proc.env(commandEnv as Record<string, string | undefined>);
     }
 
     // Handle timeout if specified
@@ -105,22 +220,37 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
 
     const output = result.stdout.toString();
     const errorOutput = result.stderr.toString();
+    const artifacts = await writeCommandArtifacts(command, output, errorOutput);
+    const renderedOutput = buildRenderedOutput(
+      errorOutput,
+      output,
+      artifacts,
+      effectiveOutputLimitChars
+    );
+    const toolArtifacts = {
+      combinedPath: artifacts.combinedPath,
+      outputLimitChars: effectiveOutputLimitChars,
+      stderrPath: artifacts.stderrPath,
+      stderrTruncated: renderedOutput.stderrTruncated,
+      stdoutPath: artifacts.stdoutPath,
+      stdoutTruncated: renderedOutput.stdoutTruncated,
+    };
 
     if (result.exitCode !== 0) {
-      const failedOutput = errorOutput || output;
-      logToolResult({ output: failedOutput, success: false });
+      logToolResult({ output: renderedOutput.output, success: false });
       return {
+        artifacts: toolArtifacts,
         error: `Command failed with exit code ${result.exitCode}`,
-        output: failedOutput,
+        output: renderedOutput.output,
         success: false,
       };
     }
 
-    const successOutput = output || "Command executed successfully (no output)";
-    logToolResult({ output: successOutput, success: true });
+    logToolResult({ output: renderedOutput.output, success: true });
 
     return {
-      output: successOutput,
+      artifacts: toolArtifacts,
+      output: renderedOutput.output,
       success: true,
     };
   } catch (error) {

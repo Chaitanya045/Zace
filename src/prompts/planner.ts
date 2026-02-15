@@ -55,19 +55,21 @@ INSTRUCTIONS:
    ZACE_SCRIPT_REGISTER|<script_id>|<script_path>|<purpose>
 6. For script runs, prefer including:
    ZACE_SCRIPT_USE|<script_id>
-7. If user clarification is required, respond with "ASK_USER: <single clear question>"
-8. Destructive shell commands require explicit user confirmation before execution.
+7. For execute_command, you may set:
+   maxRetries (bounded retry attempts), retryMaxDelayMs (max delay cap), outputLimitChars (stdout/stderr truncation limit).
+8. If user clarification is required, respond with "ASK_USER: <single clear question>"
+9. Destructive shell commands require explicit user confirmation before execution.
    After user confirms, include the configured confirmation token in the command as a shell comment.
-9. Do not respond with COMPLETE unless all completion gates pass.
-10. If completion gates are missing and validation should run, discover project-specific check commands and include them when completing:
+10. Do not respond with COMPLETE unless all completion gates pass.
+11. If completion gates are missing and validation should run, discover project-specific check commands and include them when completing:
    GATES: <command_1>;;<command_2> (single line, shell commands only)
-11. If no validation gates are required, include:
+12. If no validation gates are required, include:
    GATES: none
-12. If the task is complete, respond with "COMPLETE: <summary>" and include a GATES line when applicable.
-13. If blocked and cannot proceed without non-user intervention, respond with "BLOCKED: <reason>"
-14. Otherwise, respond with "CONTINUE: <reasoning>" followed by a tool call in JSON format:
+13. If the task is complete, respond with "COMPLETE: <summary>" and include a GATES line when applicable.
+14. If blocked and cannot proceed without non-user intervention, respond with "BLOCKED: <reason>"
+15. Otherwise, respond with "CONTINUE: <reasoning>" followed by a tool call in JSON format:
    {"name": "tool_name", "arguments": {...}}
-15. Keep each step small and deterministic. Prefer one command per step.
+16. Keep each step small and deterministic. Prefer one command per step.
 
 Your response should be clear and actionable.`;
 

@@ -42,6 +42,8 @@ LLM_PROVIDER=openrouter
 # command safety policy
 AGENT_REQUIRE_RISKY_CONFIRMATION=true
 AGENT_RISKY_CONFIRMATION_TOKEN=ZACE_APPROVE_RISKY
+AGENT_COMMAND_ARTIFACTS_DIR=.zace/runtime/logs/commands
+AGENT_TOOL_OUTPUT_LIMIT_CHARS=4000
 AGENT_COMMAND_ALLOW_PATTERNS=
 AGENT_COMMAND_DENY_PATTERNS=
 ```
@@ -137,6 +139,19 @@ Task-defined gates:
   - `DONE_CRITERIA: cmd:pnpm lint,cmd:pnpm test`
 - You can also use `;;` as separator for long commands:
   - `DONE_CRITERIA: cmd:poetry run ruff check .;;cmd:poetry run pytest`
+
+## Robust execution
+
+- Retries are LLM-driven per failed attempt (`shouldRetry` + `retryDelayMs` from executor analysis).
+- Retries are bounded by remaining step budget and optional command-level arguments:
+  - `maxRetries`
+  - `retryMaxDelayMs`
+- Shell output is captured as full artifacts and summarized with truncation in tool output.
+- Full logs are written to `AGENT_COMMAND_ARTIFACTS_DIR` with per-command files:
+  - `<id>.stdout.log`
+  - `<id>.stderr.log`
+  - `<id>.combined.log`
+- Truncation limit is controlled by `AGENT_TOOL_OUTPUT_LIMIT_CHARS` (or per-command `outputLimitChars`).
 
 ## Runtime script protocol
 

@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { LlmClient } from "../llm/client";
 import type { ToolCall, ToolResult } from "../types/tool";
 
-import { buildExecutorPrompt } from "../prompts/executor";
+import { buildExecutorPrompt, type ExecutorRetryContext } from "../prompts/executor";
 import { buildSystemPrompt } from "../prompts/system";
 import { getToolByName } from "../tools";
 import { ToolExecutionError, ValidationError } from "../utils/errors";
@@ -17,15 +17,18 @@ export interface ExecutionResult {
 
 export interface ToolAnalysisResult {
   analysis: string;
+  retryDelayMs: number;
   shouldRetry: boolean;
 }
 
 type ExecuteOptions = {
+  retryContext?: ExecutorRetryContext;
   stream?: boolean;
 };
 
 const executorAnalysisSchema = z.object({
   analysis: z.string().min(1),
+  retryDelayMs: z.number().int().nonnegative(),
   shouldRetry: z.boolean(),
 });
 
@@ -73,7 +76,7 @@ export async function analyzeToolResult(
   options?: ExecuteOptions
 ): Promise<ToolAnalysisResult> {
   // Use LLM to analyze the result
-  const prompt = buildExecutorPrompt(toolCall, toolResult);
+  const prompt = buildExecutorPrompt(toolCall, toolResult, options?.retryContext);
 
   // Build focused system prompt for execution analysis
   const systemPrompt = buildSystemPrompt({
@@ -110,6 +113,7 @@ export async function analyzeToolResult(
   if (!jsonMatch) {
     parsedAnalysis = {
       analysis,
+      retryDelayMs: 0,
       shouldRetry: false,
     };
   } else {
@@ -118,11 +122,13 @@ export async function analyzeToolResult(
       const validated = executorAnalysisSchema.parse(parsed);
       parsedAnalysis = {
         analysis: validated.analysis,
+        retryDelayMs: validated.retryDelayMs,
         shouldRetry: validated.shouldRetry && !toolResult.success,
       };
     } catch {
       parsedAnalysis = {
         analysis,
+        retryDelayMs: 0,
         shouldRetry: false,
       };
     }
@@ -132,6 +138,7 @@ export async function analyzeToolResult(
 
   return {
     analysis: parsedAnalysis.analysis,
+    retryDelayMs: parsedAnalysis.retryDelayMs,
     shouldRetry: parsedAnalysis.shouldRetry,
   };
 }

@@ -17,12 +17,14 @@ const commandPatternListSchema = z.string().default("").transform((value) =>
 
 const envSchema = z.object({
   AGENT_COMMAND_ALLOW_PATTERNS: commandPatternListSchema,
+  AGENT_COMMAND_ARTIFACTS_DIR: z.string().min(1),
   AGENT_COMMAND_DENY_PATTERNS: commandPatternListSchema,
   AGENT_EXECUTOR_ANALYSIS: z.enum(EXECUTOR_ANALYSIS_MODES).default("on_failure"),
   AGENT_MAX_STEPS: z.coerce.number().int().positive().default(10),
   AGENT_REQUIRE_RISKY_CONFIRMATION: z.coerce.boolean().default(true),
   AGENT_RISKY_CONFIRMATION_TOKEN: z.string().min(1).default("ZACE_APPROVE_RISKY"),
   AGENT_STREAM: z.coerce.boolean().default(false),
+  AGENT_TOOL_OUTPUT_LIMIT_CHARS: z.coerce.number().int().positive(),
   AGENT_VERBOSE: z.coerce.boolean().default(false),
   LLM_PROVIDER: z.literal("openrouter"),
 
