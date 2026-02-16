@@ -1,5 +1,5 @@
 import type { AgentConfig } from "../types/config";
-import type { LlmRequest, LlmResponse } from "./types";
+import type { LlmRequest, LlmResponse, LlmUsage } from "./types";
 
 import { LlmError } from "../utils/errors";
 import { log } from "../utils/logger";
@@ -9,17 +9,97 @@ type ChatOptions = {
   stream?: boolean;
 };
 
+type OpenRouterModel = {
+  context_length?: number;
+  id?: string;
+};
+
+type OpenRouterUsage = {
+  completion_tokens?: number;
+  prompt_tokens?: number;
+  total_tokens?: number;
+};
+
+function parseNonNegativeInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  const parsed = Math.trunc(value);
+  if (parsed < 0) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function parseUsage(rawUsage: unknown): LlmUsage | undefined {
+  if (!rawUsage || typeof rawUsage !== "object") {
+    return undefined;
+  }
+
+  const usage = rawUsage as OpenRouterUsage;
+  let inputTokens = parseNonNegativeInteger(usage.prompt_tokens);
+  let outputTokens = parseNonNegativeInteger(usage.completion_tokens);
+  let totalTokens = parseNonNegativeInteger(usage.total_tokens);
+
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+    return undefined;
+  }
+
+  if (inputTokens === undefined && totalTokens !== undefined && outputTokens !== undefined) {
+    inputTokens = Math.max(0, totalTokens - outputTokens);
+  }
+
+  if (outputTokens === undefined && totalTokens !== undefined && inputTokens !== undefined) {
+    outputTokens = Math.max(0, totalTokens - inputTokens);
+  }
+
+  if (inputTokens === undefined) {
+    inputTokens = 0;
+  }
+
+  if (outputTokens === undefined) {
+    outputTokens = 0;
+  }
+
+  if (totalTokens === undefined) {
+    totalTokens = inputTokens + outputTokens;
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+  };
+}
+
 export class LlmClient {
   private readonly apiKey: string;
-  private readonly model: string;
   private readonly baseUrl: string;
+  private readonly configuredContextWindowTokens?: number;
+  private modelContextWindowPromise: null | Promise<number | undefined> = null;
+  private readonly model: string;
   private readonly streamByDefault: boolean;
 
   constructor(config: AgentConfig) {
     this.apiKey = config.llmApiKey;
-    this.model = config.llmModel;
     this.baseUrl = "https://openrouter.ai/api/v1";
+    this.configuredContextWindowTokens = config.contextWindowTokens;
+    this.model = config.llmModel;
     this.streamByDefault = config.stream;
+  }
+
+  async getModelContextWindowTokens(): Promise<number | undefined> {
+    if (this.configuredContextWindowTokens !== undefined) {
+      return this.configuredContextWindowTokens;
+    }
+
+    if (!this.modelContextWindowPromise) {
+      this.modelContextWindowPromise = this.fetchModelContextWindowTokens();
+    }
+
+    return this.modelContextWindowPromise;
   }
 
   async chat(request: LlmRequest, options?: ChatOptions): Promise<LlmResponse> {
@@ -37,12 +117,7 @@ export class LlmClient {
           messages: request.messages,
           model: this.model,
         }),
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://github.com/zace-agent",
-          "X-Title": "Zace CLI Agent",
-        },
+        headers: this.getRequestHeaders(),
         method: "POST",
       });
 
@@ -56,6 +131,7 @@ export class LlmClient {
       const data = (await response.json()) as {
         choices?: Array<{ message?: { content?: string } }>;
         error?: { message?: string };
+        usage?: OpenRouterUsage;
       };
 
       if (data.error) {
@@ -67,7 +143,10 @@ export class LlmClient {
         throw new LlmError("LLM response missing content");
       }
 
-      return { content };
+      return {
+        content,
+        usage: parseUsage(data.usage),
+      };
     } catch (error) {
       if (error instanceof LlmError) {
         throw error;
@@ -82,13 +161,11 @@ export class LlmClient {
         messages: request.messages,
         model: this.model,
         stream: true,
+        stream_options: {
+          include_usage: true,
+        },
       }),
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/zace-agent",
-        "X-Title": "Zace CLI Agent",
-      },
+      headers: this.getRequestHeaders(),
       method: "POST",
     });
 
@@ -108,6 +185,7 @@ export class LlmClient {
     const decoder = new TextDecoder();
     let buffer = "";
     let content = "";
+    let usage: LlmUsage | undefined;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -126,7 +204,10 @@ export class LlmClient {
         const data = line.slice("data:".length).trim();
 
         if (data === "[DONE]") {
-          return { content };
+          return {
+            content,
+            usage,
+          };
         }
 
         let parsed: unknown;
@@ -135,6 +216,11 @@ export class LlmClient {
         } catch {
           // Ignore malformed JSON lines; continue streaming.
           continue;
+        }
+
+        const parsedUsage = parseUsage((parsed as { usage?: unknown }).usage);
+        if (parsedUsage) {
+          usage = parsedUsage;
         }
 
         const delta =
@@ -147,6 +233,57 @@ export class LlmClient {
       }
     }
 
-    return { content };
+    return {
+      content,
+      usage,
+    };
+  }
+
+  private async fetchModelContextWindowTokens(): Promise<number | undefined> {
+    try {
+      const response = await fetch(`${this.baseUrl}/models`, {
+        headers: this.getRequestHeaders(),
+        method: "GET",
+      });
+
+      if (!response.ok) {
+        log(
+          `Unable to resolve model context window from OpenRouter: ${response.status} ${response.statusText}`
+        );
+        return undefined;
+      }
+
+      const payload = (await response.json()) as { data?: OpenRouterModel[] };
+      const modelId = this.model.toLowerCase();
+      const models = payload.data ?? [];
+
+      const exactMatch = models.find((model) => model.id?.toLowerCase() === modelId);
+      if (!exactMatch) {
+        log(`OpenRouter model metadata not found for ${this.model}`);
+        return undefined;
+      }
+
+      const contextWindowTokens = parseNonNegativeInteger(exactMatch.context_length);
+      if (contextWindowTokens === undefined || contextWindowTokens === 0) {
+        log(`OpenRouter model ${this.model} did not include a valid context length`);
+        return undefined;
+      }
+
+      return contextWindowTokens;
+    } catch (error) {
+      log(
+        `Failed to resolve model context window: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+      return undefined;
+    }
+  }
+
+  private getRequestHeaders(): Record<string, string> {
+    return {
+      Authorization: `Bearer ${this.apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://github.com/zace-agent",
+      "X-Title": "Zace CLI Agent",
+    };
   }
 }

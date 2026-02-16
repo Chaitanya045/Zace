@@ -8,6 +8,9 @@ import { allTools } from "../tools";
 import { AgentError } from "../utils/errors";
 import { log, logError, logStep } from "../utils/logger";
 import {
+  maybeCompactContext,
+} from "./compaction";
+import {
   describeCompletionPlan,
   resolveCompletionPlan,
   type CompletionGate,
@@ -272,6 +275,24 @@ export async function runAgentLoop(
 
       // Add planning reasoning to memory
       memory.addMessage("assistant", `Planning: ${planResult.reasoning}`);
+
+      const compactionResult = await maybeCompactContext({
+        client,
+        config,
+        memory,
+        plannerInputTokens: planResult.usage?.inputTokens,
+        stepNumber,
+      });
+      if (compactionResult.compacted) {
+        const ratioPercent =
+          typeof compactionResult.usageRatio === "number"
+            ? Math.round(compactionResult.usageRatio * 100)
+            : Math.round(config.compactionTriggerRatio * 100);
+        memory.addMessage(
+          "assistant",
+          `Context compacted after planner input reached ${String(ratioPercent)}% of model context.`
+        );
+      }
 
       // Handle different plan outcomes
       if (planResult.action === "complete") {

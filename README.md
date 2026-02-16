@@ -12,6 +12,7 @@ It runs as a planner-executor loop where the model decides the next action and a
 - Runtime script reuse under `.zace/runtime/scripts`
 - Script metadata registry at `.zace/runtime/scripts/registry.tsv`
 - OpenRouter-backed LLM client
+- Automatic context compaction when planner context reaches 80% usage
 
 ## Requirements
 
@@ -37,6 +38,11 @@ AGENT_MAX_STEPS=10
 AGENT_EXECUTOR_ANALYSIS=on_failure
 AGENT_STREAM=false
 AGENT_VERBOSE=false
+AGENT_COMPACTION_ENABLED=true
+AGENT_COMPACTION_TRIGGER_RATIO=0.8
+AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES=12
+# Optional override if automatic model context lookup fails:
+# AGENT_CONTEXT_WINDOW_TOKENS=200000
 LLM_PROVIDER=openrouter
 
 # command safety policy
@@ -177,6 +183,16 @@ Session files are stored as JSONL:
   - run metadata (state, steps, duration, timestamps, task)
 
 Use the same `--session <id>` value across runs to continue conversation context.
+
+## Context compaction
+
+- Zace checks planner prompt usage against the active model context window.
+- When usage reaches `AGENT_COMPACTION_TRIGGER_RATIO` (default `0.8`), it asks the model to summarize prior history.
+- Memory is compacted to:
+  - system prompt
+  - compaction summary
+  - recent messages (`AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES`)
+- Context window is resolved from OpenRouter model metadata; use `AGENT_CONTEXT_WINDOW_TOKENS` as an explicit fallback.
 
 ## Development
 

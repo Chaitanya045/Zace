@@ -13,6 +13,37 @@ export class Memory {
     return [...this.messages];
   }
 
+  compactWithSummary(summary: string, preserveRecentMessages: number): boolean {
+    const normalizedSummary = summary.trim();
+    if (!normalizedSummary) {
+      return false;
+    }
+
+    const systemMessage = this.messages.find((message) => message.role === "system");
+    const nonSystemMessages = this.messages.filter((message) => message.role !== "system");
+
+    if (nonSystemMessages.length <= preserveRecentMessages) {
+      return false;
+    }
+
+    const recentMessages = nonSystemMessages.slice(-preserveRecentMessages);
+    const summaryMessage: LlmMessage = {
+      content: `Compacted conversation summary:\n${normalizedSummary}`,
+      role: "assistant",
+    };
+
+    this.messages = systemMessage
+      ? [systemMessage, summaryMessage, ...recentMessages]
+      : [summaryMessage, ...recentMessages];
+
+    return true;
+  }
+
+  estimateTokenCount(): number {
+    const totalCharacters = this.messages.reduce((sum, message) => sum + message.content.length, 0);
+    return Math.ceil(totalCharacters / 4);
+  }
+
   addFileSummary(path: string, summary: string): void {
     this.fileSummaries.set(path, summary);
   }

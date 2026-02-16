@@ -3,11 +3,15 @@ import { env, type ExecutorAnalysisMode } from "../config/env";
 export type AgentConfig = {
   commandAllowPatterns: string[];
   commandDenyPatterns: string[];
+  compactionEnabled: boolean;
+  compactionPreserveRecentMessages: number;
+  compactionTriggerRatio: number;
+  contextWindowTokens?: number;
   executorAnalysis: ExecutorAnalysisMode;
-  maxSteps: number;
-  llmProvider: "openrouter";
   llmApiKey: string;
   llmModel: string;
+  llmProvider: "openrouter";
+  maxSteps: number;
   requireRiskyConfirmation: boolean;
   riskyConfirmationToken: string;
   stream: boolean;
@@ -18,6 +22,10 @@ export function getAgentConfig(): AgentConfig {
   return {
     commandAllowPatterns: env.AGENT_COMMAND_ALLOW_PATTERNS,
     commandDenyPatterns: env.AGENT_COMMAND_DENY_PATTERNS,
+    compactionEnabled: env.AGENT_COMPACTION_ENABLED,
+    compactionPreserveRecentMessages: env.AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES,
+    compactionTriggerRatio: env.AGENT_COMPACTION_TRIGGER_RATIO,
+    contextWindowTokens: env.AGENT_CONTEXT_WINDOW_TOKENS,
     executorAnalysis: env.AGENT_EXECUTOR_ANALYSIS,
     llmApiKey: env.OPENROUTER_API_KEY,
     llmModel: env.OPENROUTER_MODEL,

@@ -1,5 +1,5 @@
 import type { LlmClient } from "../llm/client";
-import type { LlmMessage } from "../llm/types";
+import type { LlmMessage, LlmUsage } from "../llm/types";
 import type { AgentContext } from "../types/agent";
 
 import { buildPlannerPrompt } from "../prompts/planner";
@@ -13,6 +13,7 @@ export interface PlanResult {
   completionGatesDeclaredNone?: boolean;
   reasoning: string;
   toolCall?: { arguments: Record<string, unknown>; name: string };
+  usage?: LlmUsage;
 }
 
 type PlanOptions = {
@@ -53,6 +54,7 @@ export async function plan(
     process.stdout.write("\n");
   }
   const content = response.content.trim();
+  const usage = response.usage;
 
   // Parse the response
   if (content.startsWith("COMPLETE:")) {
@@ -92,6 +94,7 @@ export async function plan(
       completionGateCommands,
       completionGatesDeclaredNone,
       reasoning,
+      usage,
     };
   }
 
@@ -99,6 +102,7 @@ export async function plan(
     return {
       action: "blocked",
       reasoning: content.replace("BLOCKED:", "").trim(),
+      usage,
     };
   }
 
@@ -106,6 +110,7 @@ export async function plan(
     return {
       action: "ask_user",
       reasoning: content.replace("ASK_USER:", "").trim(),
+      usage,
     };
   }
 
@@ -123,6 +128,7 @@ export async function plan(
           arguments: toolCall.arguments,
           name: toolCall.name,
         },
+        usage,
       };
     } catch (error) {
       throw new ValidationError(
@@ -135,5 +141,6 @@ export async function plan(
   return {
     action: "continue",
     reasoning: content,
+    usage,
   };
 }
