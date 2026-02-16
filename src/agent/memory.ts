@@ -1,12 +1,27 @@
 import type { LlmMessage } from "../llm/types";
 import type { AgentStep } from "../types/agent";
 
+type MessageSink = (message: LlmMessage) => Promise<void>;
+
+type MemoryOptions = {
+  messageSink?: MessageSink;
+};
+
 export class Memory {
   private messages: LlmMessage[] = [];
   private fileSummaries: Map<string, string> = new Map();
+  private readonly messageSink?: MessageSink;
+  private messageSinkError: Error | null = null;
+  private messageSinkQueue: Promise<void> = Promise.resolve();
+
+  constructor(options?: MemoryOptions) {
+    this.messageSink = options?.messageSink;
+  }
 
   addMessage(role: LlmMessage["role"], content: string): void {
-    this.messages.push({ content, role });
+    const message = { content, role };
+    this.messages.push(message);
+    this.enqueueMessageSink(message);
   }
 
   getMessages(): LlmMessage[] {
@@ -31,6 +46,7 @@ export class Memory {
       content: `Compacted conversation summary:\n${normalizedSummary}`,
       role: "assistant",
     };
+    this.enqueueMessageSink(summaryMessage);
 
     this.messages = systemMessage
       ? [systemMessage, summaryMessage, ...recentMessages]
@@ -65,5 +81,37 @@ export class Memory {
   clear(): void {
     this.messages = [];
     this.fileSummaries.clear();
+  }
+
+  async flushMessageSink(): Promise<void> {
+    await this.messageSinkQueue;
+    if (this.messageSinkError) {
+      throw this.messageSinkError;
+    }
+  }
+
+  private enqueueMessageSink(message: LlmMessage): void {
+    if (!this.messageSink) {
+      return;
+    }
+
+    this.messageSinkQueue = this.messageSinkQueue
+      .catch(() => undefined)
+      .then(async () => {
+        if (!this.messageSink) {
+          return;
+        }
+
+        try {
+          await this.messageSink(message);
+        } catch (error) {
+          if (!this.messageSinkError) {
+            this.messageSinkError =
+              error instanceof Error
+                ? error
+                : new Error(`Unknown message sink error: ${String(error)}`);
+          }
+        }
+      });
   }
 }

@@ -2,9 +2,10 @@ import { z } from "zod";
 
 import type { Tool } from "../types/tool";
 
+import { sessionHistoryTools } from "./session-history";
 import { shellTools } from "./shell";
 
-export const allTools: Tool[] = [...shellTools];
+export const allTools: Tool[] = [...shellTools, ...sessionHistoryTools];
 
 export function getToolByName(name: string): Tool | undefined {
   return allTools.find((tool) => tool.name === name);

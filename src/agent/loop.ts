@@ -5,6 +5,7 @@ import type { ToolResult } from "../types/tool";
 
 import { buildSystemPrompt } from "../prompts/system";
 import { allTools } from "../tools";
+import { appendSessionMessage, getSessionFilePath } from "../tools/session";
 import { AgentError } from "../utils/errors";
 import { log, logError, logStep } from "../utils/logger";
 import {
@@ -32,6 +33,10 @@ export interface AgentResult {
   finalState: AgentState;
   context: AgentContext;
   message: string;
+}
+
+export interface RunAgentLoopOptions {
+  sessionId?: string;
 }
 
 const DISCOVER_SCRIPTS_COMMAND = buildDiscoverScriptsCommand();
@@ -213,11 +218,23 @@ async function sleep(delayMs: number): Promise<void> {
 export async function runAgentLoop(
   client: LlmClient,
   config: AgentConfig,
-  task: string
+  task: string,
+  options?: RunAgentLoopOptions
 ): Promise<AgentResult> {
   log(`Starting agent loop for task: ${task}`);
 
-  const memory = new Memory();
+  const sessionId = options?.sessionId;
+  const sessionFilePath = sessionId ? getSessionFilePath(sessionId) : undefined;
+  const memory = new Memory({
+    messageSink: sessionId
+      ? async (message) => {
+          await appendSessionMessage(sessionId, {
+            content: message.content,
+            role: message.role,
+          });
+        }
+      : undefined,
+  });
   let context = createInitialContext(task, config.maxSteps);
   let completionPlan = resolveCompletionPlan(task);
   let lastCompletionGateFailure: null | string = null;
@@ -234,6 +251,8 @@ export async function runAgentLoop(
     platform: process.platform,
     requireRiskyConfirmation: config.requireRiskyConfirmation,
     riskyConfirmationToken: config.riskyConfirmationToken,
+    sessionFilePath,
+    sessionId,
     verbose: config.verbose,
   });
 
@@ -241,6 +260,13 @@ export async function runAgentLoop(
   memory.addMessage("system", systemPrompt);
 
   try {
+    if (sessionId) {
+      await appendSessionMessage(sessionId, {
+        content: task,
+        role: "user",
+      });
+    }
+
     const discoveredScripts = await executeToolCall({
       arguments: {
         command: DISCOVER_SCRIPTS_COMMAND,
@@ -625,5 +651,11 @@ export async function runAgentLoop(
       message: error instanceof Error ? error.message : "Unknown error occurred",
       success: false,
     };
+  } finally {
+    try {
+      await memory.flushMessageSink();
+    } catch (error) {
+      logError("Failed to flush message sink", error);
+    }
   }
 }

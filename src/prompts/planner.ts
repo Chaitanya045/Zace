@@ -57,19 +57,21 @@ INSTRUCTIONS:
    ZACE_SCRIPT_USE|<script_id>
 7. For execute_command, you may set:
    maxRetries (bounded retry attempts), retryMaxDelayMs (max delay cap), outputLimitChars (stdout/stderr truncation limit).
-8. If user clarification is required, respond with "ASK_USER: <single clear question>"
-9. Destructive shell commands require explicit user confirmation before execution.
+8. When older conversation context is needed, use search_session_messages before asking the user to repeat details.
+9. Use write_session_message to persist durable notes/checkpoints that may be useful after compaction.
+10. If user clarification is required, respond with "ASK_USER: <single clear question>"
+11. Destructive shell commands require explicit user confirmation before execution.
    After user confirms, include the configured confirmation token in the command as a shell comment.
-10. Do not respond with COMPLETE unless all completion gates pass.
-11. If completion gates are missing and validation should run, discover project-specific check commands and include them when completing:
+12. Do not respond with COMPLETE unless all completion gates pass.
+13. If completion gates are missing and validation should run, discover project-specific check commands and include them when completing:
    GATES: <command_1>;;<command_2> (single line, shell commands only)
-12. If no validation gates are required, include:
+14. If no validation gates are required, include:
    GATES: none
-13. If the task is complete, respond with "COMPLETE: <summary>" and include a GATES line when applicable.
-14. If blocked and cannot proceed without non-user intervention, respond with "BLOCKED: <reason>"
-15. Otherwise, respond with "CONTINUE: <reasoning>" followed by a tool call in JSON format:
+15. If the task is complete, respond with "COMPLETE: <summary>" and include a GATES line when applicable.
+16. If blocked and cannot proceed without non-user intervention, respond with "BLOCKED: <reason>"
+17. Otherwise, respond with "CONTINUE: <reasoning>" followed by a tool call in JSON format:
    {"name": "tool_name", "arguments": {...}}
-16. Keep each step small and deterministic. Prefer one command per step.
+18. Keep each step small and deterministic. Prefer one command per step.
 
 Your response should be clear and actionable.`;
 

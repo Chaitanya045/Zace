@@ -5,9 +5,11 @@ import { z } from "zod";
 const SESSION_ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
 const SESSIONS_DIRECTORY_PATH = ".zace/sessions";
 
+export const sessionMessageRoleSchema = z.enum(["assistant", "system", "tool", "user"]);
+
 const sessionMessageEntrySchema = z.object({
   content: z.string(),
-  role: z.enum(["assistant", "user"]),
+  role: sessionMessageRoleSchema,
   timestamp: z.string(),
   type: z.literal("message"),
 });
@@ -42,6 +44,13 @@ export const sessionEntrySchema = z.discriminatedUnion("type", [
 ]);
 
 export type SessionEntry = z.infer<typeof sessionEntrySchema>;
+export type SessionMessageEntry = Extract<SessionEntry, { type: "message" }>;
+export type SessionMessageRole = z.infer<typeof sessionMessageRoleSchema>;
+export type SessionMessageWrite = {
+  content: string;
+  role: SessionMessageRole;
+  timestamp?: string;
+};
 
 function sessionIdToPath(sessionId: string): string {
   return join(SESSIONS_DIRECTORY_PATH, `${sessionId}.jsonl`);
@@ -117,4 +126,24 @@ export async function appendSessionEntries(
 
   const payload = entries.map((entry) => JSON.stringify(entry)).join("\n");
   await appendFile(path, `${payload}\n`, "utf8");
+}
+
+export async function appendSessionMessage(
+  sessionId: string,
+  message: SessionMessageWrite
+): Promise<void> {
+  const timestamp = message.timestamp ?? new Date().toISOString();
+  await appendSessionEntries(sessionId, [
+    {
+      content: message.content,
+      role: message.role,
+      timestamp,
+      type: "message",
+    },
+  ]);
+}
+
+export async function readSessionMessages(sessionId: string): Promise<SessionMessageEntry[]> {
+  const entries = await readSessionEntries(sessionId);
+  return entries.filter((entry): entry is SessionMessageEntry => entry.type === "message");
 }

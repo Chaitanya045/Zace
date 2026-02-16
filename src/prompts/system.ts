@@ -8,6 +8,8 @@ export interface SystemPromptContext {
   platform?: string;
   requireRiskyConfirmation?: boolean;
   riskyConfirmationToken?: string;
+  sessionFilePath?: string;
+  sessionId?: string;
   verbose?: boolean;
 }
 
@@ -51,6 +53,12 @@ RUNTIME SCRIPT PROTOCOL:
 8. When running a known script, prefer printing:
    ZACE_SCRIPT_USE|<script_id>
 
+SESSION MEMORY PROTOCOL:
+1. Session history is persisted in a JSONL file.
+2. Use search_session_messages to retrieve older context on demand.
+3. Use write_session_message to store durable notes, decisions, or checkpoints.
+4. Prefer searching session history before asking the user to repeat previous details.
+
 You are not a chatbot. You are an autonomous coding agent operating in a local codebase.`;
 
 export function buildSystemPrompt(context?: SystemPromptContext): string {
@@ -66,6 +74,14 @@ export function buildSystemPrompt(context?: SystemPromptContext): string {
 
   if (context?.platform) {
     prompt += `\n\nCURRENT PLATFORM: ${context.platform}`;
+  }
+
+  if (context?.sessionId && context?.sessionFilePath) {
+    prompt +=
+      `\n\nACTIVE SESSION:` +
+      `\n- Session ID: ${context.sessionId}` +
+      `\n- Session file: ${context.sessionFilePath}` +
+      "\n- Older context is available through session-history tools.";
   }
 
   if (context?.completionCriteria && context.completionCriteria.length > 0) {

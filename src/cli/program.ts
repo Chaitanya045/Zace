@@ -155,18 +155,6 @@ async function persistSessionTurn(
 
   await appendSessionEntries(sessionId, [
     {
-      content: userMessage,
-      role: "user",
-      timestamp: startedAtIso,
-      type: "message",
-    },
-    {
-      content: result.message,
-      role: "assistant",
-      timestamp: endedAtIso,
-      type: "message",
-    },
-    {
       finalState: result.finalState,
       success: result.success,
       summary,
@@ -249,7 +237,7 @@ async function runChatMode(
       console.log(`\n🔨 Zace: ${message}\n`);
 
       const startedAt = new Date();
-      const result = await runAgentLoop(client, config, task);
+      const result = await runAgentLoop(client, config, task, { sessionId });
       const endedAt = new Date();
 
       console.log(`\n${getResultIcon(result.success, result.finalState)} ${result.message}\n`);
@@ -314,7 +302,7 @@ export function runCli(): void {
             ? buildChatTaskWithFollowUp(turns, task, pendingFollowUpQuestion)
             : task;
           const startedAt = new Date();
-          const result = await runAgentLoop(client, config, taskWithContext);
+          const result = await runAgentLoop(client, config, taskWithContext, { sessionId });
           const endedAt = new Date();
 
           if (sessionId) {

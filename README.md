@@ -5,7 +5,10 @@ It runs as a planner-executor loop where the model decides the next action and a
 
 ## Current behavior
 
-- Shell-only tool surface (`execute_command`)
+- Tool surface:
+  - `execute_command`
+  - `search_session_messages`
+  - `write_session_message`
 - Cross-platform shell execution:
   - Unix-like: `sh -c`
   - Windows: `powershell.exe -Command`
@@ -13,6 +16,8 @@ It runs as a planner-executor loop where the model decides the next action and a
 - Script metadata registry at `.zace/runtime/scripts/registry.tsv`
 - OpenRouter-backed LLM client
 - Automatic context compaction when planner context reaches 80% usage
+- Session message journaling for active `--session` runs
+- Session history tools: `search_session_messages`, `write_session_message`
 
 ## Requirements
 
@@ -184,6 +189,12 @@ Session files are stored as JSONL:
 
 Use the same `--session <id>` value across runs to continue conversation context.
 
+For active session runs:
+
+- Every in-run memory message is appended to `.zace/sessions/<session-id>.jsonl`.
+- The planner can retrieve older context via `search_session_messages`.
+- The planner can persist durable checkpoints via `write_session_message`.
+
 ## Context compaction
 
 - Zace checks planner prompt usage against the active model context window.
@@ -193,6 +204,7 @@ Use the same `--session <id>` value across runs to continue conversation context
   - compaction summary
   - recent messages (`AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES`)
 - Context window is resolved from OpenRouter model metadata; use `AGENT_CONTEXT_WINDOW_TOKENS` as an explicit fallback.
+- Compaction works with session history tools, so older details can be fetched from disk on demand.
 
 ## Development
 
@@ -229,7 +241,7 @@ src/
 ├── config/      # environment validation
 ├── llm/         # OpenRouter client abstraction
 ├── prompts/     # system/planner/executor prompts
-├── tools/       # typed tool boundary (shell-only)
+├── tools/       # typed tool boundary (shell + session history)
 ├── types/       # shared contracts
 └── utils/       # logger/errors
 ```
