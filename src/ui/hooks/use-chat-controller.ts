@@ -308,6 +308,15 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
 
         streamBuffer.append(entryId, event.token);
       },
+      onLoopGuard: (event) => {
+        createTimelineEntry({
+          body:
+            `Loop guard at step ${String(event.step)}: ${event.reason}\n` +
+            `Repeat count: ${String(event.repeatCount)}`,
+          kind: "status",
+          tone: "danger",
+        });
+      },
       onPlannerStreamEnd: () => {
         clearStreamSlot("planner");
       },
@@ -329,6 +338,16 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
         }
 
         streamBuffer.append(entryId, token);
+      },
+      onRunEvent: (event) => {
+        if (event.event === "plan_started" || event.event === "tool_call_started") {
+          return;
+        }
+        createTimelineEntry({
+          body: `[${event.phase}] ${event.event} (step ${String(event.step)})`,
+          kind: "status",
+          tone: "muted",
+        });
       },
       onStepStart: (event) => {
         dispatch({

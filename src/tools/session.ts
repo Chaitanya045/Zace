@@ -37,8 +37,21 @@ const sessionRunEntrySchema = z.object({
   userMessage: z.string(),
 });
 
+const sessionRunEventPhaseSchema = z.enum(["approval", "executing", "finalizing", "planning"]);
+
+const sessionRunEventEntrySchema = z.object({
+  event: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()),
+  phase: sessionRunEventPhaseSchema,
+  runId: z.string().min(1),
+  step: z.number().int().nonnegative(),
+  timestamp: z.string(),
+  type: z.literal("run_event"),
+});
+
 export const sessionEntrySchema = z.discriminatedUnion("type", [
   sessionMessageEntrySchema,
+  sessionRunEventEntrySchema,
   sessionSummaryEntrySchema,
   sessionRunEntrySchema,
 ]);
@@ -46,9 +59,19 @@ export const sessionEntrySchema = z.discriminatedUnion("type", [
 export type SessionEntry = z.infer<typeof sessionEntrySchema>;
 export type SessionMessageEntry = Extract<SessionEntry, { type: "message" }>;
 export type SessionMessageRole = z.infer<typeof sessionMessageRoleSchema>;
+export type SessionRunEventEntry = Extract<SessionEntry, { type: "run_event" }>;
+export type SessionRunEventPhase = z.infer<typeof sessionRunEventPhaseSchema>;
 export type SessionMessageWrite = {
   content: string;
   role: SessionMessageRole;
+  timestamp?: string;
+};
+export type SessionRunEventWrite = {
+  event: string;
+  payload?: Record<string, unknown>;
+  phase: SessionRunEventPhase;
+  runId: string;
+  step: number;
   timestamp?: string;
 };
 
@@ -139,6 +162,24 @@ export async function appendSessionMessage(
       role: message.role,
       timestamp,
       type: "message",
+    },
+  ]);
+}
+
+export async function appendSessionRunEvent(
+  sessionId: string,
+  event: SessionRunEventWrite
+): Promise<void> {
+  const timestamp = event.timestamp ?? new Date().toISOString();
+  await appendSessionEntries(sessionId, [
+    {
+      event: event.event,
+      payload: event.payload ?? {},
+      phase: event.phase,
+      runId: event.runId,
+      step: event.step,
+      timestamp,
+      type: "run_event",
     },
   ]);
 }

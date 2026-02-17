@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -9,7 +10,7 @@ import type { AgentObserver } from "./observer";
 
 import { buildSystemPrompt } from "../prompts/system";
 import { allTools } from "../tools";
-import { appendSessionMessage, getSessionFilePath } from "../tools/session";
+import { appendSessionMessage, appendSessionRunEvent, getSessionFilePath } from "../tools/session";
 import { AgentError } from "../utils/errors";
 import { log, logError, logStep } from "../utils/logger";
 import { maybeCompactContext } from "./compaction";
@@ -38,6 +39,11 @@ import {
   SCRIPT_REGISTRY_PATH,
   updateScriptCatalogFromOutput,
 } from "./scripts";
+import {
+  buildToolCallSignature,
+  detectPreExecutionDoomLoop,
+  detectStagnation,
+} from "./stability";
 import { addStep, createInitialContext, transitionState, updateScriptCatalog } from "./state";
 
 export interface AgentResult {
@@ -58,6 +64,38 @@ const PROJECT_DOC_MAX_LINES = 220;
 const PROJECT_DOC_OUTPUT_LIMIT_CHARS = 10_000;
 const PROJECT_DOC_TIMEOUT_MS = 30_000;
 const OVERWRITE_REDIRECT_TARGET_REGEX = /(?:^|[\s;|&])(?:\d*)>(?!>|&)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/gu;
+
+async function appendRunEvent(input: {
+  event: string;
+  observer?: AgentObserver;
+  payload?: Record<string, unknown>;
+  phase: "approval" | "executing" | "finalizing" | "planning";
+  runId: string;
+  sessionId?: string;
+  step: number;
+}): Promise<void> {
+  input.observer?.onRunEvent?.({
+    event: input.event,
+    phase: input.phase,
+    step: input.step,
+  });
+
+  if (!input.sessionId) {
+    return;
+  }
+
+  try {
+    await appendSessionRunEvent(input.sessionId, {
+      event: input.event,
+      payload: input.payload,
+      phase: input.phase,
+      runId: input.runId,
+      step: input.step,
+    });
+  } catch (error) {
+    logError("Failed to append run event", error);
+  }
+}
 
 async function syncScriptRegistry(catalog: AgentContext["scriptCatalog"]): Promise<void> {
   await executeToolCall({
@@ -384,6 +422,7 @@ export async function runAgentLoop(
 
   const observer = options?.observer;
   const sessionId = options?.sessionId;
+  const runId = randomUUID();
   const sessionFilePath = sessionId ? getSessionFilePath(sessionId) : undefined;
   const memory = new Memory({
     messageSink: sessionId
@@ -401,7 +440,29 @@ export async function runAgentLoop(
   let lastToolLoopSignature = "";
   let lastToolLoopSignatureCount = 0;
   let lastCompletionGateFailure: null | string = null;
+  const toolCallSignatureHistory: string[] = [];
   const getCompletionCriteria = (): string[] => describeCompletionPlan(completionPlan);
+  const finalizeResult = async (
+    result: AgentResult,
+    step: number,
+    reason: string
+  ): Promise<AgentResult> => {
+    await appendRunEvent({
+      event: "final_state_set",
+      observer,
+      payload: {
+        finalState: result.finalState,
+        reason,
+        success: result.success,
+      },
+      phase: "finalizing",
+      runId,
+      sessionId,
+      step,
+    });
+
+    return result;
+  };
 
   // Build dynamic system prompt with runtime context
   const systemPrompt = buildSystemPrompt({
@@ -429,6 +490,17 @@ export async function runAgentLoop(
         role: "user",
       });
     }
+    await appendRunEvent({
+      event: "run_started",
+      observer,
+      payload: {
+        maxSteps: config.maxSteps,
+      },
+      phase: "planning",
+      runId,
+      sessionId,
+      step: 0,
+    });
 
     const discoveredScripts = await executeToolCall({
       arguments: {
@@ -530,6 +602,14 @@ export async function runAgentLoop(
 
       // Planning phase
       context = transitionState(context, "planning");
+      await appendRunEvent({
+        event: "plan_started",
+        observer,
+        phase: "planning",
+        runId,
+        sessionId,
+        step: stepNumber,
+      });
       const planResult = await plan(client, context, memory, {
         completionCriteria: getCompletionCriteria(),
         onStreamEnd: () => {
@@ -542,6 +622,18 @@ export async function runAgentLoop(
           observer?.onPlannerStreamToken?.(token);
         },
         stream: config.stream,
+      });
+      await appendRunEvent({
+        event: "plan_parsed",
+        observer,
+        payload: {
+          action: planResult.action,
+          hasToolCall: Boolean(planResult.toolCall),
+        },
+        phase: "planning",
+        runId,
+        sessionId,
+        step: stepNumber,
       });
 
       // Add planning reasoning to memory
@@ -621,12 +713,24 @@ export async function runAgentLoop(
               toolCall: null,
               toolResult: null,
             });
-            return {
+            await appendRunEvent({
+              event: "approval_requested",
+              observer,
+              payload: {
+                command: gate.command,
+                reason: destructiveReason,
+              },
+              phase: "approval",
+              runId,
+              sessionId,
+              step: stepNumber,
+            });
+            return await finalizeResult({
               context,
               finalState: "waiting_for_user",
               message: confirmationMessage,
               success: false,
-            };
+            }, stepNumber, "destructive_completion_gate_confirmation");
           }
 
           const gateResults = await runCompletionGates(completionPlan.gates);
@@ -660,12 +764,12 @@ export async function runAgentLoop(
           toolResult: null,
         });
         lastCompletionGateFailure = null;
-        return {
+        return await finalizeResult({
           context,
           finalState: "completed",
           message: planResult.userMessage ?? planResult.reasoning,
           success: true,
-        };
+        }, stepNumber, "planner_complete");
       }
 
       if (planResult.action === "blocked") {
@@ -677,12 +781,12 @@ export async function runAgentLoop(
           toolCall: null,
           toolResult: null,
         });
-        return {
+        return await finalizeResult({
           context,
           finalState: "blocked",
           message: blockedMessage,
           success: false,
-        };
+        }, stepNumber, "planner_blocked");
       }
 
       if (planResult.action === "ask_user") {
@@ -696,12 +800,12 @@ export async function runAgentLoop(
           toolCall: null,
           toolResult: null,
         });
-        return {
+        return await finalizeResult({
           context,
           finalState: "waiting_for_user",
           message: askUserMessage,
           success: false,
-        };
+        }, stepNumber, "planner_ask_user");
       }
 
       // Execution phase
@@ -720,16 +824,68 @@ export async function runAgentLoop(
             `Planner returned no executable tool call for ${String(consecutiveNoToolContinues)} consecutive steps. ` +
             "Please clarify the expected concrete action (file path, language, or command intent).";
           memory.addMessage("assistant", noProgressMessage);
-          return {
+          return await finalizeResult({
             context,
             finalState: "waiting_for_user",
             message: noProgressMessage,
             success: false,
-          };
+          }, stepNumber, "no_tool_progress_guard");
         }
         continue;
       }
       consecutiveNoToolContinues = 0;
+      const plannedToolCallSignature = buildToolCallSignature(
+        planResult.toolCall.name,
+        planResult.toolCall.arguments
+      );
+      const preExecutionLoopDetection = detectPreExecutionDoomLoop({
+        historySignatures: toolCallSignatureHistory,
+        nextSignature: plannedToolCallSignature,
+        threshold: config.doomLoopThreshold,
+      });
+      if (preExecutionLoopDetection.shouldBlock) {
+        const loopGuardReason =
+          `Detected a repeated tool-call loop before execution (same call repeated ${String(preExecutionLoopDetection.repeatedCount)} times).`;
+        const loopGuardMessage =
+          `${loopGuardReason} ` +
+          "Please clarify a different strategy or provide tighter constraints.";
+        observer?.onLoopGuard?.({
+          reason: loopGuardReason,
+          repeatCount: preExecutionLoopDetection.repeatedCount,
+          signature: plannedToolCallSignature,
+          step: stepNumber,
+        });
+        await appendRunEvent({
+          event: "loop_guard_triggered",
+          observer,
+          payload: {
+            reason: loopGuardReason,
+            repeatCount: preExecutionLoopDetection.repeatedCount,
+            signature: plannedToolCallSignature,
+          },
+          phase: "executing",
+          runId,
+          sessionId,
+          step: stepNumber,
+        });
+        memory.addMessage("assistant", loopGuardMessage);
+        context = addStep(context, {
+          reasoning: `Loop guard blocked repeated tool call: ${loopGuardReason}`,
+          state: "waiting_for_user",
+          step: stepNumber,
+          toolCall: {
+            arguments: planResult.toolCall.arguments,
+            name: planResult.toolCall.name,
+          },
+          toolResult: null,
+        });
+        return await finalizeResult({
+          context,
+          finalState: "waiting_for_user",
+          message: loopGuardMessage,
+          success: false,
+        }, stepNumber, "loop_guard_pre_execution");
+      }
 
       if (
         config.requireRiskyConfirmation &&
@@ -759,12 +915,24 @@ export async function runAgentLoop(
               },
               toolResult: null,
             });
-            return {
+            await appendRunEvent({
+              event: "approval_requested",
+              observer,
+              payload: {
+                command,
+                reason: destructiveReason,
+              },
+              phase: "approval",
+              runId,
+              sessionId,
+              step: stepNumber,
+            });
+            return await finalizeResult({
               context,
               finalState: "waiting_for_user",
               message: confirmationMessage,
               success: false,
-            };
+            }, stepNumber, "destructive_command_confirmation");
           }
         }
       }
@@ -796,6 +964,19 @@ export async function runAgentLoop(
             name: toolCall.name,
             step: stepNumber,
           });
+          await appendRunEvent({
+            event: "tool_call_started",
+            observer,
+            payload: {
+              attempt,
+              signature: plannedToolCallSignature,
+              toolName: toolCall.name,
+            },
+            phase: "executing",
+            runId,
+            sessionId,
+            step: stepNumber,
+          });
           toolResult = await executeToolCall(toolCall);
           observer?.onToolResult?.({
             attempt,
@@ -804,6 +985,20 @@ export async function runAgentLoop(
             output: toolResult.output,
             step: stepNumber,
             success: toolResult.success,
+          });
+          await appendRunEvent({
+            event: "tool_call_finished",
+            observer,
+            payload: {
+              attempt,
+              progressSignal: toolResult.artifacts?.progressSignal ?? "none",
+              success: toolResult.success,
+              toolName: toolCall.name,
+            },
+            phase: "executing",
+            runId,
+            sessionId,
+            step: stepNumber,
           });
           emitDiagnosticsObserverEvent(observer, stepNumber, toolResult);
 
@@ -893,6 +1088,7 @@ export async function runAgentLoop(
           },
           toolResult,
         });
+        toolCallSignatureHistory.push(plannedToolCallSignature);
 
         const loopSignature = buildToolLoopSignature({
           argumentsObject: planResult.toolCall.arguments,
@@ -908,17 +1104,44 @@ export async function runAgentLoop(
         }
 
         const repetitionLimit = 3;
+        const stagnation = detectStagnation({
+          steps: context.steps,
+          window: config.stagnationWindow,
+        });
         if (lastToolLoopSignatureCount >= repetitionLimit) {
+          const loopGuardReason = stagnation.isStagnant
+            ? `Repeated tool outcome with stagnation: ${stagnation.reason}`
+            : `Repeated tool outcome observed ${String(lastToolLoopSignatureCount)} times in a row.`;
           const repetitionMessage =
-            `Stopping repeated execution loop: the same tool outcome was observed ${String(lastToolLoopSignatureCount)} times in a row. ` +
+            `Stopping repeated execution loop: ${loopGuardReason} ` +
             "Please refine the request or provide additional constraints.";
+          observer?.onLoopGuard?.({
+            reason: loopGuardReason,
+            repeatCount: lastToolLoopSignatureCount,
+            signature: loopSignature,
+            step: stepNumber,
+          });
+          await appendRunEvent({
+            event: "loop_guard_triggered",
+            observer,
+            payload: {
+              reason: loopGuardReason,
+              repeatCount: lastToolLoopSignatureCount,
+              signature: loopSignature,
+              stagnationSignals: stagnation.signals,
+            },
+            phase: "executing",
+            runId,
+            sessionId,
+            step: stepNumber,
+          });
           memory.addMessage("assistant", repetitionMessage);
-          return {
+          return await finalizeResult({
             context,
             finalState: "waiting_for_user",
             message: repetitionMessage,
             success: false,
-          };
+          }, stepNumber, "post_execution_repetition_guard");
         }
 
         // If tool failed and retry is suggested, log it
@@ -955,12 +1178,12 @@ export async function runAgentLoop(
 
         // If it's a critical error, stop
         if (error instanceof AgentError && error.code === "VALIDATION_ERROR") {
-          return {
+          return await finalizeResult({
             context,
             finalState: "error",
             message: `Validation error: ${errorMessage}`,
             success: false,
-          };
+          }, stepNumber, "validation_error");
         }
       }
     }
@@ -970,23 +1193,23 @@ export async function runAgentLoop(
       ? `Maximum steps (${context.maxSteps}) reached. Last completion gate failure: ${lastCompletionGateFailure}`
       : `Maximum steps (${context.maxSteps}) reached without completing the task`;
 
-    return {
+    return await finalizeResult({
       context,
       finalState: "blocked",
       message: maxStepsMessage,
       success: false,
-    };
+    }, context.currentStep, "max_steps_reached");
   } catch (error) {
     logError("Agent loop failed", error);
     observer?.onError?.({
       message: error instanceof Error ? error.message : "Unknown error occurred",
     });
-    return {
+    return await finalizeResult({
       context,
       finalState: "error",
       message: error instanceof Error ? error.message : "Unknown error occurred",
       success: false,
-    };
+    }, context.currentStep, "loop_error");
   } finally {
     try {
       await memory.flushMessageSink();

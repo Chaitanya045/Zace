@@ -13,6 +13,19 @@ export interface AgentErrorEvent {
   message: string;
 }
 
+export interface AgentLoopGuardEvent {
+  reason: string;
+  repeatCount: number;
+  signature: string;
+  step: number;
+}
+
+export interface AgentRunEvent {
+  event: string;
+  phase: "approval" | "executing" | "finalizing" | "planning";
+  step: number;
+}
+
 export interface AgentExecutorStreamEvent {
   toolName: string;
 }
@@ -47,6 +60,8 @@ export interface AgentObserver {
   onCompaction?: (event: AgentCompactionEvent) => void;
   onDiagnostics?: (event: AgentDiagnosticsEvent) => void;
   onError?: (event: AgentErrorEvent) => void;
+  onLoopGuard?: (event: AgentLoopGuardEvent) => void;
+  onRunEvent?: (event: AgentRunEvent) => void;
   onExecutorStreamEnd?: (event: AgentExecutorStreamEvent) => void;
   onExecutorStreamStart?: (event: AgentExecutorStreamEvent) => void;
   onExecutorStreamToken?: (event: AgentExecutorTokenEvent) => void;

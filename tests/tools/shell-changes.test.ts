@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 
 import {
+  buildExecuteCommandSignature,
   buildLspDiagnosticsOutput,
+  detectCommandProgressSignal,
   deriveChangedFilesFromGitSnapshots,
   parseChangedFilesFromMarkerLines,
 } from "../../src/tools/shell";
@@ -32,6 +34,48 @@ describe("shell changed-file and diagnostics helpers", () => {
 
     const changed = deriveChangedFilesFromGitSnapshots(before, after);
     expect(changed).toEqual([resolve("/repo/src/c.ts")]);
+  });
+
+  test("builds a stable execute-command signature", () => {
+    const signatureA = buildExecuteCommandSignature("echo hi", "/tmp/a/../repo");
+    const signatureB = buildExecuteCommandSignature("echo hi", "/tmp/repo");
+
+    expect(signatureA).toBe(signatureB);
+  });
+
+  test("detects command progress signals", () => {
+    expect(
+      detectCommandProgressSignal({
+        changedFiles: ["/repo/src/a.ts"],
+        stderr: "",
+        stdout: "",
+        success: true,
+      })
+    ).toBe("files_changed");
+    expect(
+      detectCommandProgressSignal({
+        changedFiles: [],
+        stderr: "",
+        stdout: "updated",
+        success: true,
+      })
+    ).toBe("output_changed");
+    expect(
+      detectCommandProgressSignal({
+        changedFiles: [],
+        stderr: "",
+        stdout: "",
+        success: true,
+      })
+    ).toBe("success_without_changes");
+    expect(
+      detectCommandProgressSignal({
+        changedFiles: [],
+        stderr: "error",
+        stdout: "",
+        success: false,
+      })
+    ).toBe("none");
   });
 
   test("formats capped LSP diagnostics output", () => {

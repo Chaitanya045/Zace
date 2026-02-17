@@ -7,6 +7,7 @@ export type AgentConfig = {
   compactionPreserveRecentMessages: number;
   compactionTriggerRatio: number;
   contextWindowTokens?: number;
+  doomLoopThreshold: number;
   executorAnalysis: ExecutorAnalysisMode;
   lspEnabled: boolean;
   lspMaxDiagnosticsPerFile: number;
@@ -19,6 +20,7 @@ export type AgentConfig = {
   maxSteps: number;
   requireRiskyConfirmation: boolean;
   riskyConfirmationToken: string;
+  stagnationWindow: number;
   stream: boolean;
   verbose: boolean;
 };
@@ -31,6 +33,7 @@ export function getAgentConfig(): AgentConfig {
     compactionPreserveRecentMessages: env.AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES,
     compactionTriggerRatio: env.AGENT_COMPACTION_TRIGGER_RATIO,
     contextWindowTokens: env.AGENT_CONTEXT_WINDOW_TOKENS,
+    doomLoopThreshold: env.AGENT_DOOM_LOOP_THRESHOLD,
     executorAnalysis: env.AGENT_EXECUTOR_ANALYSIS,
     llmApiKey: env.OPENROUTER_API_KEY,
     llmModel: env.OPENROUTER_MODEL,
@@ -43,6 +46,7 @@ export function getAgentConfig(): AgentConfig {
     maxSteps: env.AGENT_MAX_STEPS,
     requireRiskyConfirmation: env.AGENT_REQUIRE_RISKY_CONFIRMATION,
     riskyConfirmationToken: env.AGENT_RISKY_CONFIRMATION_TOKEN,
+    stagnationWindow: env.AGENT_STAGNATION_WINDOW,
     stream: env.AGENT_STREAM,
     verbose: env.AGENT_VERBOSE,
   };

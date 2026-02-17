@@ -15,6 +15,7 @@ import {
 } from "../lsp";
 import { ToolExecutionError } from "../utils/errors";
 import { logToolCall, logToolResult } from "../utils/logger";
+import { stableStringify } from "../utils/stable-json";
 
 const executeCommandSchema = z.object({
   command: z.string().min(1),
@@ -102,6 +103,9 @@ type LspFeedback = {
   errorCount: number;
   outputSection?: string;
 };
+
+type ChangedFilesSource = "git_delta" | "marker";
+type ProgressSignal = "files_changed" | "none" | "output_changed" | "success_without_changes";
 
 function truncateOutput(output: string, limit: number): { output: string; truncated: boolean } {
   if (output.length <= limit) {
@@ -270,6 +274,36 @@ function deduplicatePaths(paths: Iterable<string>): string[] {
   return Array.from(
     new Set(Array.from(paths, (pathValue) => resolve(pathValue)))
   ).sort((left, right) => left.localeCompare(right));
+}
+
+export function buildExecuteCommandSignature(command: string, workingDirectory: string): string {
+  const signaturePayload = {
+    command: command.trim(),
+    cwd: resolve(workingDirectory),
+  };
+
+  return `execute_command|${stableStringify(signaturePayload)}`;
+}
+
+export function detectCommandProgressSignal(input: {
+  changedFiles: string[];
+  stderr: string;
+  stdout: string;
+  success: boolean;
+}): ProgressSignal {
+  if (input.changedFiles.length > 0) {
+    return "files_changed";
+  }
+
+  if (!input.success) {
+    return "none";
+  }
+
+  if (input.stdout.trim().length > 0 || input.stderr.trim().length > 0) {
+    return "output_changed";
+  }
+
+  return "success_without_changes";
 }
 
 function filterErrorDiagnostics(diagnostics: LspDiagnostic[]): LspDiagnostic[] {
@@ -532,6 +566,20 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
       afterGitSnapshot?.files ?? []
     );
     const changedFiles = deduplicatePaths([...markerChangedFiles, ...gitChangedFiles]);
+    const changedFilesSource: ChangedFilesSource[] = [];
+    if (markerChangedFiles.length > 0) {
+      changedFilesSource.push("marker");
+    }
+    if (gitChangedFiles.length > 0) {
+      changedFilesSource.push("git_delta");
+    }
+    const commandSignature = buildExecuteCommandSignature(command, effectiveWorkingDirectory);
+    const progressSignal = detectCommandProgressSignal({
+      changedFiles,
+      stderr: errorOutput,
+      stdout: output,
+      success: result.exitCode === 0,
+    });
     const lspFeedback = await collectLspFeedback(changedFiles);
 
     const artifacts = await writeCommandArtifacts(command, output, errorOutput);
@@ -544,11 +592,14 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
     );
     const toolArtifacts = {
       changedFiles,
+      changedFilesSource,
       combinedPath: artifacts.combinedPath,
+      commandSignature,
       lspDiagnosticsFiles: lspFeedback.diagnosticsFiles,
       lspDiagnosticsIncluded: Boolean(lspFeedback.outputSection),
       lspErrorCount: lspFeedback.errorCount,
       outputLimitChars: effectiveOutputLimitChars,
+      progressSignal,
       stderrPath: artifacts.stderrPath,
       stderrTruncated: renderedOutput.stderrTruncated,
       stdoutPath: artifacts.stdoutPath,
