@@ -19,7 +19,7 @@ export default [
 
     /* TypeScript rules */
     {
-        files: ["**/*.ts"],
+        files: ["**/*.ts", "**/*.tsx"],
         languageOptions: {
             parser: tsParser,
             parserOptions: {

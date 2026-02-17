@@ -2,15 +2,14 @@ import type { LlmClient } from "../llm/client";
 import type { AgentContext, AgentState } from "../types/agent";
 import type { AgentConfig } from "../types/config";
 import type { ToolResult } from "../types/tool";
+import type { AgentObserver } from "./observer";
 
 import { buildSystemPrompt } from "../prompts/system";
 import { allTools } from "../tools";
 import { appendSessionMessage, getSessionFilePath } from "../tools/session";
 import { AgentError } from "../utils/errors";
 import { log, logError, logStep } from "../utils/logger";
-import {
-  maybeCompactContext,
-} from "./compaction";
+import { maybeCompactContext } from "./compaction";
 import {
   describeCompletionPlan,
   resolveCompletionPlan,
@@ -36,6 +35,7 @@ export interface AgentResult {
 }
 
 export interface RunAgentLoopOptions {
+  observer?: AgentObserver;
   sessionId?: string;
 }
 
@@ -223,6 +223,7 @@ export async function runAgentLoop(
 ): Promise<AgentResult> {
   log(`Starting agent loop for task: ${task}`);
 
+  const observer = options?.observer;
   const sessionId = options?.sessionId;
   const sessionFilePath = sessionId ? getSessionFilePath(sessionId) : undefined;
   const memory = new Memory({
@@ -291,11 +292,24 @@ export async function runAgentLoop(
     while (context.currentStep < context.maxSteps) {
       const stepNumber = context.currentStep + 1;
       logStep(stepNumber, `Starting step ${stepNumber}/${context.maxSteps}`);
+      observer?.onStepStart?.({
+        maxSteps: context.maxSteps,
+        step: stepNumber,
+      });
 
       // Planning phase
       context = transitionState(context, "planning");
       const planResult = await plan(client, context, memory, {
         completionCriteria: getCompletionCriteria(),
+        onStreamEnd: () => {
+          observer?.onPlannerStreamEnd?.();
+        },
+        onStreamStart: () => {
+          observer?.onPlannerStreamStart?.();
+        },
+        onStreamToken: (token) => {
+          observer?.onPlannerStreamToken?.(token);
+        },
         stream: config.stream,
       });
 
@@ -314,6 +328,10 @@ export async function runAgentLoop(
           typeof compactionResult.usageRatio === "number"
             ? Math.round(compactionResult.usageRatio * 100)
             : Math.round(config.compactionTriggerRatio * 100);
+        observer?.onCompaction?.({
+          ratioPercent,
+          step: stepNumber,
+        });
         memory.addMessage(
           "assistant",
           `Context compacted after planner input reached ${String(ratioPercent)}% of model context.`
@@ -518,7 +536,21 @@ export async function runAgentLoop(
 
         while (true) {
           attempt += 1;
+          observer?.onToolCall?.({
+            arguments: toolCall.arguments,
+            attempt,
+            name: toolCall.name,
+            step: stepNumber,
+          });
           toolResult = await executeToolCall(toolCall);
+          observer?.onToolResult?.({
+            attempt,
+            error: toolResult.error,
+            name: toolCall.name,
+            output: toolResult.output,
+            step: stepNumber,
+            success: toolResult.success,
+          });
 
           memory.addMessage(
             "tool",
@@ -548,6 +580,22 @@ export async function runAgentLoop(
 
           analysis = shouldAnalyze
             ? await analyzeToolResult(client, toolCall, toolResult, {
+                onStreamEnd: () => {
+                  observer?.onExecutorStreamEnd?.({
+                    toolName: toolCall.name,
+                  });
+                },
+                onStreamStart: () => {
+                  observer?.onExecutorStreamStart?.({
+                    toolName: toolCall.name,
+                  });
+                },
+                onStreamToken: (token) => {
+                  observer?.onExecutorStreamToken?.({
+                    token,
+                    toolName: toolCall.name,
+                  });
+                },
                 retryContext: {
                   attempt,
                   maxRetries: retryConfiguration.maxRetries,
@@ -602,6 +650,9 @@ export async function runAgentLoop(
       } catch (error) {
         logError(`Step ${stepNumber} failed`, error);
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        observer?.onError?.({
+          message: errorMessage,
+        });
 
         context = addStep(context, {
           reasoning: planResult.reasoning,
@@ -645,6 +696,9 @@ export async function runAgentLoop(
     };
   } catch (error) {
     logError("Agent loop failed", error);
+    observer?.onError?.({
+      message: error instanceof Error ? error.message : "Unknown error occurred",
+    });
     return {
       context,
       finalState: "error",

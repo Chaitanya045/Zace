@@ -22,6 +22,9 @@ export interface ToolAnalysisResult {
 }
 
 type ExecuteOptions = {
+  onStreamEnd?: () => void;
+  onStreamStart?: () => void;
+  onStreamToken?: (token: string) => void;
   retryContext?: ExecutorRetryContext;
   stream?: boolean;
 };
@@ -90,21 +93,25 @@ export async function analyzeToolResult(
   ];
 
   if (options?.stream) {
-    process.stdout.write(`\n\n[LLM:executor:${toolCall.name}]\n`);
+    options.onStreamStart?.();
   }
-  const response = await client.chat(
-    { messages },
-    options?.stream
-      ? {
-        onToken: (token) => {
-          process.stdout.write(token);
-        },
-        stream: true,
-      }
-      : undefined
-  );
-  if (options?.stream) {
-    process.stdout.write("\n");
+  let response: Awaited<ReturnType<LlmClient["chat"]>>;
+  try {
+    response = await client.chat(
+      { messages },
+      options?.stream
+        ? {
+          onToken: (token) => {
+            options.onStreamToken?.(token);
+          },
+          stream: true,
+        }
+        : undefined
+    );
+  } finally {
+    if (options?.stream) {
+      options.onStreamEnd?.();
+    }
   }
   const analysis = response.content.trim();
   const jsonMatch = analysis.match(/\{[\s\S]*\}/u);

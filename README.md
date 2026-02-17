@@ -15,9 +15,11 @@ It runs as a planner-executor loop where the model decides the next action and a
 - Runtime script reuse under `.zace/runtime/scripts`
 - Script metadata registry at `.zace/runtime/scripts/registry.tsv`
 - OpenRouter-backed LLM client
+- Ink-based chat UI with shadcn-inspired minimal terminal design
 - Automatic context compaction when planner context reaches 80% usage
 - Session message journaling for active `--session` runs
 - Session history tools: `search_session_messages`, `write_session_message`
+- Non-TTY automatic fallback to plain chat mode
 
 ## Requirements
 
@@ -41,7 +43,7 @@ OPENROUTER_MODEL=your_model_id
 # optional overrides
 AGENT_MAX_STEPS=10
 AGENT_EXECUTOR_ANALYSIS=on_failure
-AGENT_STREAM=false
+AGENT_STREAM=true
 AGENT_VERBOSE=false
 AGENT_COMPACTION_ENABLED=true
 AGENT_COMPACTION_TRIGGER_RATIO=0.8
@@ -61,13 +63,13 @@ AGENT_COMMAND_DENY_PATTERNS=
 
 ## Usage
 
-Run the agent:
+Start chat UI (default command):
 
 ```bash
-bun run src/index.ts "your task here"
+bun run src/index.ts
 ```
 
-Start interactive chat mode:
+Chat alias (same behavior):
 
 ```bash
 bun run src/index.ts chat
@@ -76,21 +78,27 @@ bun run src/index.ts chat
 With common options:
 
 ```bash
-bun run src/index.ts "fix lint errors" --stream --verbose --executor-analysis always
+bun run src/index.ts --stream --verbose --executor-analysis always
 ```
 
-Resume a persistent conversation:
+Resume a specific session:
 
 ```bash
-bun run src/index.ts chat --session my_session
+bun run src/index.ts --session my_session
 ```
 
 CLI options:
 
 - `--executor-analysis <mode>`: `always | on_failure | never`
-- `--session <id>`: persist and resume conversation from `.zace/sessions/<id>.jsonl`
+- `--session <id>`: use a specific session id; if omitted, a session id is auto-generated
 - `-s, --stream`: stream model output
 - `-v, --verbose`: verbose logs
+
+Notes:
+
+- `zace` now starts chat mode by default.
+- One-shot `zace "<task>"` flow is removed.
+- In non-interactive terminals (CI/pipes/dumb TERM), Zace automatically falls back to plain chat mode.
 
 ## Command safety policy
 
@@ -194,6 +202,7 @@ For active session runs:
 - Every in-run memory message is appended to `.zace/sessions/<session-id>.jsonl`.
 - The planner can retrieve older context via `search_session_messages`.
 - The planner can persist durable checkpoints via `write_session_message`.
+- If `--session` is not provided, chat mode creates a valid session id automatically.
 
 ## Context compaction
 
@@ -205,6 +214,14 @@ For active session runs:
   - recent messages (`AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES`)
 - Context window is resolved from OpenRouter model metadata; use `AGENT_CONTEXT_WINDOW_TOKENS` as an explicit fallback.
 - Compaction works with session history tools, so older details can be fetched from disk on demand.
+
+## UI
+
+- Renderer: Ink (`ink` + `react`)
+- Layout: 3-pane minimal interface (header/status, timeline, composer)
+- Stream mode: buffered at 33ms for smooth incremental token rendering
+- Controls: Enter submit, `/status`, `/reset`, `/exit`, `Ctrl+C`
+- Design language: shadcn-inspired terminal style (monochrome + subtle accent)
 
 ## Development
 
@@ -232,6 +249,12 @@ Type-check:
 bunx tsc --noEmit
 ```
 
+Run tests:
+
+```bash
+bun test
+```
+
 ## Project structure
 
 ```text
@@ -243,5 +266,6 @@ src/
 ├── prompts/     # system/planner/executor prompts
 ├── tools/       # typed tool boundary (shell + session history)
 ├── types/       # shared contracts
+├── ui/          # Ink UI runtime + plain fallback + theme/components
 └── utils/       # logger/errors
 ```
