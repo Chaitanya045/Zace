@@ -185,6 +185,8 @@ Task-defined gates:
   - `<id>.stdout.log`
   - `<id>.stderr.log`
   - `<id>.combined.log`
+- Tool output includes explicit execution metadata blocks (`[execution]`) including timeout/abort lifecycle state.
+- When output is truncated, tool output includes actionable inspection hints (`tail`, `sed`, `rg`) using full artifact paths.
 - Truncation limit is controlled by `AGENT_TOOL_OUTPUT_LIMIT_CHARS` (or per-command `outputLimitChars`).
 
 ## Runtime script protocol

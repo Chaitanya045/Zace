@@ -36,6 +36,12 @@ export interface LspClientStatus {
   status: "connected" | "error";
 }
 
+type DiagnosticsWaiter = {
+  baselineVersion: number;
+  settle: () => void;
+  timeoutHandle: ReturnType<typeof setTimeout>;
+};
+
 const DIAGNOSTICS_DEBOUNCE_MS = 150;
 const INITIALIZE_TIMEOUT_MS = 15_000;
 
@@ -81,9 +87,11 @@ function normalizeAbsolutePath(pathValue: string): string {
 export class LspClient {
   private readonly diagnosticsByFile = new Map<string, LspDiagnostic[]>();
 
+  private readonly diagnosticsVersionByFile = new Map<string, number>();
+
   private readonly openedFileVersions = new Map<string, number>();
 
-  private readonly pendingDiagnosticWaiters = new Map<string, Array<() => void>>();
+  private readonly pendingDiagnosticWaiters = new Map<string, DiagnosticsWaiter[]>();
 
   private readonly diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -188,6 +196,11 @@ export class LspClient {
     return this.diagnosticsByFile;
   }
 
+  diagnosticsVersion(pathValue: string): number {
+    const absolutePath = normalizeAbsolutePath(pathValue);
+    return this.diagnosticsVersionByFile.get(absolutePath) ?? 0;
+  }
+
   get status(): LspClientStatus {
     return {
       rootPath: this.rootPath,
@@ -237,34 +250,45 @@ export class LspClient {
     });
   }
 
-  async waitForDiagnostics(pathValue: string): Promise<void> {
+  async waitForDiagnostics(pathValue: string, baselineVersion: number = 0): Promise<void> {
     const absolutePath = normalizeAbsolutePath(pathValue);
-    const waiters = this.pendingDiagnosticWaiters.get(absolutePath) ?? [];
+    const currentVersion = this.diagnosticsVersionByFile.get(absolutePath) ?? 0;
+    if (currentVersion > baselineVersion) {
+      return;
+    }
 
     await new Promise<void>((resolveWait) => {
       let settled = false;
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const settle = (): void => {
         if (settled) {
           return;
         }
         settled = true;
-        resolveWait();
-      };
-
-      waiters.push(settle);
-      this.pendingDiagnosticWaiters.set(absolutePath, waiters);
-
-      setTimeout(() => {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
         const remaining = (this.pendingDiagnosticWaiters.get(absolutePath) ?? []).filter(
-          (waiter) => waiter !== settle
+          (waiter) => waiter.settle !== settle
         );
         if (remaining.length === 0) {
           this.pendingDiagnosticWaiters.delete(absolutePath);
         } else {
           this.pendingDiagnosticWaiters.set(absolutePath, remaining);
         }
+        resolveWait();
+      };
+
+      timeoutHandle = setTimeout(() => {
         settle();
       }, this.waitForDiagnosticsMs);
+      const waiters = this.pendingDiagnosticWaiters.get(absolutePath) ?? [];
+      waiters.push({
+        baselineVersion,
+        settle,
+        timeoutHandle,
+      });
+      this.pendingDiagnosticWaiters.set(absolutePath, waiters);
     });
   }
 
@@ -277,12 +301,7 @@ export class LspClient {
       clearTimeout(timer);
     }
     this.diagnosticDebounceTimers.clear();
-    for (const waiters of this.pendingDiagnosticWaiters.values()) {
-      for (const waiter of waiters) {
-        waiter();
-      }
-    }
-    this.pendingDiagnosticWaiters.clear();
+    this.clearAndResolveAllWaiters();
   }
 
   private attachConnectionListeners(): void {
@@ -299,20 +318,15 @@ export class LspClient {
 
       const filePath = normalizeAbsolutePath(fileURLToPath(uri));
       this.diagnosticsByFile.set(filePath, parsedPayload.diagnostics ?? []);
+      const nextVersion = (this.diagnosticsVersionByFile.get(filePath) ?? 0) + 1;
+      this.diagnosticsVersionByFile.set(filePath, nextVersion);
       const pendingTimer = this.diagnosticDebounceTimers.get(filePath);
       if (pendingTimer) {
         clearTimeout(pendingTimer);
       }
       const timer = setTimeout(() => {
         this.diagnosticDebounceTimers.delete(filePath);
-        const waiters = this.pendingDiagnosticWaiters.get(filePath) ?? [];
-        if (waiters.length === 0) {
-          return;
-        }
-        this.pendingDiagnosticWaiters.delete(filePath);
-        for (const waiter of waiters) {
-          waiter();
-        }
+        this.resolveReadyDiagnosticWaiters(filePath);
       }, DIAGNOSTICS_DEBOUNCE_MS);
       this.diagnosticDebounceTimers.set(filePath, timer);
     });
@@ -334,12 +348,32 @@ export class LspClient {
         clearTimeout(timer);
       }
       this.diagnosticDebounceTimers.clear();
-      for (const waiters of this.pendingDiagnosticWaiters.values()) {
-        for (const waiter of waiters) {
-          waiter();
-        }
-      }
-      this.pendingDiagnosticWaiters.clear();
+      this.clearAndResolveAllWaiters();
     });
+  }
+
+  private clearAndResolveAllWaiters(): void {
+    for (const waiters of this.pendingDiagnosticWaiters.values()) {
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timeoutHandle);
+        waiter.settle();
+      }
+    }
+    this.pendingDiagnosticWaiters.clear();
+  }
+
+  private resolveReadyDiagnosticWaiters(filePath: string): void {
+    const waiters = this.pendingDiagnosticWaiters.get(filePath) ?? [];
+    if (waiters.length === 0) {
+      return;
+    }
+
+    const currentVersion = this.diagnosticsVersionByFile.get(filePath) ?? 0;
+    for (const waiter of waiters) {
+      if (currentVersion > waiter.baselineVersion) {
+        clearTimeout(waiter.timeoutHandle);
+        waiter.settle();
+      }
+    }
   }
 }

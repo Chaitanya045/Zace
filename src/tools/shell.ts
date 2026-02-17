@@ -1,6 +1,8 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { Readable } from "node:stream";
 import { z } from "zod";
 
 import type { LspDiagnostic } from "../lsp/client";
@@ -47,12 +49,26 @@ function compilePolicyRegexes(patterns: string[], policyName: string): RegExp[] 
 const allowPolicyRegexes = compilePolicyRegexes(env.AGENT_COMMAND_ALLOW_PATTERNS, "allow");
 const denyPolicyRegexes = compilePolicyRegexes(env.AGENT_COMMAND_DENY_PATTERNS, "deny");
 
-function getShellCommand(command: string): ReturnType<typeof Bun.$> {
+function getShellInvocation(command: string): { args: string[]; executable: string } {
   if (process.platform === "win32") {
-    return Bun.$`powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ${command}`;
+    return {
+      args: [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command,
+      ],
+      executable: "powershell.exe",
+    };
   }
 
-  return Bun.$`sh -c ${command}`;
+  return {
+    args: ["-c", command],
+    executable: "sh",
+  };
 }
 
 function getShellLabel(): string {
@@ -106,6 +122,200 @@ type LspFeedback = {
 
 type ChangedFilesSource = "git_delta" | "marker";
 type ProgressSignal = "files_changed" | "none" | "output_changed" | "success_without_changes";
+type ProcessSignal = Exclude<Parameters<typeof process.kill>[1], number | undefined>;
+
+export interface SpawnedCommandResult {
+  aborted: boolean;
+  durationMs: number;
+  exitCode: null | number;
+  lifecycleEvent: "abort" | "none" | "timeout";
+  signal: null | ProcessSignal;
+  stderr: string;
+  stdout: string;
+  timedOut: boolean;
+}
+
+type AbortSignalLike = {
+  aborted: boolean;
+  addEventListener: (
+    type: "abort",
+    listener: () => void,
+    options?: {
+      once?: boolean;
+    }
+  ) => void;
+  removeEventListener: (type: "abort", listener: () => void) => void;
+};
+
+function buildCommandEnvironment(commandEnv?: Record<string, string>): Record<string, string | undefined> {
+  if (!commandEnv) {
+    return process.env as Record<string, string | undefined>;
+  }
+
+  return {
+    ...process.env,
+    ...commandEnv,
+  };
+}
+
+function collectStreamOutput(stream: Readable): Promise<string> {
+  return new Promise((resolveOutput, rejectOutput) => {
+    const chunks: Buffer[] = [];
+    stream.on("data", (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    });
+    stream.on("error", rejectOutput);
+    stream.on("end", () => {
+      resolveOutput(Buffer.concat(chunks).toString("utf8"));
+    });
+  });
+}
+
+function killUnixProcessTree(pid: number, signal: ProcessSignal): void {
+  try {
+    process.kill(-pid, signal);
+    return;
+  } catch {
+    // Fallback to direct process kill if process group kill is unavailable.
+  }
+
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // process already exited
+  }
+}
+
+async function killWindowsProcessTree(pid: number, force: boolean): Promise<void> {
+  await new Promise<void>((resolveKill) => {
+    const killArgs = ["/PID", String(pid), "/T"];
+    if (force) {
+      killArgs.push("/F");
+    }
+    const killProcess = spawn("taskkill", killArgs, {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    killProcess.once("error", () => {
+      resolveKill();
+    });
+    killProcess.once("exit", () => {
+      resolveKill();
+    });
+  });
+}
+
+async function killProcessTree(pid: number, signal: ProcessSignal): Promise<void> {
+  if (pid <= 0 || !Number.isFinite(pid)) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    await killWindowsProcessTree(pid, signal === "SIGKILL");
+    return;
+  }
+
+  killUnixProcessTree(pid, signal);
+}
+
+export async function runSpawnedShellCommand(input: {
+  abortSignal?: AbortSignalLike;
+  command: string;
+  commandEnv?: Record<string, string>;
+  timeoutMs: number;
+  workingDirectory: string;
+}): Promise<SpawnedCommandResult> {
+  const { args, executable } = getShellInvocation(input.command);
+  const processHandle: ChildProcessWithoutNullStreams = spawn(executable, args, {
+    cwd: input.workingDirectory,
+    detached: process.platform !== "win32",
+    env: buildCommandEnvironment(input.commandEnv),
+    stdio: "pipe",
+    windowsHide: true,
+  });
+
+  const startedAt = Date.now();
+  const stdoutPromise = collectStreamOutput(processHandle.stdout);
+  const stderrPromise = collectStreamOutput(processHandle.stderr);
+
+  let lifecycleEvent: SpawnedCommandResult["lifecycleEvent"] = "none";
+  let aborted = false;
+  let terminationRequested = false;
+  let timedOut = false;
+  let forceKillTimeoutId: ReturnType<typeof setTimeout> | undefined;
+  const terminateProcessTree = (event: "abort" | "timeout"): void => {
+    if (terminationRequested) {
+      return;
+    }
+    terminationRequested = true;
+    lifecycleEvent = event;
+    aborted = event === "abort";
+    timedOut = event === "timeout";
+    const pid = processHandle.pid ?? 0;
+
+    void killProcessTree(pid, "SIGTERM").finally(() => {
+      forceKillTimeoutId = setTimeout(() => {
+        void killProcessTree(pid, "SIGKILL");
+      }, 1_000);
+    });
+  };
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  if (input.timeoutMs > 0) {
+    timeoutId = setTimeout(() => {
+      terminateProcessTree("timeout");
+    }, input.timeoutMs);
+  }
+
+  const abortListener = (): void => {
+    terminateProcessTree("abort");
+  };
+  if (input.abortSignal) {
+    if (input.abortSignal.aborted) {
+      abortListener();
+    } else {
+      input.abortSignal.addEventListener("abort", abortListener, { once: true });
+    }
+  }
+
+  const exitInfo = await new Promise<{ exitCode: null | number; signal: null | ProcessSignal }>(
+    (resolveExit, rejectExit) => {
+      processHandle.once("error", (error) => {
+        rejectExit(error);
+      });
+      processHandle.once("close", (exitCode, signal) => {
+        resolveExit({
+          exitCode,
+          signal,
+        });
+      });
+    }
+  ).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    if (forceKillTimeoutId) {
+      clearTimeout(forceKillTimeoutId);
+    }
+    if (input.abortSignal) {
+      input.abortSignal.removeEventListener("abort", abortListener);
+    }
+  });
+
+  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+  const durationMs = Math.max(0, Date.now() - startedAt);
+
+  return {
+    aborted,
+    durationMs,
+    exitCode: exitInfo.exitCode,
+    lifecycleEvent,
+    signal: exitInfo.signal,
+    stderr,
+    stdout,
+    timedOut,
+  };
+}
 
 function truncateOutput(output: string, limit: number): { output: string; truncated: boolean } {
   if (output.length <= limit) {
@@ -475,6 +685,50 @@ async function writeCommandArtifacts(
   };
 }
 
+function buildExecutionMetadataSection(input: {
+  command: string;
+  durationMs: number;
+  exitCode: null | number;
+  lifecycleEvent: SpawnedCommandResult["lifecycleEvent"];
+  signal: null | ProcessSignal;
+  timedOut: boolean;
+  workingDirectory: string;
+}): string {
+  const lines = [
+    "[execution]",
+    `shell: ${getShellLabel()}`,
+    `cwd: ${input.workingDirectory}`,
+    `duration_ms: ${String(input.durationMs)}`,
+    `exit_code: ${input.exitCode === null ? "null" : String(input.exitCode)}`,
+    `timed_out: ${input.timedOut ? "true" : "false"}`,
+    `aborted: ${input.lifecycleEvent === "abort" ? "true" : "false"}`,
+    `lifecycle_event: ${input.lifecycleEvent}`,
+    `command: ${input.command}`,
+  ];
+
+  if (input.signal) {
+    lines.push(`signal: ${input.signal}`);
+  }
+
+  return lines.join("\n");
+}
+
+function buildTruncationGuidanceSection(input: {
+  artifacts: CommandArtifacts;
+  outputLimitChars: number;
+}): string {
+  return [
+    "[truncation]",
+    `Output truncated to ${String(input.outputLimitChars)} chars per stream.`,
+    "Inspect full logs with:",
+    `tail -n 200 "${input.artifacts.combinedPath}"`,
+    `sed -n '1,200p' "${input.artifacts.combinedPath}"`,
+    `rg -n "error|warn|fail|exception" "${input.artifacts.combinedPath}"`,
+    `tail -n 200 "${input.artifacts.stdoutPath}"`,
+    `tail -n 200 "${input.artifacts.stderrPath}"`,
+  ].join("\n");
+}
+
 function buildRenderedOutput(
   stderr: string,
   stdout: string,
@@ -508,7 +762,12 @@ function buildRenderedOutput(
   }
 
   if (truncatedStdout.truncated || truncatedStderr.truncated) {
-    sections.unshift(`Output truncated to ${String(outputLimitChars)} chars per stream.`);
+    sections.push(
+      buildTruncationGuidanceSection({
+        artifacts,
+        outputLimitChars,
+      })
+    );
   }
 
   return {
@@ -532,29 +791,16 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
     }
 
     const beforeGitSnapshot = await collectGitSnapshot(effectiveWorkingDirectory);
-
-    const proc = getShellCommand(command).cwd(effectiveWorkingDirectory).quiet().nothrow();
-
-    // Set custom environment variables if provided
-    if (commandEnv) {
-      proc.env(commandEnv as Record<string, string | undefined>);
-    }
-
-    // Handle timeout if specified
-    let timeoutId: Timer | undefined;
     const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_MS;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => {
-        reject(new Error(`Command timed out after ${String(effectiveTimeout)}ms`));
-      }, effectiveTimeout);
+    const execution = await runSpawnedShellCommand({
+      command,
+      commandEnv,
+      timeoutMs: effectiveTimeout,
+      workingDirectory: effectiveWorkingDirectory,
     });
 
-    const result = await Promise.race([proc, timeoutPromise]);
-
-    if (timeoutId) clearTimeout(timeoutId);
-
-    const output = result.stdout.toString();
-    const errorOutput = result.stderr.toString();
+    const output = execution.stdout;
+    const errorOutput = execution.stderr;
     const markerLines = collectZaceMarkerLines(output, errorOutput);
     const markerChangedFiles = parseChangedFilesFromMarkerLines(
       markerLines,
@@ -578,39 +824,79 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
       changedFiles,
       stderr: errorOutput,
       stdout: output,
-      success: result.exitCode === 0,
+      success: execution.exitCode === 0 && !execution.timedOut && !execution.aborted,
     });
     const lspFeedback = await collectLspFeedback(changedFiles);
 
     const artifacts = await writeCommandArtifacts(command, output, errorOutput);
+    const executionSection = buildExecutionMetadataSection({
+      command,
+      durationMs: execution.durationMs,
+      exitCode: execution.exitCode,
+      lifecycleEvent: execution.lifecycleEvent,
+      signal: execution.signal,
+      timedOut: execution.timedOut,
+      workingDirectory: effectiveWorkingDirectory,
+    });
     const renderedOutput = buildRenderedOutput(
       errorOutput,
       output,
       artifacts,
       effectiveOutputLimitChars,
-      lspFeedback.outputSection ? [lspFeedback.outputSection] : []
+      lspFeedback.outputSection
+        ? [executionSection, lspFeedback.outputSection]
+        : [executionSection]
     );
     const toolArtifacts = {
+      aborted: execution.aborted,
       changedFiles,
       changedFilesSource,
       combinedPath: artifacts.combinedPath,
       commandSignature,
+      durationMs: execution.durationMs,
+      exitCode: execution.exitCode ?? undefined,
+      lifecycleEvent: execution.lifecycleEvent,
       lspDiagnosticsFiles: lspFeedback.diagnosticsFiles,
       lspDiagnosticsIncluded: Boolean(lspFeedback.outputSection),
       lspErrorCount: lspFeedback.errorCount,
       outputLimitChars: effectiveOutputLimitChars,
       progressSignal,
+      signal: execution.signal ?? undefined,
       stderrPath: artifacts.stderrPath,
       stderrTruncated: renderedOutput.stderrTruncated,
       stdoutPath: artifacts.stdoutPath,
       stdoutTruncated: renderedOutput.stdoutTruncated,
+      timedOut: execution.timedOut,
     };
 
-    if (result.exitCode !== 0) {
+    if (execution.timedOut) {
       logToolResult({ output: renderedOutput.output, success: false });
       return {
         artifacts: toolArtifacts,
-        error: `Command failed with exit code ${result.exitCode}`,
+        error: `Command timed out after ${String(effectiveTimeout)}ms`,
+        output: renderedOutput.output,
+        success: false,
+      };
+    }
+
+    if (execution.aborted) {
+      logToolResult({ output: renderedOutput.output, success: false });
+      return {
+        artifacts: toolArtifacts,
+        error: "Command aborted",
+        output: renderedOutput.output,
+        success: false,
+      };
+    }
+
+    if (execution.exitCode !== 0) {
+      const failureReason = execution.exitCode === null
+        ? `Command terminated${execution.signal ? ` by signal ${execution.signal}` : ""}`
+        : `Command failed with exit code ${String(execution.exitCode)}`;
+      logToolResult({ output: renderedOutput.output, success: false });
+      return {
+        artifacts: toolArtifacts,
+        error: failureReason,
         output: renderedOutput.output,
         success: false,
       };

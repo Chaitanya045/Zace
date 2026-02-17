@@ -174,9 +174,14 @@ export async function touchFile(filePath: string, waitForDiagnostics: boolean = 
 
   await Promise.all(
     clients.map(async (client) => {
-      const waitTask = waitForDiagnostics ? client.waitForDiagnostics(absolutePath) : Promise.resolve();
+      const baselineVersion = waitForDiagnostics
+        ? client.diagnosticsVersion(absolutePath)
+        : 0;
       await client.notifyOpen(absolutePath);
-      await waitTask;
+      if (!waitForDiagnostics) {
+        return;
+      }
+      await client.waitForDiagnostics(absolutePath, baselineVersion);
     })
   );
 }

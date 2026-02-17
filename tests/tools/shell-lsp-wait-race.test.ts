@@ -1,0 +1,177 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { env } from "../../src/config/env";
+import { shutdownLsp } from "../../src/lsp";
+import { shellTools } from "../../src/tools/shell";
+
+const IMMEDIATE_LSP_SERVER_SCRIPT = `
+let buffer = Buffer.alloc(0);
+
+function sendMessage(message) {
+  const payload = Buffer.from(JSON.stringify(message), "utf8");
+  process.stdout.write("Content-Length: " + String(payload.length) + "\\r\\n\\r\\n");
+  process.stdout.write(payload);
+}
+
+function publishDiagnostics(uri) {
+  sendMessage({
+    jsonrpc: "2.0",
+    method: "textDocument/publishDiagnostics",
+    params: {
+      diagnostics: [
+        {
+          message: "Immediate diagnostic",
+          range: {
+            end: { character: 2, line: 0 },
+            start: { character: 0, line: 0 }
+          },
+          severity: 1
+        }
+      ],
+      uri
+    }
+  });
+}
+
+function handleMessage(message) {
+  if (message.method === "initialize") {
+    sendMessage({
+      id: message.id,
+      jsonrpc: "2.0",
+      result: { capabilities: { textDocumentSync: 2 } }
+    });
+    return;
+  }
+
+  if (message.method === "textDocument/didOpen") {
+    publishDiagnostics(message.params.textDocument.uri);
+    return;
+  }
+
+  if (message.method === "textDocument/didChange") {
+    publishDiagnostics(message.params.textDocument.uri);
+    return;
+  }
+
+  if (typeof message.id !== "undefined") {
+    sendMessage({
+      id: message.id,
+      jsonrpc: "2.0",
+      result: null
+    });
+  }
+}
+
+function processBuffer() {
+  while (true) {
+    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+    if (headerEnd === -1) {
+      return;
+    }
+    const headerText = buffer.slice(0, headerEnd).toString("utf8");
+    const contentLengthMatch = headerText.match(/Content-Length:\\s*(\\d+)/iu);
+    if (!contentLengthMatch) {
+      buffer = buffer.slice(headerEnd + 4);
+      continue;
+    }
+    const contentLength = Number(contentLengthMatch[1]);
+    const messageEnd = headerEnd + 4 + contentLength;
+    if (buffer.length < messageEnd) {
+      return;
+    }
+    const payload = buffer.slice(headerEnd + 4, messageEnd).toString("utf8");
+    buffer = buffer.slice(messageEnd);
+    try {
+      handleMessage(JSON.parse(payload));
+    } catch {}
+  }
+}
+
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  processBuffer();
+});
+`;
+
+const originalLspEnabled = env.AGENT_LSP_ENABLED;
+const originalLspServerConfigPath = env.AGENT_LSP_SERVER_CONFIG_PATH;
+const originalWaitMs = env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS;
+
+let tempDirectoryPath = "";
+
+async function writeLspConfig(tempDirectory: string): Promise<string> {
+  const runtimeDirectory = join(tempDirectory, ".zace", "runtime", "lsp");
+  await mkdir(runtimeDirectory, { recursive: true });
+
+  const serverScriptPath = join(tempDirectory, "immediate-lsp-server.js");
+  await writeFile(serverScriptPath, IMMEDIATE_LSP_SERVER_SCRIPT, "utf8");
+
+  const configPath = join(runtimeDirectory, "servers.json");
+  await writeFile(
+    configPath,
+    JSON.stringify(
+      {
+        servers: [
+          {
+            command: [process.execPath, serverScriptPath],
+            extensions: [".ts"],
+            id: "immediate-lsp",
+            rootMarkers: [],
+          },
+        ],
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  return configPath;
+}
+
+describe("shell execute_command + LSP wait race handling", () => {
+  beforeEach(async () => {
+    tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-lsp-race-"));
+    env.AGENT_LSP_ENABLED = true;
+    env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = 1_200;
+    env.AGENT_LSP_SERVER_CONFIG_PATH = await writeLspConfig(tempDirectoryPath);
+  });
+
+  afterEach(async () => {
+    await shutdownLsp();
+    env.AGENT_LSP_ENABLED = originalLspEnabled;
+    env.AGENT_LSP_SERVER_CONFIG_PATH = originalLspServerConfigPath;
+    env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = originalWaitMs;
+
+    if (tempDirectoryPath) {
+      await rm(tempDirectoryPath, { force: true, recursive: true });
+    }
+  });
+
+  test("does not block for full wait timeout when diagnostics arrive immediately", async () => {
+    const executeCommandTool = shellTools.find((tool) => tool.name === "execute_command");
+    if (!executeCommandTool) {
+      throw new Error("execute_command tool not found");
+    }
+
+    const startTime = Date.now();
+    const result = await executeCommandTool.execute({
+      command: [
+        "cat > race.ts <<'EOF'",
+        "const x: string = 1;",
+        "EOF",
+        "printf 'ZACE_FILE_CHANGED|race.ts\\n'",
+      ].join("\n"),
+      cwd: tempDirectoryPath,
+      timeout: 30_000,
+    });
+    const durationMs = Date.now() - startTime;
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("Immediate diagnostic");
+    expect(durationMs).toBeLessThan(900);
+  });
+});
