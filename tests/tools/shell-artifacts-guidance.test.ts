@@ -34,4 +34,23 @@ describe("shell output truncation guidance", () => {
       await expect(stat(result.artifacts.combinedPath)).resolves.toBeDefined();
     }
   });
+
+  test("keeps execution command metadata compact for very long commands", async () => {
+    const executeCommandTool = shellTools.find((tool) => tool.name === "execute_command");
+    if (!executeCommandTool) {
+      throw new Error("execute_command tool not found");
+    }
+
+    const longComment = "x".repeat(1_500);
+    const result = await executeCommandTool.execute({
+      command: `echo ok # ${longComment}`,
+      outputLimitChars: 500,
+      timeout: 30_000,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("[execution]");
+    expect(result.output).toContain("command:");
+    expect(result.output).toContain("...[truncated ");
+  });
 });

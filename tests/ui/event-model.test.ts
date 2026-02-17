@@ -44,4 +44,18 @@ describe("ui event model", () => {
     expect(draft.body).toContain("Error: Exit code 1");
     expect(draft.body).toContain("lint failed");
   });
+
+  test("preserves lsp section in long tool result previews", () => {
+    const event: AgentToolResultEvent = {
+      attempt: 1,
+      name: "execute_command",
+      output: `${"x".repeat(2_000)}\n[lsp]\nNo active LSP server for changed files.`,
+      step: 5,
+      success: true,
+    };
+
+    const draft = buildToolResultTimelineEntry(event);
+    expect(draft.body).toContain("[lsp]");
+    expect(draft.body).toContain("No active LSP server");
+  });
 });

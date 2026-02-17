@@ -30,6 +30,7 @@ const executeCommandSchema = z.object({
 });
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+const EXECUTION_COMMAND_PREVIEW_CHARS = 600;
 const ZACE_MARKER_LINE_REGEX = /^ZACE_[A-Z0-9_]+\|.*$/u;
 const ZACE_FILE_CHANGED_PREFIX = "ZACE_FILE_CHANGED|";
 
@@ -694,6 +695,11 @@ function buildExecutionMetadataSection(input: {
   timedOut: boolean;
   workingDirectory: string;
 }): string {
+  const normalizedCommand = input.command.replaceAll(/\s+/gu, " ").trim();
+  const commandPreview = normalizedCommand.length > EXECUTION_COMMAND_PREVIEW_CHARS
+    ? `${normalizedCommand.slice(0, EXECUTION_COMMAND_PREVIEW_CHARS)} ...[truncated ${String(normalizedCommand.length - EXECUTION_COMMAND_PREVIEW_CHARS)} chars]`
+    : normalizedCommand;
+
   const lines = [
     "[execution]",
     `shell: ${getShellLabel()}`,
@@ -703,7 +709,7 @@ function buildExecutionMetadataSection(input: {
     `timed_out: ${input.timedOut ? "true" : "false"}`,
     `aborted: ${input.lifecycleEvent === "abort" ? "true" : "false"}`,
     `lifecycle_event: ${input.lifecycleEvent}`,
-    `command: ${input.command}`,
+    `command: ${commandPreview}`,
   ];
 
   if (input.signal) {
@@ -844,7 +850,7 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
       artifacts,
       effectiveOutputLimitChars,
       lspFeedback.outputSection
-        ? [executionSection, lspFeedback.outputSection]
+        ? [lspFeedback.outputSection, executionSection]
         : [executionSection]
     );
     const toolArtifacts = {
