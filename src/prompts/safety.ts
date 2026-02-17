@@ -43,3 +43,33 @@ Respond with JSON only using this schema:
 
 export const COMMAND_SAFETY_SYSTEM_PROMPT = `You are a command safety classifier.
 Return strict JSON only. No markdown.`;
+
+export interface ApprovalResponsePromptInput {
+  approvalPrompt: string;
+  command: string;
+  reason: string;
+  userReply: string;
+}
+
+export function buildApprovalResponsePrompt(input: ApprovalResponsePromptInput): string {
+  return `Classify the user's reply to a destructive-command approval request.
+
+APPROVAL REQUEST SHOWN TO USER:
+${input.approvalPrompt}
+
+PENDING COMMAND:
+${input.command}
+
+RISK REASON:
+${input.reason}
+
+USER REPLY:
+${input.userReply}
+
+Respond with JSON only using this schema:
+{"decision":"allow_once"|"allow_always_session"|"allow_always_workspace"|"deny"|"unclear","reason":"short reason"}
+`;
+}
+
+export const APPROVAL_RESPONSE_SYSTEM_PROMPT = `You are an approval intent classifier.
+Return strict JSON only. No markdown.`;

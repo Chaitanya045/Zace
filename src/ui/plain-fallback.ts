@@ -10,6 +10,7 @@ import {
   buildChatTaskWithFollowUp,
   loadSessionState,
   persistSessionTurn,
+  resolvePendingApprovalFromUserMessage,
   type ChatTurn,
 } from "../cli/chat-session";
 import { getSessionFilePath } from "../tools/session";
@@ -20,6 +21,16 @@ function createPlainStreamObserver(config: AgentConfig): AgentObserver | undefin
   }
 
   return {
+    onApprovalRequested: (event) => {
+      process.stdout.write(
+        `\n\n[approval:requested:step:${String(event.step)}]\nReason: ${event.reason}\nCommand: ${event.command}\n`
+      );
+    },
+    onApprovalResolved: (event) => {
+      process.stdout.write(
+        `\n[approval:resolved] decision=${event.decision} scope=${event.scope}\n`
+      );
+    },
     onExecutorStreamEnd: () => {
       process.stdout.write("\n");
     },
@@ -41,11 +52,17 @@ function createPlainStreamObserver(config: AgentConfig): AgentObserver | undefin
   };
 }
 
-function printChatStatus(turns: ChatTurn[]): void {
+function printChatStatus(
+  turns: ChatTurn[],
+  pendingApproval: boolean,
+  pendingFollowUpQuestion?: string
+): void {
   const lastTurn = turns[turns.length - 1];
 
   console.log("\n📌 Chat status");
   console.log(`Turns: ${turns.length}`);
+  console.log(`Pending follow-up: ${pendingFollowUpQuestion ? "yes" : "no"}`);
+  console.log(`Pending approval: ${pendingApproval ? "yes" : "no"}`);
   if (!lastTurn) {
     console.log("Last result: none\n");
     return;
@@ -70,12 +87,18 @@ export async function runPlainChatMode(
   sessionId: string
 ): Promise<void> {
   const turns: ChatTurn[] = [];
+  let pendingApproval: Awaited<ReturnType<typeof loadSessionState>>["pendingApproval"];
   let pendingFollowUpQuestion: string | undefined;
   const rl = createInterface({ input, output });
   const streamObserver = createPlainStreamObserver(config);
 
-  const sessionState = await loadSessionState(sessionId);
+  const sessionState = await loadSessionState(
+    sessionId,
+    config.pendingActionMaxAgeMs,
+    config.approvalMemoryEnabled
+  );
   turns.push(...sessionState.turns);
+  pendingApproval = sessionState.pendingApproval;
   pendingFollowUpQuestion = sessionState.pendingFollowUpQuestion;
 
   console.log("\n💬 Zace chat mode (plain fallback)");
@@ -84,6 +107,9 @@ export async function runPlainChatMode(
   console.log(`Loaded turns: ${turns.length}\n`);
   if (pendingFollowUpQuestion) {
     console.log(`Pending follow-up question: ${pendingFollowUpQuestion}\n`);
+  }
+  if (pendingApproval) {
+    console.log(`Pending approval command: ${pendingApproval.context.command}\n`);
   }
 
   try {
@@ -102,21 +128,55 @@ export async function runPlainChatMode(
 
       if (message === "/reset") {
         turns.length = 0;
+        pendingApproval = undefined;
         pendingFollowUpQuestion = undefined;
         console.log("\nSession context cleared in memory (session file unchanged).\n");
         continue;
       }
 
       if (message === "/status") {
-        printChatStatus(turns);
+        printChatStatus(turns, Boolean(pendingApproval), pendingFollowUpQuestion);
         continue;
       }
 
-      const task = buildChatTaskWithFollowUp(turns, message, pendingFollowUpQuestion);
+      const followUpQuestionForTask = pendingFollowUpQuestion;
+      let approvalResolutionNote: string | undefined;
+      let approvedCommandSignaturesOnce: string[] | undefined;
+      if (pendingApproval) {
+        const approvalResolution = await resolvePendingApprovalFromUserMessage({
+          client,
+          config,
+          pendingApproval,
+          sessionId,
+          userInput: message,
+        });
+        if (approvalResolution?.status === "unclear") {
+          console.log(`\n❓ ${approvalResolution.message}\n`);
+          continue;
+        }
+
+        if (approvalResolution?.status === "resolved") {
+          approvalResolutionNote = approvalResolution.contextNote;
+          if (approvalResolution.scope === "once" && approvalResolution.commandSignature) {
+            approvedCommandSignaturesOnce = [approvalResolution.commandSignature];
+          }
+          pendingApproval = undefined;
+          pendingFollowUpQuestion = undefined;
+          console.log(`\n🧭 ${approvalResolution.message}\n`);
+        }
+      }
+
+      const task = buildChatTaskWithFollowUp(
+        turns,
+        message,
+        followUpQuestionForTask,
+        approvalResolutionNote
+      );
       console.log(`\n🔨 Zace: ${message}\n`);
 
       const startedAt = new Date();
       const result = await runAgentLoop(client, config, task, {
+        approvedCommandSignaturesOnce,
         observer: streamObserver,
         sessionId,
       });
@@ -129,9 +189,16 @@ export async function runPlainChatMode(
       await persistSessionTurn(sessionId, message, task, result, startedAt, endedAt);
 
       if (result.finalState === "waiting_for_user") {
-        pendingFollowUpQuestion = result.message;
+        const refreshedSessionState = await loadSessionState(
+          sessionId,
+          config.pendingActionMaxAgeMs,
+          config.approvalMemoryEnabled
+        );
+        pendingApproval = refreshedSessionState.pendingApproval;
+        pendingFollowUpQuestion = refreshedSessionState.pendingFollowUpQuestion ?? result.message;
         console.log("Agent needs clarification. Reply with your answer.\n");
       } else {
+        pendingApproval = undefined;
         pendingFollowUpQuestion = undefined;
       }
 

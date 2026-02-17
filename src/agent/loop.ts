@@ -13,6 +13,12 @@ import { allTools } from "../tools";
 import { appendSessionMessage, appendSessionRunEvent, getSessionFilePath } from "../tools/session";
 import { AgentError } from "../utils/errors";
 import { log, logError, logStep } from "../utils/logger";
+import {
+  buildApprovalCommandSignature,
+  buildPendingApprovalPrompt,
+  createPendingApprovalAction,
+  findApprovalRuleDecision,
+} from "./approval";
 import { maybeCompactContext } from "./compaction";
 import {
   describeCompletionPlan,
@@ -54,6 +60,7 @@ export interface AgentResult {
 }
 
 export interface RunAgentLoopOptions {
+  approvedCommandSignaturesOnce?: string[];
   observer?: AgentObserver;
   sessionId?: string;
 }
@@ -64,6 +71,24 @@ const PROJECT_DOC_MAX_LINES = 220;
 const PROJECT_DOC_OUTPUT_LIMIT_CHARS = 10_000;
 const PROJECT_DOC_TIMEOUT_MS = 30_000;
 const OVERWRITE_REDIRECT_TARGET_REGEX = /(?:^|[\s;|&])(?:\d*)>(?!>|&)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/gu;
+
+type CommandApprovalResult =
+  | {
+      commandSignature: string;
+      message: string;
+      reason: string;
+      status: "request_user";
+    }
+  | {
+      message: string;
+      scope: "session" | "workspace";
+      status: "deny";
+    }
+  | {
+      requiredApproval: boolean;
+      scope: "once" | "session" | "workspace";
+      status: "allow";
+    };
 
 async function appendRunEvent(input: {
   event: string;
@@ -441,6 +466,7 @@ export async function runAgentLoop(
   let lastToolLoopSignatureCount = 0;
   let lastCompletionGateFailure: null | string = null;
   const toolCallSignatureHistory: string[] = [];
+  const onceApprovedSignatures = new Set(options?.approvedCommandSignaturesOnce ?? []);
   const getCompletionCriteria = (): string[] => describeCompletionPlan(completionPlan);
   const finalizeResult = async (
     result: AgentResult,
@@ -462,6 +488,77 @@ export async function runAgentLoop(
     });
 
     return result;
+  };
+  const resolveCommandApproval = async (input: {
+    command: string;
+    workingDirectory?: string;
+  }): Promise<CommandApprovalResult> => {
+    const destructiveReason = await getDestructiveCommandReason(client, config, input.command, {
+      workingDirectory: input.workingDirectory,
+    });
+    if (!destructiveReason) {
+      return {
+        requiredApproval: false,
+        scope: "once",
+        status: "allow",
+      };
+    }
+
+    const commandSignature = buildApprovalCommandSignature(input.command, input.workingDirectory);
+    if (onceApprovedSignatures.has(commandSignature)) {
+      onceApprovedSignatures.delete(commandSignature);
+      return {
+        requiredApproval: true,
+        scope: "once",
+        status: "allow",
+      };
+    }
+
+    const savedRule = await findApprovalRuleDecision({
+      commandSignature,
+      config,
+      sessionId,
+    });
+    if (savedRule) {
+      if (savedRule.decision === "allow") {
+        return {
+          requiredApproval: true,
+          scope: savedRule.scope,
+          status: "allow",
+        };
+      }
+      return {
+        message:
+          `Command denied by saved ${savedRule.scope} approval rule.\n` +
+          `Command: ${input.command}\n` +
+          `Rule pattern: ${savedRule.pattern}`,
+        scope: savedRule.scope,
+        status: "deny",
+      };
+    }
+
+    const confirmationMessage = buildPendingApprovalPrompt({
+      command: input.command,
+      reason: destructiveReason,
+      riskyConfirmationToken: config.riskyConfirmationToken,
+    });
+    if (sessionId && config.approvalMemoryEnabled) {
+      await createPendingApprovalAction({
+        command: input.command,
+        commandSignature,
+        prompt: confirmationMessage,
+        reason: destructiveReason,
+        runId,
+        sessionId,
+        workingDirectory: input.workingDirectory,
+      });
+    }
+    return {
+      commandSignature,
+      message: confirmationMessage,
+      reason: destructiveReason,
+      status: "request_user",
+    };
   };
 
   // Build dynamic system prompt with runtime context
@@ -695,19 +792,65 @@ export async function runAgentLoop(
         }
 
         if (completionPlan.gates.length > 0) {
+          let approvalBlockedMessage: null | string = null;
           for (const gate of completionPlan.gates) {
-            const destructiveReason = await getDestructiveCommandReason(client, config, gate.command);
-            if (!destructiveReason) {
+            const gateApproval = await resolveCommandApproval({
+              command: gate.command,
+            });
+
+            if (gateApproval.status === "allow") {
+              if (gateApproval.requiredApproval) {
+                observer?.onApprovalResolved?.({
+                  decision: "allow",
+                  scope: gateApproval.scope,
+                });
+                await appendRunEvent({
+                  event: "approval_resolved",
+                  observer,
+                  payload: {
+                    command: gate.command,
+                    decision: "allow",
+                    scope: gateApproval.scope,
+                  },
+                  phase: "approval",
+                  runId,
+                  sessionId,
+                  step: stepNumber,
+                });
+              }
               continue;
             }
 
-            const confirmationMessage =
-              `Destructive completion gate requires confirmation: ${destructiveReason}\n` +
-              `Command: ${gate.command}\n` +
-              `Reply with "${config.riskyConfirmationToken}" and ask me to continue.`;
-            memory.addMessage("assistant", confirmationMessage);
+            if (gateApproval.status === "deny") {
+              observer?.onApprovalResolved?.({
+                decision: "deny",
+                scope: gateApproval.scope,
+              });
+              await appendRunEvent({
+                event: "approval_resolved",
+                observer,
+                payload: {
+                  command: gate.command,
+                  decision: "deny",
+                  scope: gateApproval.scope,
+                },
+                phase: "approval",
+                runId,
+                sessionId,
+                step: stepNumber,
+              });
+              approvalBlockedMessage = gateApproval.message;
+              break;
+            }
+
+            observer?.onApprovalRequested?.({
+              command: gate.command,
+              reason: gateApproval.reason,
+              step: stepNumber,
+            });
+            memory.addMessage("assistant", gateApproval.message);
             context = addStep(context, {
-              reasoning: `Waiting for explicit confirmation before running destructive completion gate. ${destructiveReason}`,
+              reasoning: `Waiting for explicit confirmation before running destructive completion gate. ${gateApproval.reason}`,
               state: "waiting_for_user",
               step: stepNumber,
               toolCall: null,
@@ -718,7 +861,8 @@ export async function runAgentLoop(
               observer,
               payload: {
                 command: gate.command,
-                reason: destructiveReason,
+                commandSignature: gateApproval.commandSignature,
+                reason: gateApproval.reason,
               },
               phase: "approval",
               runId,
@@ -728,9 +872,24 @@ export async function runAgentLoop(
             return await finalizeResult({
               context,
               finalState: "waiting_for_user",
-              message: confirmationMessage,
+              message: gateApproval.message,
               success: false,
             }, stepNumber, "destructive_completion_gate_confirmation");
+          }
+
+          if (approvalBlockedMessage) {
+            const failureMessage = `Completion blocked by approval policy: ${approvalBlockedMessage}`;
+            lastCompletionGateFailure = failureMessage;
+            memory.addMessage("assistant", failureMessage);
+            context = addStep(context, {
+              reasoning: failureMessage,
+              state: "executing",
+              step: stepNumber,
+              toolCall: null,
+              toolResult: null,
+            });
+            logStep(stepNumber, failureMessage);
+            continue;
           }
 
           const gateResults = await runCompletionGates(completionPlan.gates);
@@ -887,26 +1046,81 @@ export async function runAgentLoop(
         }, stepNumber, "loop_guard_pre_execution");
       }
 
-      if (
-        config.requireRiskyConfirmation &&
-        planResult.toolCall.name === "execute_command"
-      ) {
+      if (planResult.toolCall.name === "execute_command") {
         const command = getExecuteCommandText(planResult.toolCall.arguments);
         const commandWorkingDirectory = getExecuteCommandWorkingDirectory(
           planResult.toolCall.arguments
         );
         if (command) {
-          const destructiveReason = await getDestructiveCommandReason(client, config, command, {
+          const commandApproval = await resolveCommandApproval({
+            command,
             workingDirectory: commandWorkingDirectory,
           });
-          if (destructiveReason) {
-            const confirmationMessage =
-              `Destructive command requires confirmation: ${destructiveReason}\n` +
-              `Command: ${command}\n` +
-              `Reply with "${config.riskyConfirmationToken}" and ask me to continue.`;
-            memory.addMessage("assistant", confirmationMessage);
+
+          if (commandApproval.status === "allow") {
+            if (commandApproval.requiredApproval) {
+              observer?.onApprovalResolved?.({
+                decision: "allow",
+                scope: commandApproval.scope,
+              });
+              await appendRunEvent({
+                event: "approval_resolved",
+                observer,
+                payload: {
+                  command,
+                  decision: "allow",
+                  scope: commandApproval.scope,
+                },
+                phase: "approval",
+                runId,
+                sessionId,
+                step: stepNumber,
+              });
+            }
+          } else if (commandApproval.status === "deny") {
+            observer?.onApprovalResolved?.({
+              decision: "deny",
+              scope: commandApproval.scope,
+            });
+            await appendRunEvent({
+              event: "approval_resolved",
+              observer,
+              payload: {
+                command,
+                decision: "deny",
+                scope: commandApproval.scope,
+              },
+              phase: "approval",
+              runId,
+              sessionId,
+              step: stepNumber,
+            });
+            memory.addMessage("assistant", commandApproval.message);
             context = addStep(context, {
-              reasoning: `Waiting for explicit confirmation before running destructive command. ${destructiveReason}`,
+              reasoning: `Command execution denied by ${commandApproval.scope} approval rule.`,
+              state: "executing",
+              step: stepNumber,
+              toolCall: {
+                arguments: planResult.toolCall.arguments,
+                name: planResult.toolCall.name,
+              },
+              toolResult: {
+                error: "Command denied by approval policy",
+                output: commandApproval.message,
+                success: false,
+              },
+            });
+            toolCallSignatureHistory.push(plannedToolCallSignature);
+            continue;
+          } else {
+            observer?.onApprovalRequested?.({
+              command,
+              reason: commandApproval.reason,
+              step: stepNumber,
+            });
+            memory.addMessage("assistant", commandApproval.message);
+            context = addStep(context, {
+              reasoning: `Waiting for explicit confirmation before running destructive command. ${commandApproval.reason}`,
               state: "waiting_for_user",
               step: stepNumber,
               toolCall: {
@@ -920,7 +1134,8 @@ export async function runAgentLoop(
               observer,
               payload: {
                 command,
-                reason: destructiveReason,
+                commandSignature: commandApproval.commandSignature,
+                reason: commandApproval.reason,
               },
               phase: "approval",
               runId,
@@ -930,7 +1145,7 @@ export async function runAgentLoop(
             return await finalizeResult({
               context,
               finalState: "waiting_for_user",
-              message: confirmationMessage,
+              message: commandApproval.message,
               success: false,
             }, stepNumber, "destructive_command_confirmation");
           }

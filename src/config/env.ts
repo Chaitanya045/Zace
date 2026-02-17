@@ -16,6 +16,8 @@ const commandPatternListSchema = z.string().default("").transform((value) =>
 );
 
 const envSchema = z.object({
+  AGENT_APPROVAL_MEMORY_ENABLED: z.coerce.boolean().default(true),
+  AGENT_APPROVAL_RULES_PATH: z.string().min(1).default(".zace/runtime/policy/approvals.json"),
   AGENT_COMMAND_ALLOW_PATTERNS: commandPatternListSchema,
   AGENT_COMMAND_ARTIFACTS_DIR: z.string().min(1),
   AGENT_COMMAND_DENY_PATTERNS: commandPatternListSchema,
@@ -31,6 +33,7 @@ const envSchema = z.object({
   AGENT_LSP_SERVER_CONFIG_PATH: z.string().min(1).default(".zace/runtime/lsp/servers.json"),
   AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS: z.coerce.number().int().positive().default(3000),
   AGENT_MAX_STEPS: z.coerce.number().int().positive().default(10),
+  AGENT_PENDING_ACTION_MAX_AGE_MS: z.coerce.number().int().positive().default(3_600_000),
   AGENT_REQUIRE_RISKY_CONFIRMATION: z.coerce.boolean().default(true),
   AGENT_RISKY_CONFIRMATION_TOKEN: z.string().min(1).default("ZACE_APPROVE_RISKY"),
   AGENT_STAGNATION_WINDOW: z.coerce.number().int().min(1).default(3),

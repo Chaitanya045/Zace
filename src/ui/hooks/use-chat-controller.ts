@@ -15,6 +15,7 @@ import {
   buildChatTaskWithFollowUp,
   loadSessionState,
   persistSessionTurn,
+  resolvePendingApprovalFromUserMessage,
   type ChatTurn,
 } from "../../cli/chat-session";
 import { STREAM_BUFFER_INTERVAL_MS } from "../buffer";
@@ -56,6 +57,9 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
     })
   );
   const turnsRef = useRef<ChatTurn[]>([]);
+  const pendingApprovalRef = useRef<Awaited<ReturnType<typeof loadSessionState>>["pendingApproval"]>(
+    undefined
+  );
   const pendingFollowUpQuestionRef = useRef<string | undefined>(undefined);
   const sequenceRef = useRef(0);
   const streamEntryRef = useRef<Partial<Record<StreamSlot, string>>>({});
@@ -103,13 +107,22 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
 
     const load = async (): Promise<void> => {
       try {
-        const sessionState = await loadSessionState(input.sessionId);
+        const sessionState = await loadSessionState(
+          input.sessionId,
+          input.config.pendingActionMaxAgeMs,
+          input.config.approvalMemoryEnabled
+        );
         if (!isMounted) {
           return;
         }
 
         turnsRef.current = sessionState.turns;
+        pendingApprovalRef.current = sessionState.pendingApproval;
         pendingFollowUpQuestionRef.current = sessionState.pendingFollowUpQuestion;
+        dispatch({
+          type: "set_pending_approval",
+          value: Boolean(sessionState.pendingApproval),
+        });
         dispatch({
           type: "set_pending_follow_up",
           value: sessionState.pendingFollowUpQuestion,
@@ -123,6 +136,13 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
           kind: "status",
           tone: "muted",
         });
+        if (sessionState.pendingApproval) {
+          createTimelineEntry({
+            body: `Pending approval restored for command:\n${sessionState.pendingApproval.context.command}`,
+            kind: "status",
+            tone: "danger",
+          });
+        }
       } catch (error) {
         if (!isMounted) {
           return;
@@ -141,7 +161,7 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
     return () => {
       isMounted = false;
     };
-  }, [createTimelineEntry, input.sessionId]);
+  }, [createTimelineEntry, input.config.pendingActionMaxAgeMs, input.sessionId]);
 
   const appendComposerChar = useCallback((value: string): void => {
     if (!value) {
@@ -193,7 +213,12 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
 
     if (message === "/reset") {
       turnsRef.current = [];
+      pendingApprovalRef.current = undefined;
       pendingFollowUpQuestionRef.current = undefined;
+      dispatch({
+        type: "set_pending_approval",
+        value: false,
+      });
       dispatch({
         type: "set_pending_follow_up",
         value: undefined,
@@ -216,11 +241,15 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
       const pending = pendingFollowUpQuestionRef.current
         ? "yes"
         : "no";
+      const pendingApproval = pendingApprovalRef.current
+        ? "yes"
+        : "no";
       createTimelineEntry({
         body:
           `Turns: ${String(turnsRef.current.length)}\n` +
           `Busy: ${state.isBusy ? "yes" : "no"}\n` +
-          `Pending follow-up: ${pending}`,
+          `Pending follow-up: ${pending}\n` +
+          `Pending approval: ${pendingApproval}`,
         kind: "status",
       });
       return;
@@ -253,13 +282,89 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
       value: "step:n/a",
     });
 
+    const followUpQuestionForTask = pendingFollowUpQuestionRef.current;
+    let approvalResolutionNote: string | undefined;
+    let approvedCommandSignaturesOnce: string[] | undefined;
+    if (pendingApprovalRef.current) {
+      const approvalResolution = await resolvePendingApprovalFromUserMessage({
+        client: input.client,
+        config: input.config,
+        pendingApproval: pendingApprovalRef.current,
+        sessionId: input.sessionId,
+        userInput: message,
+      });
+
+      if (approvalResolution?.status === "unclear") {
+        createTimelineEntry({
+          body: approvalResolution.message,
+          kind: "assistant",
+          title: "Approval pending",
+          tone: "danger",
+        });
+        dispatch({
+          type: "set_run_state",
+          value: "waiting_for_user",
+        });
+        dispatch({
+          type: "set_busy",
+          value: false,
+        });
+        dispatch({
+          type: "set_step_label",
+          value: undefined,
+        });
+        return;
+      }
+
+      if (approvalResolution?.status === "resolved") {
+        approvalResolutionNote = approvalResolution.contextNote;
+        if (approvalResolution.scope === "once" && approvalResolution.commandSignature) {
+          approvedCommandSignaturesOnce = [approvalResolution.commandSignature];
+        }
+
+        pendingApprovalRef.current = undefined;
+        pendingFollowUpQuestionRef.current = undefined;
+        dispatch({
+          type: "set_pending_approval",
+          value: false,
+        });
+        dispatch({
+          type: "set_pending_follow_up",
+          value: undefined,
+        });
+        createTimelineEntry({
+          body: approvalResolution.message,
+          kind: "status",
+          tone: approvalResolution.decision === "allow" ? "success" : "muted",
+        });
+      }
+    }
+
     const task = buildChatTaskWithFollowUp(
       turnsRef.current,
       message,
-      pendingFollowUpQuestionRef.current
+      followUpQuestionForTask,
+      approvalResolutionNote
     );
 
     const observer: AgentObserver = {
+      onApprovalRequested: (event) => {
+        createTimelineEntry({
+          body:
+            `Approval requested at step ${String(event.step)}.\n` +
+            `Reason: ${event.reason}\n` +
+            `Command: ${event.command}`,
+          kind: "status",
+          tone: "danger",
+        });
+      },
+      onApprovalResolved: (event) => {
+        createTimelineEntry({
+          body: `Approval resolved: ${event.decision} (${event.scope})`,
+          kind: "status",
+          tone: event.decision === "allow" ? "success" : "muted",
+        });
+      },
       onCompaction: (event) => {
         createTimelineEntry({
           body: `Context compacted at step ${String(event.step)} (${String(event.ratioPercent)}%).`,
@@ -366,6 +471,7 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
     const startedAt = new Date();
     try {
       const result = await runAgentLoop(input.client, input.config, task, {
+        approvedCommandSignaturesOnce,
         observer,
         sessionId: input.sessionId,
       });
@@ -399,13 +505,29 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
       });
 
       if (result.finalState === "waiting_for_user") {
-        pendingFollowUpQuestionRef.current = result.message;
+        const refreshedSessionState = await loadSessionState(
+          input.sessionId,
+          input.config.pendingActionMaxAgeMs,
+          input.config.approvalMemoryEnabled
+        );
+        pendingApprovalRef.current = refreshedSessionState.pendingApproval;
+        dispatch({
+          type: "set_pending_approval",
+          value: Boolean(refreshedSessionState.pendingApproval),
+        });
+        pendingFollowUpQuestionRef.current =
+          refreshedSessionState.pendingFollowUpQuestion ?? result.message;
         dispatch({
           type: "set_pending_follow_up",
-          value: result.message,
+          value: pendingFollowUpQuestionRef.current,
         });
       } else {
+        pendingApprovalRef.current = undefined;
         pendingFollowUpQuestionRef.current = undefined;
+        dispatch({
+          type: "set_pending_approval",
+          value: false,
+        });
         dispatch({
           type: "set_pending_follow_up",
           value: undefined,

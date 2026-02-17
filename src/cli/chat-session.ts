@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 
+import type { OpenPendingApproval } from "../agent/approval";
 import type { AgentResult } from "../agent/loop";
+import type { LlmClient } from "../llm/client";
+import type { AgentConfig } from "../types/config";
 
+import { findOpenPendingApproval, resolveApprovalFromUserReply } from "../agent/approval";
 import {
   appendSessionEntries,
   normalizeSessionId,
@@ -16,6 +20,7 @@ export type ChatTurn = {
 };
 
 export type SessionState = {
+  pendingApproval?: OpenPendingApproval;
   pendingFollowUpQuestion?: string;
   turns: ChatTurn[];
 };
@@ -58,10 +63,11 @@ export function resolveOrCreateSessionId(rawSessionId?: string): string {
 export function buildChatTaskWithFollowUp(
   turns: ChatTurn[],
   userInput: string,
-  followUpQuestion?: string
+  followUpQuestion?: string,
+  approvalResolutionNote?: string
 ): string {
   const recentTurns = turns.slice(-MAX_CHAT_CONTEXT_TURNS);
-  if (recentTurns.length === 0 && !followUpQuestion) {
+  if (recentTurns.length === 0 && !followUpQuestion && !approvalResolutionNote) {
     return userInput;
   }
 
@@ -75,15 +81,22 @@ export function buildChatTaskWithFollowUp(
   const followUpContext = followUpQuestion
     ? `\n\nAGENT FOLLOW-UP QUESTION:\n${followUpQuestion}\n\nUSER FOLLOW-UP ANSWER:\n${userInput}`
     : `\n\nCURRENT USER MESSAGE:\n${userInput}`;
+  const approvalContext = approvalResolutionNote
+    ? `\n\nAPPROVAL RESOLUTION CONTEXT:\n${approvalResolutionNote}`
+    : "";
 
   return `Continue this interactive conversation using the recent context.
 
 RECENT CONVERSATION:
 ${history}
-${followUpContext}`;
+${followUpContext}${approvalContext}`;
 }
 
-export async function loadSessionState(sessionId: string): Promise<SessionState> {
+export async function loadSessionState(
+  sessionId: string,
+  pendingActionMaxAgeMs: number,
+  approvalMemoryEnabled: boolean = true
+): Promise<SessionState> {
   const entries = await readSessionEntries(sessionId);
   const turns = entries
     .filter((entry) => entry.type === "run")
@@ -93,13 +106,41 @@ export async function loadSessionState(sessionId: string): Promise<SessionState>
       steps: entry.steps,
       user: entry.userMessage,
     }));
+  const pendingApproval = approvalMemoryEnabled
+    ? await findOpenPendingApproval({
+        maxAgeMs: pendingActionMaxAgeMs,
+        sessionId,
+      })
+    : null;
 
   const lastTurn = turns[turns.length - 1];
   return {
+    pendingApproval: pendingApproval ?? undefined,
     pendingFollowUpQuestion:
-      lastTurn?.finalState === "waiting_for_user" ? lastTurn.assistant : undefined,
+      pendingApproval?.entry.prompt ??
+      (lastTurn?.finalState === "waiting_for_user" ? lastTurn.assistant : undefined),
     turns,
   };
+}
+
+export async function resolvePendingApprovalFromUserMessage(input: {
+  client: LlmClient;
+  config: AgentConfig;
+  pendingApproval?: OpenPendingApproval;
+  sessionId: string;
+  userInput: string;
+}) {
+  if (!input.config.approvalMemoryEnabled || !input.pendingApproval) {
+    return null;
+  }
+
+  return await resolveApprovalFromUserReply({
+    client: input.client,
+    config: input.config,
+    pendingApproval: input.pendingApproval,
+    sessionId: input.sessionId,
+    userMessage: input.userInput,
+  });
 }
 
 export async function persistSessionTurn(

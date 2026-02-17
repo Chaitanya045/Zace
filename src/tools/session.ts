@@ -49,21 +49,69 @@ const sessionRunEventEntrySchema = z.object({
   type: z.literal("run_event"),
 });
 
+const sessionPendingActionKindSchema = z.enum(["approval", "loop_guard"]);
+const sessionPendingActionStatusSchema = z.enum(["open", "resolved"]);
+
+const sessionPendingActionEntrySchema = z.object({
+  context: z.record(z.string(), z.unknown()),
+  kind: sessionPendingActionKindSchema,
+  prompt: z.string(),
+  runId: z.string().min(1),
+  sessionId: z.string().min(1),
+  status: sessionPendingActionStatusSchema,
+  timestamp: z.string(),
+  type: z.literal("pending_action"),
+});
+
+const sessionApprovalRuleScopeSchema = z.enum(["session", "workspace"]);
+const sessionApprovalRuleDecisionSchema = z.enum(["allow", "deny"]);
+
+const sessionApprovalRuleEntrySchema = z.object({
+  decision: sessionApprovalRuleDecisionSchema,
+  pattern: z.string().min(1),
+  scope: sessionApprovalRuleScopeSchema,
+  timestamp: z.string(),
+  type: z.literal("approval_rule"),
+});
+
 export const sessionEntrySchema = z.discriminatedUnion("type", [
+  sessionApprovalRuleEntrySchema,
   sessionMessageEntrySchema,
+  sessionPendingActionEntrySchema,
   sessionRunEventEntrySchema,
   sessionSummaryEntrySchema,
   sessionRunEntrySchema,
 ]);
 
 export type SessionEntry = z.infer<typeof sessionEntrySchema>;
+export type SessionApprovalRuleDecision = z.infer<typeof sessionApprovalRuleDecisionSchema>;
+export type SessionApprovalRuleEntry = Extract<SessionEntry, { type: "approval_rule" }>;
+export type SessionApprovalRuleScope = z.infer<typeof sessionApprovalRuleScopeSchema>;
 export type SessionMessageEntry = Extract<SessionEntry, { type: "message" }>;
 export type SessionMessageRole = z.infer<typeof sessionMessageRoleSchema>;
+export type SessionPendingActionEntry = Extract<SessionEntry, { type: "pending_action" }>;
+export type SessionPendingActionKind = z.infer<typeof sessionPendingActionKindSchema>;
+export type SessionPendingActionStatus = z.infer<typeof sessionPendingActionStatusSchema>;
 export type SessionRunEventEntry = Extract<SessionEntry, { type: "run_event" }>;
 export type SessionRunEventPhase = z.infer<typeof sessionRunEventPhaseSchema>;
 export type SessionMessageWrite = {
   content: string;
   role: SessionMessageRole;
+  timestamp?: string;
+};
+export type SessionApprovalRuleWrite = {
+  decision: SessionApprovalRuleDecision;
+  pattern: string;
+  scope: SessionApprovalRuleScope;
+  timestamp?: string;
+};
+export type SessionPendingActionWrite = {
+  context?: Record<string, unknown>;
+  kind: SessionPendingActionKind;
+  prompt: string;
+  runId: string;
+  sessionId: string;
+  status: SessionPendingActionStatus;
   timestamp?: string;
 };
 export type SessionRunEventWrite = {
@@ -182,6 +230,82 @@ export async function appendSessionRunEvent(
       type: "run_event",
     },
   ]);
+}
+
+export async function appendSessionPendingAction(
+  sessionId: string,
+  pendingAction: SessionPendingActionWrite
+): Promise<void> {
+  const timestamp = pendingAction.timestamp ?? new Date().toISOString();
+  await appendSessionEntries(sessionId, [
+    {
+      context: pendingAction.context ?? {},
+      kind: pendingAction.kind,
+      prompt: pendingAction.prompt,
+      runId: pendingAction.runId,
+      sessionId: pendingAction.sessionId,
+      status: pendingAction.status,
+      timestamp,
+      type: "pending_action",
+    },
+  ]);
+}
+
+export async function appendSessionApprovalRule(
+  sessionId: string,
+  rule: SessionApprovalRuleWrite
+): Promise<void> {
+  const timestamp = rule.timestamp ?? new Date().toISOString();
+  await appendSessionEntries(sessionId, [
+    {
+      decision: rule.decision,
+      pattern: rule.pattern,
+      scope: rule.scope,
+      timestamp,
+      type: "approval_rule",
+    },
+  ]);
+}
+
+function resolvePendingActionId(action: SessionPendingActionEntry): string {
+  const pendingId = action.context.pendingId;
+  if (typeof pendingId === "string" && pendingId.length > 0) {
+    return pendingId;
+  }
+
+  return `${action.runId}:${action.kind}:${action.prompt}`;
+}
+
+export function findLatestOpenPendingAction(
+  entries: SessionEntry[],
+  kind?: SessionPendingActionKind
+): SessionPendingActionEntry | undefined {
+  const openActions = new Map<string, SessionPendingActionEntry>();
+
+  for (const entry of entries) {
+    if (entry.type !== "pending_action") {
+      continue;
+    }
+    if (kind && entry.kind !== kind) {
+      continue;
+    }
+
+    const pendingId = resolvePendingActionId(entry);
+    if (entry.status === "resolved") {
+      openActions.delete(pendingId);
+      continue;
+    }
+
+    openActions.set(pendingId, entry);
+  }
+
+  const candidates = Array.from(openActions.values());
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  candidates.sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  return candidates[candidates.length - 1];
 }
 
 export async function readSessionMessages(sessionId: string): Promise<SessionMessageEntry[]> {

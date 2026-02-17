@@ -20,6 +20,17 @@ export interface AgentLoopGuardEvent {
   step: number;
 }
 
+export interface AgentApprovalRequestedEvent {
+  command: string;
+  reason: string;
+  step: number;
+}
+
+export interface AgentApprovalResolvedEvent {
+  decision: "allow" | "deny";
+  scope: "once" | "session" | "workspace";
+}
+
 export interface AgentRunEvent {
   event: string;
   phase: "approval" | "executing" | "finalizing" | "planning";
@@ -57,6 +68,8 @@ export interface AgentToolResultEvent {
 }
 
 export interface AgentObserver {
+  onApprovalRequested?: (event: AgentApprovalRequestedEvent) => void;
+  onApprovalResolved?: (event: AgentApprovalResolvedEvent) => void;
   onCompaction?: (event: AgentCompactionEvent) => void;
   onDiagnostics?: (event: AgentDiagnosticsEvent) => void;
   onError?: (event: AgentErrorEvent) => void;

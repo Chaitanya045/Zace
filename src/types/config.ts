@@ -1,6 +1,8 @@
 import { env, type ExecutorAnalysisMode } from "../config/env";
 
 export type AgentConfig = {
+  approvalMemoryEnabled: boolean;
+  approvalRulesPath: string;
   commandAllowPatterns: string[];
   commandDenyPatterns: string[];
   compactionEnabled: boolean;
@@ -18,6 +20,7 @@ export type AgentConfig = {
   llmModel: string;
   llmProvider: "openrouter";
   maxSteps: number;
+  pendingActionMaxAgeMs: number;
   requireRiskyConfirmation: boolean;
   riskyConfirmationToken: string;
   stagnationWindow: number;
@@ -27,6 +30,8 @@ export type AgentConfig = {
 
 export function getAgentConfig(): AgentConfig {
   return {
+    approvalMemoryEnabled: env.AGENT_APPROVAL_MEMORY_ENABLED,
+    approvalRulesPath: env.AGENT_APPROVAL_RULES_PATH,
     commandAllowPatterns: env.AGENT_COMMAND_ALLOW_PATTERNS,
     commandDenyPatterns: env.AGENT_COMMAND_DENY_PATTERNS,
     compactionEnabled: env.AGENT_COMPACTION_ENABLED,
@@ -44,6 +49,7 @@ export function getAgentConfig(): AgentConfig {
     lspServerConfigPath: env.AGENT_LSP_SERVER_CONFIG_PATH,
     lspWaitForDiagnosticsMs: env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS,
     maxSteps: env.AGENT_MAX_STEPS,
+    pendingActionMaxAgeMs: env.AGENT_PENDING_ACTION_MAX_AGE_MS,
     requireRiskyConfirmation: env.AGENT_REQUIRE_RISKY_CONFIRMATION,
     riskyConfirmationToken: env.AGENT_RISKY_CONFIRMATION_TOKEN,
     stagnationWindow: env.AGENT_STAGNATION_WINDOW,

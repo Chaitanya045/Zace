@@ -8,6 +8,7 @@ export function createInitialChatUiState(input: {
 }): ChatUiState {
   return {
     composerValue: "",
+    hasPendingApproval: false,
     isBusy: false,
     runState: "idle",
     sessionFilePath: input.sessionFilePath,
@@ -88,6 +89,11 @@ export function chatUiReducer(state: ChatUiState, action: ChatUiAction): ChatUiS
       return {
         ...state,
         pendingFollowUpQuestion: action.value,
+      };
+    case "set_pending_approval":
+      return {
+        ...state,
+        hasPendingApproval: action.value,
       };
     case "set_run_state":
       return {

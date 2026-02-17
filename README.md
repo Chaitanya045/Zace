@@ -111,7 +111,13 @@ Notes:
 Zace enforces command policy at execution time.
 
 - Destructive command detection is LLM-driven.
-- If a command is classified destructive, Zace asks for explicit confirmation using `AGENT_RISKY_CONFIRMATION_TOKEN`.
+- If a command is classified destructive, Zace asks for explicit approval with choices:
+  - allow once
+  - always allow for this session
+  - always allow for this workspace
+  - deny
+- Legacy confirmation token still works: `AGENT_RISKY_CONFIRMATION_TOKEN`.
+- Pending approval requests are persisted in the session JSONL and can be resolved on the next user message.
 - Deny patterns can hard-block commands.
 - Allow patterns can restrict execution to an approved set.
 
@@ -119,6 +125,9 @@ Environment variables:
 
 - `AGENT_REQUIRE_RISKY_CONFIRMATION` (`true|false`)
 - `AGENT_RISKY_CONFIRMATION_TOKEN` (default: `ZACE_APPROVE_RISKY`)
+- `AGENT_APPROVAL_MEMORY_ENABLED` (`true|false`)
+- `AGENT_APPROVAL_RULES_PATH` (default: `.zace/runtime/policy/approvals.json`)
+- `AGENT_PENDING_ACTION_MAX_AGE_MS` (default: `3600000`)
 - `AGENT_COMMAND_ALLOW_PATTERNS` (regex list separated by `;;`)
 - `AGENT_COMMAND_DENY_PATTERNS` (regex list separated by `;;`)
 
@@ -230,6 +239,8 @@ Session files are stored as JSONL:
   - user/assistant messages
   - run summaries
   - run metadata (state, steps, duration, timestamps, task)
+  - pending actions (approval/loop-guard workflow state)
+  - approval rules (session/workspace memory)
 
 Use the same `--session <id>` value across runs to continue conversation context.
 

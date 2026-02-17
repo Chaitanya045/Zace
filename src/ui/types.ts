@@ -14,6 +14,7 @@ export interface TimelineEntry {
 
 export interface ChatUiState {
   composerValue: string;
+  hasPendingApproval: boolean;
   isBusy: boolean;
   pendingFollowUpQuestion?: string;
   runState: string;
@@ -33,6 +34,7 @@ export type ChatUiAction =
   | { type: "set_busy"; value: boolean }
   | { type: "set_composer"; value: string }
   | { type: "set_entry_streaming"; id: string; value: boolean }
+  | { type: "set_pending_approval"; value: boolean }
   | { type: "set_pending_follow_up"; value?: string }
   | { type: "set_run_state"; value: string }
   | { type: "set_step_label"; value?: string }
