@@ -1,14 +1,8 @@
+const DEFAULT_DOC_DISCOVERY_MAX_DEPTH = 5;
+const DEFAULT_DOC_DISCOVERY_MAX_FILES = 24;
 const DEFAULT_DOC_PREVIEW_MAX_CHARS = 4_000;
+const DOC_CANDIDATE_MARKER_PREFIX = "ZACE_DOC_CANDIDATE|";
 const DOC_MARKER_PREFIX = "ZACE_DOC";
-
-export const PROJECT_DOC_CANDIDATE_PATHS = [
-  "AGENTS.md",
-  "README.md",
-  "CLAUDE.md",
-  "CONTRIBUTING.md",
-  "docs/README.md",
-  "docs/CONTRIBUTING.md",
-] as const;
 
 export interface ProjectDocsPolicy {
   excludedDocPaths: string[];
@@ -59,9 +53,103 @@ function shouldExcludeDoc(task: string, path: string): boolean {
   return patterns.some((pattern) => pattern.test(task.toLowerCase()));
 }
 
+function normalizeDiscoveredDocPath(pathValue: string): string | undefined {
+  const normalized = pathValue
+    .trim()
+    .replace(/^["']|["']$/gu, "")
+    .replace(/\\/gu, "/")
+    .replace(/^\.\//u, "")
+    .replace(/^\.\\+/u, "");
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized.startsWith("/") || /^[A-Za-z]:\//u.test(normalized)) {
+    return undefined;
+  }
+
+  const segments = normalized.split("/").filter((segment) => segment.length > 0);
+  if (segments.length === 0 || segments.some((segment) => segment === "..")) {
+    return undefined;
+  }
+
+  return segments.join("/");
+}
+
+export function buildDiscoverProjectDocsCommand(input: {
+  maxDepth?: number;
+  maxFiles?: number;
+  platform: string;
+}): string {
+  const maxDepth = input.maxDepth ?? DEFAULT_DOC_DISCOVERY_MAX_DEPTH;
+  const maxFiles = input.maxFiles ?? DEFAULT_DOC_DISCOVERY_MAX_FILES;
+
+  if (input.platform === "win32") {
+    const markerPrefix = quoteForPowerShell(DOC_CANDIDATE_MARKER_PREFIX);
+    return [
+      "$ErrorActionPreference = \"Stop\";",
+      "$seen = @{};",
+      "$files = Get-ChildItem -Path . -Recurse -File -Include *.md,*.txt;",
+      "$files | Where-Object { $_.FullName -notmatch '[\\\\/]node_modules[\\\\/]|[\\\\/]\\.git[\\\\/]|[\\\\/]\\.zace[\\\\/]' }",
+      "| ForEach-Object {",
+      "  $relative = Resolve-Path -LiteralPath $_.FullName -Relative;",
+      "  $normalized = $relative -replace '^[.][\\\\/]', '' -replace '\\\\', '/';",
+      "  if ($normalized -match '^/|^[A-Za-z]:/' -or $normalized -match '(^|/)\\.\\.($|/)') { return }",
+      "  if (-not $seen.ContainsKey($normalized)) {",
+      "    $seen[$normalized] = $true;",
+      `    Write-Output (${markerPrefix} + $normalized);`,
+      "  }",
+      "}",
+      `| Select-Object -First ${String(maxFiles)};`,
+    ].join(" ");
+  }
+
+  return [
+    `find . -maxdepth ${String(maxDepth)} -type f \\( -iname '*.md' -o -iname '*.txt' \\)`,
+    `| sed 's#^\\./##'`,
+    `| grep -Ev '^(node_modules/|\\.git/|\\.zace/)'`,
+    "| awk '!seen[$0]++'",
+    `| head -n ${String(maxFiles)}`,
+    "| while IFS= read -r path; do",
+    `  printf '%s%s\\n' ${quoteForSh(DOC_CANDIDATE_MARKER_PREFIX)} "$path";`,
+    "done",
+  ].join(" ");
+}
+
+export function parseDiscoveredProjectDocCandidates(
+  toolOutput: string,
+  maxFiles: number = DEFAULT_DOC_DISCOVERY_MAX_FILES
+): string[] {
+  const stdout = extractStdoutSection(toolOutput);
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  for (const line of stdout.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith(DOC_CANDIDATE_MARKER_PREFIX)) {
+      continue;
+    }
+
+    const rawPath = trimmed.slice(DOC_CANDIDATE_MARKER_PREFIX.length);
+    const normalizedPath = normalizeDiscoveredDocPath(rawPath);
+    if (!normalizedPath || seen.has(normalizedPath)) {
+      continue;
+    }
+
+    seen.add(normalizedPath);
+    candidates.push(normalizedPath);
+    if (candidates.length >= maxFiles) {
+      break;
+    }
+  }
+
+  return candidates;
+}
+
 export function resolveProjectDocsPolicy(
   task: string,
-  candidatePaths: readonly string[] = PROJECT_DOC_CANDIDATE_PATHS
+  candidatePaths: readonly string[] = []
 ): ProjectDocsPolicy {
   const skipAllDocs = shouldSkipAllDocs(task);
   if (skipAllDocs) {

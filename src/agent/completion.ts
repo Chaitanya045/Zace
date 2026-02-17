@@ -3,8 +3,12 @@ export interface CompletionGate {
   label: string;
 }
 
+export type CompletionPlanSource = "none" | "planner" | "task_explicit";
+
 export interface CompletionPlan {
   gates: CompletionGate[];
+  rawSpec?: string;
+  source: CompletionPlanSource;
 }
 
 const COMPLETION_SPEC_REGEX = /^\s*(?:COMPLETION_GATES|DONE_CRITERIA)\s*:\s*(.+)$/gimu;
@@ -65,11 +69,14 @@ export function resolveCompletionPlan(task: string): CompletionPlan {
     const gates = parseTaskDefinedGates(taskDefinedSpec);
     return {
       gates,
+      rawSpec: taskDefinedSpec,
+      source: "task_explicit",
     };
   }
 
   return {
     gates: [],
+    source: "none",
   };
 }
 
@@ -77,7 +84,7 @@ export function describeCompletionPlan(plan: CompletionPlan): string[] {
   if (plan.gates.length === 0) {
     return [
       "No completion gates configured",
-      "Planner may provide gates in COMPLETE response as: GATES: <command_1>;;<command_2>",
+      "Planner should provide gates in COMPLETE response as: GATES: <command_1>;;<command_2>",
       "Or task can define gates using DONE_CRITERIA: cmd:<command_1>;;cmd:<command_2>",
     ];
   }

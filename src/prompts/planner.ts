@@ -74,6 +74,11 @@ INSTRUCTIONS:
 18. Keep each step small and deterministic. Prefer one command per step.
 19. For greetings or non-actionable messages, choose "ask_user" and ask what concrete task to perform.
 20. If context was compacted or details may be old, prefer search_session_messages before asking the user to repeat information.
+21. Before repeating the same write/create/edit command, verify objective state with a read command (file exists, content, or git diff).
+22. If prior tool output/logs indicate the objective is already achieved, avoid repeating writes and move to validation/completion.
+23. If conversation context contains approval resolution text, interpret decisions exactly:
+    - allow once / always session / always workspace: proceed with the approved command path.
+    - deny: avoid the denied destructive command and choose a safe alternative or ask_user.
 
 RESPONSE FORMAT:
 - Return strict JSON only. No markdown, no prose outside JSON.

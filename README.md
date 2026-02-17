@@ -16,6 +16,7 @@ It runs as a planner-executor loop where the model decides the next action and a
 - Script metadata registry at `.zace/runtime/scripts/registry.tsv`
 - OpenRouter-backed LLM client
 - Ink-based chat UI with shadcn-inspired minimal terminal design
+- Runtime project-doc discovery (no fixed built-in doc path list)
 - Automatic context compaction when planner context reaches 80% usage
 - Session message journaling for active `--session` runs
 - Session history tools: `search_session_messages`, `write_session_message`
@@ -157,6 +158,7 @@ Zace now enforces completion gates before accepting `COMPLETE`.
 
 - No hard-coded lint/typecheck/test commands are used.
 - Gates are LLM-driven unless explicitly provided by the user.
+- Task-level `DONE_CRITERIA` / `COMPLETION_GATES` parsing is kept only as explicit compatibility fallback.
 - Planner can infer checks from any language/project layout and include them in the completion response:
   - `GATES: <command_1>;;<command_2>`
 - If any gate fails, the agent continues working instead of completing.

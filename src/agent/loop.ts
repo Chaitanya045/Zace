@@ -26,9 +26,10 @@ import {
   type CompletionGate,
 } from "./completion";
 import {
+  buildDiscoverProjectDocsCommand,
   buildReadProjectDocCommand,
   extractProjectDocFromToolOutput,
-  PROJECT_DOC_CANDIDATE_PATHS,
+  parseDiscoveredProjectDocCandidates,
   resolveProjectDocsPolicy,
   truncateProjectDocPreview,
 } from "./docs";
@@ -67,6 +68,8 @@ export interface RunAgentLoopOptions {
 
 const DISCOVER_SCRIPTS_COMMAND = buildDiscoverScriptsCommand();
 const MAX_CONSECUTIVE_NO_TOOL_CONTINUES = 2;
+const PROJECT_DOC_DISCOVERY_MAX_FILES = 24;
+const PROJECT_DOC_LOAD_MAX_FILES = 8;
 const PROJECT_DOC_MAX_LINES = 220;
 const PROJECT_DOC_OUTPUT_LIMIT_CHARS = 10_000;
 const PROJECT_DOC_TIMEOUT_MS = 30_000;
@@ -619,7 +622,21 @@ export async function runAgentLoop(
         `Startup script discovery complete. Registered or updated ${discoveredCatalogUpdate.notes.length} scripts in ${SCRIPT_REGISTRY_PATH}.`
       );
     }
-    const docsPolicy = resolveProjectDocsPolicy(task, PROJECT_DOC_CANDIDATE_PATHS);
+    const discoverDocsResult = await executeToolCall({
+      arguments: {
+        command: buildDiscoverProjectDocsCommand({
+          maxFiles: PROJECT_DOC_DISCOVERY_MAX_FILES,
+          platform: process.platform,
+        }),
+        outputLimitChars: PROJECT_DOC_OUTPUT_LIMIT_CHARS,
+        timeout: PROJECT_DOC_TIMEOUT_MS,
+      },
+      name: "execute_command",
+    });
+    const discoveredDocCandidates = discoverDocsResult.success
+      ? parseDiscoveredProjectDocCandidates(discoverDocsResult.output, PROJECT_DOC_DISCOVERY_MAX_FILES)
+      : [];
+    const docsPolicy = resolveProjectDocsPolicy(task, discoveredDocCandidates);
     if (docsPolicy.skipAllDocs) {
       memory.addMessage(
         "assistant",
@@ -628,11 +645,10 @@ export async function runAgentLoop(
     } else {
       const excludedDocPaths = new Set(docsPolicy.excludedDocPaths.map((path) => path.toLowerCase()));
       const loadedDocs: Array<{ content: string; path: string }> = [];
-      for (const docPath of PROJECT_DOC_CANDIDATE_PATHS) {
-        if (excludedDocPaths.has(docPath.toLowerCase())) {
-          continue;
-        }
-
+      const candidateDocsToLoad = discoveredDocCandidates
+        .filter((path) => !excludedDocPaths.has(path.toLowerCase()))
+        .slice(0, PROJECT_DOC_LOAD_MAX_FILES);
+      for (const docPath of candidateDocsToLoad) {
         const readDocResult = await executeToolCall({
           arguments: {
             command: buildReadProjectDocCommand({
@@ -677,14 +693,24 @@ export async function runAgentLoop(
           "system",
           `Project documentation context (follow this unless the user overrides):\n\n${docsContext}`
         );
+        const loadedCount = loadedDocs.length;
+        const discoveredCount = discoveredDocCandidates.length;
+        const loadNote = discoveredCount > loadedCount
+          ? ` (loaded ${String(loadedCount)} of ${String(discoveredCount)} discovered)`
+          : "";
         memory.addMessage(
           "assistant",
-          `Loaded project documentation context from: ${loadedDocs.map((doc) => doc.path).join(", ")}.`
+          `Loaded project documentation context from: ${loadedDocs.map((doc) => doc.path).join(", ")}${loadNote}.`
+        );
+      } else if (discoveredDocCandidates.length > 0) {
+        memory.addMessage(
+          "assistant",
+          "Project docs were discovered but none were loaded after exclusions or read attempts."
         );
       } else {
         memory.addMessage(
           "assistant",
-          "No project documentation files were loaded."
+          "No project documentation files were discovered."
         );
       }
     }
@@ -765,6 +791,7 @@ export async function runAgentLoop(
           completionPlan = {
             ...completionPlan,
             gates: plannerCompletionGates,
+            source: "planner",
           };
           memory.addMessage(
             "assistant",
