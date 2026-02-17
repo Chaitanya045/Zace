@@ -74,6 +74,7 @@ const PROJECT_DOC_MAX_LINES = 220;
 const PROJECT_DOC_OUTPUT_LIMIT_CHARS = 10_000;
 const PROJECT_DOC_TIMEOUT_MS = 30_000;
 const OVERWRITE_REDIRECT_TARGET_REGEX = /(?:^|[\s;|&])(?:\d*)>(?!>|&)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/gu;
+const LSP_BOOTSTRAP_FILE_PREVIEW_LIMIT = 5;
 
 type CommandApprovalResult =
   | {
@@ -417,6 +418,35 @@ function emitDiagnosticsObserverEvent(
   });
 }
 
+type LspBootstrapSignal = "active" | "none" | "required";
+
+export function deriveLspBootstrapSignal(toolResult: ToolResult): LspBootstrapSignal {
+  const status = toolResult.artifacts?.lspStatus;
+  if (status === "no_active_server") {
+    return "required";
+  }
+  if (status === "diagnostics" || status === "no_errors") {
+    return "active";
+  }
+  return "none";
+}
+
+export function buildLspBootstrapRequirementMessage(
+  lspServerConfigPath: string,
+  changedFiles: string[]
+): string {
+  const normalizedFiles = Array.from(new Set(changedFiles.map((value) => value.trim()).filter(Boolean)));
+  const preview = normalizedFiles.slice(0, LSP_BOOTSTRAP_FILE_PREVIEW_LIMIT);
+  const filesText = preview.length > 0
+    ? `\nChanged files (sample): ${preview.join(", ")}${normalizedFiles.length > preview.length ? ", ..." : ""}`
+    : "";
+  return (
+    `LSP bootstrap required: no active LSP server is configured for changed files.\n` +
+    `Create or update ${lspServerConfigPath} for this repository and rerun validation commands before completing.` +
+    filesText
+  );
+}
+
 async function sleep(delayMs: number): Promise<void> {
   if (delayMs <= 0) {
     return;
@@ -468,6 +498,8 @@ export async function runAgentLoop(
   let lastToolLoopSignature = "";
   let lastToolLoopSignatureCount = 0;
   let lastCompletionGateFailure: null | string = null;
+  let lspBootstrapRequired = false;
+  let lspBootstrapRequiredMessage: null | string = null;
   const toolCallSignatureHistory: string[] = [];
   const onceApprovedSignatures = new Set(options?.approvedCommandSignaturesOnce ?? []);
   const getCompletionCriteria = (): string[] => describeCompletionPlan(completionPlan);
@@ -786,6 +818,25 @@ export async function runAgentLoop(
 
       // Handle different plan outcomes
       if (planResult.action === "complete") {
+        if (config.lspEnabled && lspBootstrapRequired && lspBootstrapRequiredMessage) {
+          const failureMessage =
+            `Completion blocked until LSP bootstrap is resolved. ${lspBootstrapRequiredMessage}`;
+          lastCompletionGateFailure = failureMessage;
+          context = addStep(context, {
+            reasoning: `Completion requested while LSP bootstrap is pending. ${lspBootstrapRequiredMessage}`,
+            state: "executing",
+            step: stepNumber,
+            toolCall: null,
+            toolResult: null,
+          });
+          memory.addMessage(
+            "assistant",
+            `Completion gate check result: ${failureMessage}`
+          );
+          logStep(stepNumber, `Completion blocked by pending LSP bootstrap: ${failureMessage}`);
+          continue;
+        }
+
         const plannerCompletionGates = parsePlannerCompletionGates(planResult.completionGateCommands);
         if (completionPlan.gates.length === 0 && plannerCompletionGates.length > 0) {
           completionPlan = {
@@ -1243,6 +1294,52 @@ export async function runAgentLoop(
             step: stepNumber,
           });
           emitDiagnosticsObserverEvent(observer, stepNumber, toolResult);
+
+          if (config.lspEnabled) {
+            const lspBootstrapSignal = deriveLspBootstrapSignal(toolResult);
+            if (lspBootstrapSignal === "required") {
+              const nextMessage = buildLspBootstrapRequirementMessage(
+                config.lspServerConfigPath,
+                toolResult.artifacts?.changedFiles ?? []
+              );
+              const shouldEmitRequirement = !lspBootstrapRequired || lspBootstrapRequiredMessage !== nextMessage;
+              lspBootstrapRequired = true;
+              lspBootstrapRequiredMessage = nextMessage;
+              if (shouldEmitRequirement) {
+                memory.addMessage("assistant", lspBootstrapRequiredMessage);
+                await appendRunEvent({
+                  event: "lsp_bootstrap_required",
+                  observer,
+                  payload: {
+                    changedFiles: (toolResult.artifacts?.changedFiles ?? []).slice(0, 20),
+                    lspServerConfigPath: config.lspServerConfigPath,
+                  },
+                  phase: "executing",
+                  runId,
+                  sessionId,
+                  step: stepNumber,
+                });
+              }
+            } else if (lspBootstrapSignal === "active" && lspBootstrapRequired) {
+              lspBootstrapRequired = false;
+              lspBootstrapRequiredMessage = null;
+              memory.addMessage(
+                "assistant",
+                "LSP diagnostics are active for changed files; LSP bootstrap requirement is cleared."
+              );
+              await appendRunEvent({
+                event: "lsp_bootstrap_cleared",
+                observer,
+                payload: {
+                  lspServerConfigPath: config.lspServerConfigPath,
+                },
+                phase: "executing",
+                runId,
+                sessionId,
+                step: stepNumber,
+              });
+            }
+          }
 
           memory.addMessage(
             "tool",

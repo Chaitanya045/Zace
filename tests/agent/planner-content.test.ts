@@ -75,4 +75,11 @@ describe("planner response parsing", () => {
     const parsed = parsePlannerContent("Hello there with no structured response");
     expect(parsed.action).toBe("ask_user");
   });
+
+  test("does not throw on malformed brace-heavy planner content", () => {
+    const parsed = parsePlannerContent(
+      "CONTINUE: trying command\n{ not valid json { still not valid } }\nextra text"
+    );
+    expect(parsed.action).toBe("ask_user");
+  });
 });

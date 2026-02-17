@@ -44,6 +44,7 @@ RUNTIME SCRIPT PROTOCOL:
    ZACE_FILE_CHANGED|<path>
 5. Runtime LSP server config is loaded from .zace/runtime/lsp/servers.json.
    If diagnostics are needed and config is missing, create/update this file via shell scripts.
+   If tool output reports "No active LSP server for changed files", treat it as a required follow-up before completion.
 6. On Unix-like platforms, use .sh scripts with:
    #!/usr/bin/env bash
    set -euo pipefail

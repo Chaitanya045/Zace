@@ -119,6 +119,7 @@ type LspFeedback = {
   diagnosticsFiles: string[];
   errorCount: number;
   outputSection?: string;
+  status: "diagnostics" | "disabled" | "failed" | "no_active_server" | "no_changed_files" | "no_errors";
 };
 
 type ChangedFilesSource = "git_delta" | "marker";
@@ -547,6 +548,7 @@ export function buildLspDiagnosticsOutput(input: {
     return {
       diagnosticsFiles: [],
       errorCount: 0,
+      status: "no_errors",
     };
   }
 
@@ -573,6 +575,7 @@ export function buildLspDiagnosticsOutput(input: {
     diagnosticsFiles,
     errorCount,
     outputSection: sections.join("\n\n"),
+    status: "diagnostics",
   };
 }
 
@@ -586,10 +589,19 @@ async function fileExists(pathValue: string): Promise<boolean> {
 }
 
 async function collectLspFeedback(changedFiles: string[]): Promise<LspFeedback> {
-  if (!env.AGENT_LSP_ENABLED || changedFiles.length === 0) {
+  if (!env.AGENT_LSP_ENABLED) {
     return {
       diagnosticsFiles: [],
       errorCount: 0,
+      status: "disabled",
+    };
+  }
+
+  if (changedFiles.length === 0) {
+    return {
+      diagnosticsFiles: [],
+      errorCount: 0,
+      status: "no_changed_files",
     };
   }
 
@@ -609,6 +621,7 @@ async function collectLspFeedback(changedFiles: string[]): Promise<LspFeedback> 
       diagnosticsFiles: [],
       errorCount: 0,
       outputSection: `[lsp]\nNo existing changed files available for diagnostics.`,
+      status: "no_changed_files",
     };
   }
 
@@ -633,6 +646,7 @@ async function collectLspFeedback(changedFiles: string[]): Promise<LspFeedback> 
         outputSection:
           `[lsp]\nNo active LSP server for changed files.\n` +
           `Configure runtime servers in ${env.AGENT_LSP_SERVER_CONFIG_PATH}.`,
+        status: "no_active_server",
       };
     }
 
@@ -640,12 +654,14 @@ async function collectLspFeedback(changedFiles: string[]): Promise<LspFeedback> 
       diagnosticsFiles: [],
       errorCount: 0,
       outputSection: `[lsp]\nNo error diagnostics reported for changed files.`,
+      status: "no_errors",
     };
   } catch (error) {
     return {
       diagnosticsFiles: [],
       errorCount: 0,
       outputSection: `[lsp]\nLSP diagnostics failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      status: "failed",
     };
   }
 }
@@ -865,6 +881,7 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
       lspDiagnosticsFiles: lspFeedback.diagnosticsFiles,
       lspDiagnosticsIncluded: Boolean(lspFeedback.outputSection),
       lspErrorCount: lspFeedback.errorCount,
+      lspStatus: lspFeedback.status,
       outputLimitChars: effectiveOutputLimitChars,
       progressSignal,
       signal: execution.signal ?? undefined,

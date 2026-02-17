@@ -79,6 +79,10 @@ INSTRUCTIONS:
 23. If conversation context contains approval resolution text, interpret decisions exactly:
     - allow once / always session / always workspace: proceed with the approved command path.
     - deny: avoid the denied destructive command and choose a safe alternative or ask_user.
+24. If a recent tool result includes:
+    [lsp]
+    No active LSP server for changed files.
+    then create or update .zace/runtime/lsp/servers.json before completion and rerun validation.
 
 RESPONSE FORMAT:
 - Return strict JSON only. No markdown, no prose outside JSON.

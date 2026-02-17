@@ -216,7 +216,8 @@ Zace discovers existing scripts on startup and syncs registry metadata during ex
   - touches changed files in active LSP clients
   - collects diagnostics
   - appends capped diagnostics blocks into tool output
-- If no active server matches changed files, output includes a note to configure `.zace/runtime/lsp/servers.json`.
+- If no active server matches changed files, Zace marks LSP bootstrap as pending and blocks `COMPLETE` until `.zace/runtime/lsp/servers.json` is created/updated and diagnostics run again.
+- Planner is instructed to generate/update runtime LSP config via shell based on the repository before completing.
 
 Example `servers.json`:
 

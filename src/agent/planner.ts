@@ -6,7 +6,6 @@ import type { AgentContext } from "../types/agent";
 
 import { buildPlannerPrompt } from "../prompts/planner";
 import { toolCallSchema } from "../types/tool";
-import { ValidationError } from "../utils/errors";
 import { logStep } from "../utils/logger";
 
 export interface PlanResult {
@@ -138,8 +137,17 @@ function parseLegacyContinueWithTool(content: string): null | ParsedPlanResult {
     return null;
   }
 
-  const parsed = JSON.parse(jsonMatch[0]);
-  const toolCall = toolCallSchema.parse(parsed);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return null;
+  }
+  const toolCallParse = toolCallSchema.safeParse(parsed);
+  if (!toolCallParse.success) {
+    return null;
+  }
+  const toolCall = toolCallParse.data;
 
   return {
     action: "continue",
@@ -252,15 +260,9 @@ export function parsePlannerContent(content: string): ParsedPlanResult {
     return legacyBlocked;
   }
 
-  try {
-    const legacyContinue = parseLegacyContinueWithTool(content);
-    if (legacyContinue) {
-      return legacyContinue;
-    }
-  } catch (error) {
-    throw new ValidationError(
-      `Failed to parse tool call from planner response: ${error instanceof Error ? error.message : "Unknown error"}`
-    );
+  const legacyContinue = parseLegacyContinueWithTool(content);
+  if (legacyContinue) {
+    return legacyContinue;
   }
 
   return {

@@ -14,6 +14,14 @@ const progressSignalSchema = z.enum([
   "output_changed",
   "success_without_changes",
 ]);
+const lspStatusSchema = z.enum([
+  "diagnostics",
+  "disabled",
+  "failed",
+  "no_active_server",
+  "no_changed_files",
+  "no_errors",
+]);
 const shellLifecycleEventSchema = z.enum(["abort", "none", "timeout"]);
 
 export const toolResultArtifactsSchema = z.object({
@@ -28,6 +36,7 @@ export const toolResultArtifactsSchema = z.object({
   lspDiagnosticsFiles: z.array(z.string()).optional(),
   lspDiagnosticsIncluded: z.boolean().optional(),
   lspErrorCount: z.number().int().nonnegative().optional(),
+  lspStatus: lspStatusSchema.optional(),
   outputLimitChars: z.number().int().positive().optional(),
   progressSignal: progressSignalSchema.optional(),
   signal: z.string().optional(),

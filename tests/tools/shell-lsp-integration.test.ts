@@ -184,4 +184,26 @@ describe("shell execute_command + LSP diagnostics integration", () => {
     expect(result.artifacts?.lspDiagnosticsFiles?.length).toBe(1);
     expect(result.artifacts?.changedFiles).toContain(resolve(tempDirectoryPath, "sample.ts"));
   });
+
+  test("reports no_active_server status when no server config is available", async () => {
+    const executeCommandTool = shellTools.find((tool) => tool.name === "execute_command");
+    expect(executeCommandTool).toBeDefined();
+
+    env.AGENT_LSP_SERVER_CONFIG_PATH = join(tempDirectoryPath, ".zace", "runtime", "lsp", "missing.json");
+
+    const result = await executeCommandTool!.execute({
+      command: [
+        "cat > sample.ts <<'EOF'",
+        "const value: number = 1;",
+        "EOF",
+        "printf 'ZACE_FILE_CHANGED|sample.ts\\n'",
+      ].join("\n"),
+      cwd: tempDirectoryPath,
+      timeout: 30_000,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("No active LSP server for changed files");
+    expect(result.artifacts?.lspStatus).toBe("no_active_server");
+  });
 });
