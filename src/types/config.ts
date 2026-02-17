@@ -8,6 +8,11 @@ export type AgentConfig = {
   compactionTriggerRatio: number;
   contextWindowTokens?: number;
   executorAnalysis: ExecutorAnalysisMode;
+  lspEnabled: boolean;
+  lspMaxDiagnosticsPerFile: number;
+  lspMaxFilesInOutput: number;
+  lspServerConfigPath: string;
+  lspWaitForDiagnosticsMs: number;
   llmApiKey: string;
   llmModel: string;
   llmProvider: "openrouter";
@@ -30,6 +35,11 @@ export function getAgentConfig(): AgentConfig {
     llmApiKey: env.OPENROUTER_API_KEY,
     llmModel: env.OPENROUTER_MODEL,
     llmProvider: env.LLM_PROVIDER,
+    lspEnabled: env.AGENT_LSP_ENABLED,
+    lspMaxDiagnosticsPerFile: env.AGENT_LSP_MAX_DIAGNOSTICS_PER_FILE,
+    lspMaxFilesInOutput: env.AGENT_LSP_MAX_FILES_IN_OUTPUT,
+    lspServerConfigPath: env.AGENT_LSP_SERVER_CONFIG_PATH,
+    lspWaitForDiagnosticsMs: env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS,
     maxSteps: env.AGENT_MAX_STEPS,
     requireRiskyConfirmation: env.AGENT_REQUIRE_RISKY_CONFIRMATION,
     riskyConfirmationToken: env.AGENT_RISKY_CONFIRMATION_TOKEN,

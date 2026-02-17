@@ -267,6 +267,18 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
           tone: "muted",
         });
       },
+      onDiagnostics: (event) => {
+        const filesPreview = event.files.length > 0
+          ? `\nFiles: ${event.files.slice(0, 3).join(", ")}${event.files.length > 3 ? ", ..." : ""}`
+          : "";
+        createTimelineEntry({
+          body:
+            `LSP diagnostics at step ${String(event.step)}: ${String(event.errorCount)} error(s) in ${String(event.files.length)} file(s).` +
+            filesPreview,
+          kind: "status",
+          tone: event.errorCount > 0 ? "danger" : "muted",
+        });
+      },
       onError: (event) => {
         createTimelineEntry({
           body: event.message,

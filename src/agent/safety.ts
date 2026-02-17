@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { LlmClient } from "../llm/client";
+import type { CommandSafetyPromptContext } from "../prompts/safety";
 
 import { buildCommandSafetyPrompt, COMMAND_SAFETY_SYSTEM_PROMPT } from "../prompts/safety";
 
@@ -16,9 +17,10 @@ export interface CommandSafetyAssessment {
 
 export async function assessCommandSafety(
   client: LlmClient,
-  command: string
+  command: string,
+  context?: CommandSafetyPromptContext
 ): Promise<CommandSafetyAssessment> {
-  const prompt = buildCommandSafetyPrompt(command);
+  const prompt = buildCommandSafetyPrompt(command, context);
   const response = await client.chat({
     messages: [
       { content: COMMAND_SAFETY_SYSTEM_PROMPT, role: "system" as const },

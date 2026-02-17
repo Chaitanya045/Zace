@@ -40,17 +40,21 @@ RUNTIME SCRIPT PROTOCOL:
 2. Store reusable scripts in .zace/runtime/scripts.
 3. Script metadata is stored in .zace/runtime/scripts/registry.tsv (TSV format).
    Query that file before creating new scripts.
-4. On Unix-like platforms, use .sh scripts with:
+4. When scripts modify files, print one marker line per file:
+   ZACE_FILE_CHANGED|<path>
+5. Runtime LSP server config is loaded from .zace/runtime/lsp/servers.json.
+   If diagnostics are needed and config is missing, create/update this file via shell scripts.
+6. On Unix-like platforms, use .sh scripts with:
    #!/usr/bin/env bash
    set -euo pipefail
    # zace-purpose: <one line purpose>
-5. On Windows platforms, prefer .ps1 scripts with:
+7. On Windows platforms, prefer .ps1 scripts with:
    $ErrorActionPreference = "Stop"
    # zace-purpose: <one line purpose>
-6. Reuse scripts before creating new ones.
-7. When creating or updating a script, print exactly one registration line:
+8. Reuse scripts before creating new ones.
+9. When creating or updating a script, print exactly one registration line:
    ZACE_SCRIPT_REGISTER|<script_id>|<script_path>|<purpose>
-8. When running a known script, prefer printing:
+10. When running a known script, prefer printing:
    ZACE_SCRIPT_USE|<script_id>
 
 SESSION MEMORY PROTOCOL:

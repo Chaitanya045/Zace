@@ -1,3 +1,6 @@
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
+
 import type { LlmClient } from "../llm/client";
 import type { AgentContext, AgentState } from "../types/agent";
 import type { AgentConfig } from "../types/config";
@@ -24,13 +27,7 @@ import {
 } from "./docs";
 import { analyzeToolResult, executeToolCall } from "./executor";
 import {
-  buildInitialRepoReconCommand,
   buildToolLoopSignature,
-  createRepoGroundingState,
-  getLanguageMismatchReason,
-  isLikelyWriteCommand,
-  recordCommandObservation,
-  shouldRunReconBeforeCommand,
 } from "./guardrails";
 import { Memory } from "./memory";
 import { plan } from "./planner";
@@ -60,6 +57,7 @@ const MAX_CONSECUTIVE_NO_TOOL_CONTINUES = 2;
 const PROJECT_DOC_MAX_LINES = 220;
 const PROJECT_DOC_OUTPUT_LIMIT_CHARS = 10_000;
 const PROJECT_DOC_TIMEOUT_MS = 30_000;
+const OVERWRITE_REDIRECT_TARGET_REGEX = /(?:^|[\s;|&])(?:\d*)>(?!>|&)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/gu;
 
 async function syncScriptRegistry(catalog: AgentContext["scriptCatalog"]): Promise<void> {
   await executeToolCall({
@@ -155,16 +153,125 @@ function getExecuteCommandText(argumentsObject: Record<string, unknown>): string
   return command;
 }
 
+function getExecuteCommandWorkingDirectory(argumentsObject: Record<string, unknown>): string | undefined {
+  const cwdValue = argumentsObject.cwd;
+  if (typeof cwdValue !== "string") {
+    return undefined;
+  }
+
+  const cwd = cwdValue.trim();
+  if (!cwd) {
+    return undefined;
+  }
+
+  return cwd;
+}
+
+function stripWrappingQuotes(value: string): string {
+  if (
+    (value.startsWith("\"") && value.endsWith("\"")) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+
+  return value;
+}
+
+export function extractOverwriteRedirectTargets(command: string): string[] {
+  const targets = new Set<string>();
+  for (const match of command.matchAll(OVERWRITE_REDIRECT_TARGET_REGEX)) {
+    const rawTarget = match[1];
+    if (!rawTarget) {
+      continue;
+    }
+
+    const normalized = stripWrappingQuotes(rawTarget.trim());
+    if (!normalized) {
+      continue;
+    }
+
+    targets.add(normalized);
+  }
+
+  return Array.from(targets).sort((left, right) => left.localeCompare(right));
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isDynamicShellPath(value: string): boolean {
+  return /[`$*?{}()]/u.test(value);
+}
+
+async function buildCommandSafetyContext(
+  command: string,
+  workingDirectory: string
+): Promise<{
+  overwriteRedirectTargets: Array<{
+    exists: "no" | "unknown" | "yes";
+    rawPath: string;
+    resolvedPath: string;
+  }>;
+  workingDirectory: string;
+}> {
+  const targets = extractOverwriteRedirectTargets(command);
+  const overwriteRedirectTargets = await Promise.all(
+    targets.slice(0, 12).map(async (target) => {
+      if (
+        !target ||
+        target === "-" ||
+        target === "/dev/null" ||
+        target.toLowerCase() === "nul" ||
+        target.startsWith("~") ||
+        isDynamicShellPath(target)
+      ) {
+        return {
+          exists: "unknown" as const,
+          rawPath: target,
+          resolvedPath: target || "<empty>",
+        };
+      }
+
+      const resolvedPath = resolve(workingDirectory, target);
+      return {
+        exists: (await pathExists(resolvedPath)) ? "yes" as const : "no" as const,
+        rawPath: target,
+        resolvedPath,
+      };
+    })
+  );
+
+  return {
+    overwriteRedirectTargets,
+    workingDirectory,
+  };
+}
+
 async function getDestructiveCommandReason(
   client: LlmClient,
   config: AgentConfig,
-  command: string
+  command: string,
+  options?: {
+    workingDirectory?: string;
+  }
 ): Promise<null | string> {
   if (!config.requireRiskyConfirmation || command.includes(config.riskyConfirmationToken)) {
     return null;
   }
 
-  const safetyAssessment = await assessCommandSafety(client, command);
+  const workingDirectory = resolve(options?.workingDirectory ?? process.cwd());
+  const safetyAssessment = await assessCommandSafety(
+    client,
+    command,
+    await buildCommandSafetyContext(command, workingDirectory)
+  );
   if (!safetyAssessment.isDestructive) {
     return null;
   }
@@ -225,6 +332,25 @@ function getRetryDelayMs(
   return Math.min(normalizedDelay, retryMaxDelayMs);
 }
 
+function emitDiagnosticsObserverEvent(
+  observer: AgentObserver | undefined,
+  step: number,
+  toolResult: ToolResult
+): void {
+  const artifacts = toolResult.artifacts;
+  if (!artifacts?.lspDiagnosticsIncluded) {
+    return;
+  }
+
+  const files = artifacts.lspDiagnosticsFiles ?? [];
+  const errorCount = artifacts.lspErrorCount ?? 0;
+  observer?.onDiagnostics?.({
+    errorCount,
+    files,
+    step,
+  });
+}
+
 async function sleep(delayMs: number): Promise<void> {
   if (delayMs <= 0) {
     return;
@@ -243,15 +369,6 @@ export function ensureUserFacingQuestion(message: string): string {
 
   if (/\?\s*$/u.test(trimmed)) {
     return trimmed;
-  }
-
-  const lower = trimmed.toLowerCase();
-  if (
-    lower.includes("greeting") ||
-    lower.includes("not actionable") ||
-    lower.includes("concrete task")
-  ) {
-    return "What concrete coding task would you like me to perform in this repository?";
   }
 
   return `${trimmed} What should I do next?`;
@@ -284,7 +401,6 @@ export async function runAgentLoop(
   let lastToolLoopSignature = "";
   let lastToolLoopSignatureCount = 0;
   let lastCompletionGateFailure: null | string = null;
-  let repoGroundingState = createRepoGroundingState();
   const getCompletionCriteria = (): string[] => describeCompletionPlan(completionPlan);
 
   // Build dynamic system prompt with runtime context
@@ -332,32 +448,6 @@ export async function runAgentLoop(
       memory.addMessage(
         "assistant",
         `Startup script discovery complete. Registered or updated ${discoveredCatalogUpdate.notes.length} scripts in ${SCRIPT_REGISTRY_PATH}.`
-      );
-    }
-    const repoReconCommand = buildInitialRepoReconCommand(process.platform);
-    const repoReconResult = await executeToolCall({
-      arguments: {
-        command: repoReconCommand,
-        outputLimitChars: 8_000,
-        timeout: 30_000,
-      },
-      name: "execute_command",
-    });
-    repoGroundingState = recordCommandObservation({
-      command: repoReconCommand,
-      output: repoReconResult.output,
-      state: repoGroundingState,
-      success: repoReconResult.success,
-    });
-    if (repoReconResult.success) {
-      memory.addMessage(
-        "assistant",
-        "Repository reconnaissance completed before write operations."
-      );
-    } else {
-      memory.addMessage(
-        "assistant",
-        "Repository reconnaissance could not complete; write operations will trigger another recon attempt."
       );
     }
     const docsPolicy = resolveProjectDocsPolicy(task, PROJECT_DOC_CANDIDATE_PATHS);
@@ -641,66 +731,18 @@ export async function runAgentLoop(
       }
       consecutiveNoToolContinues = 0;
 
-      if (planResult.toolCall.name === "execute_command") {
-        const command = getExecuteCommandText(planResult.toolCall.arguments);
-        if (command && shouldRunReconBeforeCommand(command, repoGroundingState)) {
-          const reconCommand = buildInitialRepoReconCommand(process.platform);
-          const reconResult = await executeToolCall({
-            arguments: {
-              command: reconCommand,
-              outputLimitChars: 8_000,
-              timeout: 30_000,
-            },
-            name: "execute_command",
-          });
-          repoGroundingState = recordCommandObservation({
-            command: reconCommand,
-            output: reconResult.output,
-            state: repoGroundingState,
-            success: reconResult.success,
-          });
-          memory.addMessage(
-            "assistant",
-            reconResult.success
-              ? "Performed repository reconnaissance before executing a write command."
-              : "Repository reconnaissance failed before write command; proceeding with current context."
-          );
-        }
-
-        if (command) {
-          const mismatchReason = getLanguageMismatchReason({
-            command,
-            state: repoGroundingState,
-            task,
-          });
-          if (mismatchReason) {
-            memory.addMessage("assistant", mismatchReason);
-            context = addStep(context, {
-              reasoning: `Blocked write command due to language mismatch: ${mismatchReason}`,
-              state: "executing",
-              step: stepNumber,
-              toolCall: {
-                arguments: planResult.toolCall.arguments,
-                name: planResult.toolCall.name,
-              },
-              toolResult: {
-                error: "Command blocked by repository language guardrail",
-                output: mismatchReason,
-                success: false,
-              },
-            });
-            continue;
-          }
-        }
-      }
-
       if (
         config.requireRiskyConfirmation &&
         planResult.toolCall.name === "execute_command"
       ) {
         const command = getExecuteCommandText(planResult.toolCall.arguments);
+        const commandWorkingDirectory = getExecuteCommandWorkingDirectory(
+          planResult.toolCall.arguments
+        );
         if (command) {
-          const destructiveReason = await getDestructiveCommandReason(client, config, command);
+          const destructiveReason = await getDestructiveCommandReason(client, config, command, {
+            workingDirectory: commandWorkingDirectory,
+          });
           if (destructiveReason) {
             const confirmationMessage =
               `Destructive command requires confirmation: ${destructiveReason}\n` +
@@ -763,22 +805,12 @@ export async function runAgentLoop(
             step: stepNumber,
             success: toolResult.success,
           });
+          emitDiagnosticsObserverEvent(observer, stepNumber, toolResult);
 
           memory.addMessage(
             "tool",
             `Tool ${planResult.toolCall.name} attempt ${String(attempt)} result: ${toolResult.output}`
           );
-          if (toolCall.name === "execute_command") {
-            const executedCommand = getExecuteCommandText(toolCall.arguments);
-            if (executedCommand) {
-              repoGroundingState = recordCommandObservation({
-                command: executedCommand,
-                output: toolResult.output,
-                state: repoGroundingState,
-                success: toolResult.success,
-              });
-            }
-          }
 
           const scriptCatalogUpdate = updateScriptCatalogFromOutput(
             context.scriptCatalog,
@@ -875,14 +907,7 @@ export async function runAgentLoop(
           lastToolLoopSignatureCount = 1;
         }
 
-        const commandText =
-          planResult.toolCall.name === "execute_command"
-            ? getExecuteCommandText(planResult.toolCall.arguments)
-            : undefined;
-        const repetitionLimit =
-          commandText && isLikelyWriteCommand(commandText)
-            ? 2
-            : 3;
+        const repetitionLimit = 3;
         if (lastToolLoopSignatureCount >= repetitionLimit) {
           const repetitionMessage =
             `Stopping repeated execution loop: the same tool outcome was observed ${String(lastToolLoopSignatureCount)} times in a row. ` +

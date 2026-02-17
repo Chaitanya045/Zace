@@ -20,6 +20,7 @@ It runs as a planner-executor loop where the model decides the next action and a
 - Session message journaling for active `--session` runs
 - Session history tools: `search_session_messages`, `write_session_message`
 - Non-TTY automatic fallback to plain chat mode
+- Runtime LSP diagnostics feedback after file changes (via marker + git delta)
 
 ## Requirements
 
@@ -45,6 +46,11 @@ AGENT_MAX_STEPS=10
 AGENT_EXECUTOR_ANALYSIS=on_failure
 AGENT_STREAM=true
 AGENT_VERBOSE=false
+AGENT_LSP_ENABLED=true
+AGENT_LSP_SERVER_CONFIG_PATH=.zace/runtime/lsp/servers.json
+AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS=3000
+AGENT_LSP_MAX_DIAGNOSTICS_PER_FILE=20
+AGENT_LSP_MAX_FILES_IN_OUTPUT=5
 AGENT_COMPACTION_ENABLED=true
 AGENT_COMPACTION_TRIGGER_RATIO=0.8
 AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES=12
@@ -181,8 +187,38 @@ The planner is instructed to create and reuse scripts when needed.
 - Script metadata markers in command output:
   - `ZACE_SCRIPT_REGISTER|<script_id>|<script_path>|<purpose>`
   - `ZACE_SCRIPT_USE|<script_id>`
+  - `ZACE_FILE_CHANGED|<path>` (one line per modified file)
 
 Zace discovers existing scripts on startup and syncs registry metadata during execution.
+
+## LSP diagnostics feedback
+
+- LSP runtime is generic and server-config driven (no built-in language catalog).
+- Server definitions are loaded from:
+  - `.zace/runtime/lsp/servers.json`
+- The shell tool collects changed files from:
+  - marker lines (`ZACE_FILE_CHANGED|<path>`)
+  - git snapshot delta (post-run minus pre-run dirty-file set)
+- If changed files are found and LSP is enabled, Zace:
+  - touches changed files in active LSP clients
+  - collects diagnostics
+  - appends capped diagnostics blocks into tool output
+- If no active server matches changed files, output includes a note to configure `.zace/runtime/lsp/servers.json`.
+
+Example `servers.json`:
+
+```json
+{
+  "servers": [
+    {
+      "id": "typescript",
+      "command": ["bun", "x", "typescript-language-server", "--stdio"],
+      "extensions": [".ts", ".tsx", ".js", ".jsx"],
+      "rootMarkers": ["package.json", "tsconfig.json"]
+    }
+  ]
+}
+```
 
 ## Sessions
 

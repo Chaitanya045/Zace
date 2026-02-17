@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
+import type { LspDiagnostic } from "../lsp/client";
 import type { Tool, ToolResult } from "../types/tool";
 
 import { env } from "../config/env";
+import {
+  diagnostics as getLspDiagnostics,
+  formatDiagnostic,
+  status as getLspStatus,
+  touchFiles as touchLspFiles,
+} from "../lsp";
 import { ToolExecutionError } from "../utils/errors";
 import { logToolCall, logToolResult } from "../utils/logger";
 
@@ -21,6 +28,7 @@ const executeCommandSchema = z.object({
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const ZACE_MARKER_LINE_REGEX = /^ZACE_[A-Z0-9_]+\|.*$/u;
+const ZACE_FILE_CHANGED_PREFIX = "ZACE_FILE_CHANGED|";
 
 function compilePolicyRegexes(patterns: string[], policyName: string): RegExp[] {
   return patterns.map((pattern) => {
@@ -85,6 +93,16 @@ type CommandArtifacts = {
   stdoutPath: string;
 };
 
+type GitSnapshot = {
+  files: Set<string>;
+};
+
+type LspFeedback = {
+  diagnosticsFiles: string[];
+  errorCount: number;
+  outputSection?: string;
+};
+
 function truncateOutput(output: string, limit: number): { output: string; truncated: boolean } {
   if (output.length <= limit) {
     return {
@@ -113,6 +131,278 @@ function collectZaceMarkerLines(stdout: string, stderr: string): string[] {
   }
 
   return markerLines;
+}
+
+function normalizeCommandPath(pathValue: string, workingDirectory: string): string {
+  const trimmed = pathValue.trim().replace(/^["']|["']$/gu, "");
+  if (!trimmed) {
+    return "";
+  }
+
+  if (isAbsolute(trimmed)) {
+    return resolve(trimmed);
+  }
+
+  return resolve(workingDirectory, trimmed);
+}
+
+export function parseChangedFilesFromMarkerLines(
+  markerLines: string[],
+  workingDirectory: string
+): string[] {
+  const changedFiles = new Set<string>();
+
+  for (const markerLine of markerLines) {
+    if (!markerLine.startsWith(ZACE_FILE_CHANGED_PREFIX)) {
+      continue;
+    }
+
+    const rawPath = markerLine.slice(ZACE_FILE_CHANGED_PREFIX.length).trim();
+    if (!rawPath) {
+      continue;
+    }
+
+    const normalized = normalizeCommandPath(rawPath, workingDirectory);
+    if (!normalized) {
+      continue;
+    }
+    changedFiles.add(normalized);
+  }
+
+  return Array.from(changedFiles).sort((left, right) => left.localeCompare(right));
+}
+
+async function runGitCommand(workingDirectory: string, args: string[]): Promise<{
+  stderr: string;
+  stdout: string;
+  success: boolean;
+}> {
+  const processHandle = Bun.spawn({
+    cmd: ["git", "-C", workingDirectory, ...args],
+    stderr: "pipe",
+    stdin: "ignore",
+    stdout: "pipe",
+  });
+
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new globalThis.Response(processHandle.stdout).text(),
+    new globalThis.Response(processHandle.stderr).text(),
+    processHandle.exited,
+  ]);
+
+  return {
+    stderr,
+    stdout,
+    success: exitCode === 0,
+  };
+}
+
+async function resolveGitRepositoryRoot(workingDirectory: string): Promise<string | undefined> {
+  const result = await runGitCommand(workingDirectory, ["rev-parse", "--show-toplevel"]);
+  if (!result.success) {
+    return undefined;
+  }
+
+  const repositoryRoot = result.stdout.trim();
+  if (!repositoryRoot) {
+    return undefined;
+  }
+
+  return resolve(repositoryRoot);
+}
+
+function parseGitPathList(rawOutput: string, repositoryRoot: string): Set<string> {
+  const resolvedPaths = new Set<string>();
+  for (const line of rawOutput.split(/\r?\n/u)) {
+    const relativePath = line.trim();
+    if (!relativePath) {
+      continue;
+    }
+    resolvedPaths.add(resolve(repositoryRoot, relativePath));
+  }
+  return resolvedPaths;
+}
+
+async function collectGitSnapshot(workingDirectory: string): Promise<GitSnapshot | undefined> {
+  const repositoryRoot = await resolveGitRepositoryRoot(workingDirectory);
+  if (!repositoryRoot) {
+    return undefined;
+  }
+
+  const [workingTreeDiff, indexDiff, untrackedFiles] = await Promise.all([
+    runGitCommand(repositoryRoot, ["diff", "--name-only"]),
+    runGitCommand(repositoryRoot, ["diff", "--name-only", "--cached"]),
+    runGitCommand(repositoryRoot, ["ls-files", "--others", "--exclude-standard"]),
+  ]);
+
+  const dirtyFiles = new Set<string>();
+  for (const result of [workingTreeDiff, indexDiff, untrackedFiles]) {
+    if (!result.success) {
+      continue;
+    }
+    const parsed = parseGitPathList(result.stdout, repositoryRoot);
+    for (const filePath of parsed) {
+      dirtyFiles.add(filePath);
+    }
+  }
+
+  return {
+    files: dirtyFiles,
+  };
+}
+
+export function deriveChangedFilesFromGitSnapshots(
+  beforeFiles: Iterable<string>,
+  afterFiles: Iterable<string>
+): string[] {
+  const beforeSet = new Set(Array.from(beforeFiles, (pathValue) => resolve(pathValue)));
+  const delta: string[] = [];
+  for (const filePath of afterFiles) {
+    const normalized = resolve(filePath);
+    if (!beforeSet.has(normalized)) {
+      delta.push(normalized);
+    }
+  }
+  return delta.sort((left, right) => left.localeCompare(right));
+}
+
+function deduplicatePaths(paths: Iterable<string>): string[] {
+  return Array.from(
+    new Set(Array.from(paths, (pathValue) => resolve(pathValue)))
+  ).sort((left, right) => left.localeCompare(right));
+}
+
+function filterErrorDiagnostics(diagnostics: LspDiagnostic[]): LspDiagnostic[] {
+  return diagnostics.filter((diagnostic) => diagnostic.severity === 1 || diagnostic.severity === undefined);
+}
+
+export function buildLspDiagnosticsOutput(input: {
+  changedFiles: string[];
+  diagnosticsByFile: Record<string, LspDiagnostic[]>;
+  maxDiagnosticsPerFile: number;
+  maxFilesInOutput: number;
+}): LspFeedback {
+  const normalizedChangedFiles = deduplicatePaths(input.changedFiles);
+  const diagnosticsFiles: string[] = [];
+  const sections: string[] = [];
+  let errorCount = 0;
+
+  for (const changedFile of normalizedChangedFiles) {
+    const diagnostics = input.diagnosticsByFile[changedFile] ?? [];
+    const errors = filterErrorDiagnostics(diagnostics);
+    if (errors.length === 0) {
+      continue;
+    }
+
+    errorCount += errors.length;
+    diagnosticsFiles.push(changedFile);
+  }
+
+  if (diagnosticsFiles.length === 0) {
+    return {
+      diagnosticsFiles: [],
+      errorCount: 0,
+    };
+  }
+
+  const limitedFiles = diagnosticsFiles.slice(0, input.maxFilesInOutput);
+  sections.push(
+    `[lsp]\nchanged_files: ${String(normalizedChangedFiles.length)}\ndiagnostic_files: ${String(diagnosticsFiles.length)}`
+  );
+
+  for (const filePath of limitedFiles) {
+    const errors = filterErrorDiagnostics(input.diagnosticsByFile[filePath] ?? []);
+    const limitedErrors = errors.slice(0, input.maxDiagnosticsPerFile);
+    const lines = limitedErrors.map((diagnostic) => formatDiagnostic(diagnostic));
+    if (errors.length > input.maxDiagnosticsPerFile) {
+      lines.push(`... and ${String(errors.length - input.maxDiagnosticsPerFile)} more`);
+    }
+    sections.push(`<diagnostics file="${filePath}">\n${lines.join("\n")}\n</diagnostics>`);
+  }
+
+  if (diagnosticsFiles.length > input.maxFilesInOutput) {
+    sections.push(`... and ${String(diagnosticsFiles.length - input.maxFilesInOutput)} more files with diagnostics`);
+  }
+
+  return {
+    diagnosticsFiles,
+    errorCount,
+    outputSection: sections.join("\n\n"),
+  };
+}
+
+async function fileExists(pathValue: string): Promise<boolean> {
+  try {
+    const fileStat = await stat(pathValue);
+    return fileStat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function collectLspFeedback(changedFiles: string[]): Promise<LspFeedback> {
+  if (!env.AGENT_LSP_ENABLED || changedFiles.length === 0) {
+    return {
+      diagnosticsFiles: [],
+      errorCount: 0,
+    };
+  }
+
+  const existingFiles = (
+    await Promise.all(
+      changedFiles.map(async (pathValue) => ({
+        exists: await fileExists(pathValue),
+        pathValue,
+      }))
+    )
+  )
+    .filter((item) => item.exists)
+    .map((item) => item.pathValue);
+
+  if (existingFiles.length === 0) {
+    return {
+      diagnosticsFiles: [],
+      errorCount: 0,
+      outputSection: `[lsp]\nNo existing changed files available for diagnostics.`,
+    };
+  }
+
+  try {
+    await touchLspFiles(existingFiles, true);
+    const diagnosticsByFile = await getLspDiagnostics();
+    const formatted = buildLspDiagnosticsOutput({
+      changedFiles: existingFiles,
+      diagnosticsByFile,
+      maxDiagnosticsPerFile: env.AGENT_LSP_MAX_DIAGNOSTICS_PER_FILE,
+      maxFilesInOutput: env.AGENT_LSP_MAX_FILES_IN_OUTPUT,
+    });
+    if (formatted.outputSection) {
+      return formatted;
+    }
+
+    const lspStatuses = await getLspStatus();
+    if (lspStatuses.length === 0) {
+      return {
+        diagnosticsFiles: [],
+        errorCount: 0,
+        outputSection:
+          `[lsp]\nNo active LSP server for changed files.\n` +
+          `Configure runtime servers in ${env.AGENT_LSP_SERVER_CONFIG_PATH}.`,
+      };
+    }
+
+    return {
+      diagnosticsFiles: [],
+      errorCount: 0,
+      outputSection: `[lsp]\nNo error diagnostics reported for changed files.`,
+    };
+  } catch (error) {
+    return {
+      diagnosticsFiles: [],
+      errorCount: 0,
+      outputSection: `[lsp]\nLSP diagnostics failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
 }
 
 async function writeCommandArtifacts(
@@ -155,7 +445,8 @@ function buildRenderedOutput(
   stderr: string,
   stdout: string,
   artifacts: CommandArtifacts,
-  outputLimitChars: number
+  outputLimitChars: number,
+  additionalSections: string[] = []
 ): {
   output: string;
   stderrTruncated: boolean;
@@ -175,6 +466,13 @@ function buildRenderedOutput(
     sections.push(markerLines.join("\n"));
   }
 
+  for (const section of additionalSections) {
+    if (!section.trim()) {
+      continue;
+    }
+    sections.push(section);
+  }
+
   if (truncatedStdout.truncated || truncatedStderr.truncated) {
     sections.unshift(`Output truncated to ${String(outputLimitChars)} chars per stream.`);
   }
@@ -190,6 +488,7 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
   try {
     const { command, cwd, env: commandEnv, outputLimitChars, timeout } = executeCommandSchema.parse(args);
     const effectiveOutputLimitChars = outputLimitChars ?? env.AGENT_TOOL_OUTPUT_LIMIT_CHARS;
+    const effectiveWorkingDirectory = resolve(cwd ?? process.cwd());
     logToolCall("execute_command", { command, cwd, env: commandEnv, outputLimitChars, shell: getShellLabel(), timeout });
 
     const policyResult = evaluateCommandPolicy(command);
@@ -198,7 +497,9 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
       return policyResult;
     }
 
-    const proc = getShellCommand(command).cwd(cwd ?? process.cwd()).quiet().nothrow();
+    const beforeGitSnapshot = await collectGitSnapshot(effectiveWorkingDirectory);
+
+    const proc = getShellCommand(command).cwd(effectiveWorkingDirectory).quiet().nothrow();
 
     // Set custom environment variables if provided
     if (commandEnv) {
@@ -220,15 +521,33 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
 
     const output = result.stdout.toString();
     const errorOutput = result.stderr.toString();
+    const markerLines = collectZaceMarkerLines(output, errorOutput);
+    const markerChangedFiles = parseChangedFilesFromMarkerLines(
+      markerLines,
+      effectiveWorkingDirectory
+    );
+    const afterGitSnapshot = await collectGitSnapshot(effectiveWorkingDirectory);
+    const gitChangedFiles = deriveChangedFilesFromGitSnapshots(
+      beforeGitSnapshot?.files ?? [],
+      afterGitSnapshot?.files ?? []
+    );
+    const changedFiles = deduplicatePaths([...markerChangedFiles, ...gitChangedFiles]);
+    const lspFeedback = await collectLspFeedback(changedFiles);
+
     const artifacts = await writeCommandArtifacts(command, output, errorOutput);
     const renderedOutput = buildRenderedOutput(
       errorOutput,
       output,
       artifacts,
-      effectiveOutputLimitChars
+      effectiveOutputLimitChars,
+      lspFeedback.outputSection ? [lspFeedback.outputSection] : []
     );
     const toolArtifacts = {
+      changedFiles,
       combinedPath: artifacts.combinedPath,
+      lspDiagnosticsFiles: lspFeedback.diagnosticsFiles,
+      lspDiagnosticsIncluded: Boolean(lspFeedback.outputSection),
+      lspErrorCount: lspFeedback.errorCount,
       outputLimitChars: effectiveOutputLimitChars,
       stderrPath: artifacts.stderrPath,
       stderrTruncated: renderedOutput.stderrTruncated,

@@ -8,7 +8,11 @@ export const toolCallSchema = z.object({
 export type ToolCall = z.infer<typeof toolCallSchema>;
 
 export const toolResultArtifactsSchema = z.object({
+  changedFiles: z.array(z.string()).optional(),
   combinedPath: z.string().optional(),
+  lspDiagnosticsFiles: z.array(z.string()).optional(),
+  lspDiagnosticsIncluded: z.boolean().optional(),
+  lspErrorCount: z.number().int().nonnegative().optional(),
   outputLimitChars: z.number().int().positive().optional(),
   stderrPath: z.string().optional(),
   stderrTruncated: z.boolean().optional(),

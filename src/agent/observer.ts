@@ -3,6 +3,12 @@ export interface AgentCompactionEvent {
   step: number;
 }
 
+export interface AgentDiagnosticsEvent {
+  errorCount: number;
+  files: string[];
+  step: number;
+}
+
 export interface AgentErrorEvent {
   message: string;
 }
@@ -39,6 +45,7 @@ export interface AgentToolResultEvent {
 
 export interface AgentObserver {
   onCompaction?: (event: AgentCompactionEvent) => void;
+  onDiagnostics?: (event: AgentDiagnosticsEvent) => void;
   onError?: (event: AgentErrorEvent) => void;
   onExecutorStreamEnd?: (event: AgentExecutorStreamEvent) => void;
   onExecutorStreamStart?: (event: AgentExecutorStreamEvent) => void;
