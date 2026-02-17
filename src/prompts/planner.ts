@@ -58,7 +58,20 @@ INSTRUCTIONS:
 7. When scripts modify files, print one marker line per file:
    ZACE_FILE_CHANGED|<path>
 8. Runtime LSP server config is loaded from .zace/runtime/lsp/servers.json.
-   If LSP diagnostics are needed and config is missing, create/update this file via shell.
+   LLM may only author/update this config file; runtime validates/probes/enforces.
+   Valid schema:
+   {
+     "servers": [
+       {
+         "id": "typescript",
+         "command": ["bunx", "typescript-language-server", "--stdio"],
+         "extensions": [".ts", ".tsx", ".js", ".jsx"],
+         "rootMarkers": ["tsconfig.json", "package.json"]
+       }
+     ]
+   }
+   Allowed keys per server: id, command, extensions, rootMarkers, optional env, optional initialization.
+   Never use fields like filePatterns/rootIndicators and never use top-level language-name objects.
 9. For execute_command, you may set:
    maxRetries (bounded retry attempts), retryMaxDelayMs (max delay cap), outputLimitChars (stdout/stderr truncation limit).
 10. When older conversation context is needed, use search_session_messages before asking the user to repeat details.
@@ -79,10 +92,11 @@ INSTRUCTIONS:
 23. If conversation context contains approval resolution text, interpret decisions exactly:
     - allow once / always session / always workspace: proceed with the approved command path.
     - deny: avoid the denied destructive command and choose a safe alternative or ask_user.
-24. If a recent tool result includes:
-    [lsp]
-    No active LSP server for changed files.
-    then create or update .zace/runtime/lsp/servers.json before completion and rerun validation.
+24. LSP handling flow before completion:
+    - If [lsp] status is no_active_server or failed:
+      inspect repo stack -> create/fix .zace/runtime/lsp/servers.json -> provision/install missing server command -> run a probe and verify active diagnostics -> rerun validation gates.
+    - If [lsp] status is no_applicable_files, no_changed_files, or disabled:
+      treat as neutral (do not reopen bootstrap requirement).
 
 RESPONSE FORMAT:
 - Return strict JSON only. No markdown, no prose outside JSON.

@@ -25,7 +25,7 @@ function createTestConfig(): AgentConfig {
     compactionEnabled: true,
     compactionPreserveRecentMessages: 12,
     compactionTriggerRatio: 0.8,
-    completionValidationMode: "strict",
+    completionValidationMode: "balanced",
     contextWindowTokens: undefined,
     doomLoopThreshold: 3,
     executorAnalysis: "on_failure",
@@ -38,10 +38,10 @@ function createTestConfig(): AgentConfig {
     lspEnabled: true,
     lspMaxDiagnosticsPerFile: 20,
     lspMaxFilesInOutput: 5,
-    lspProvisionMaxAttempts: 2,
+    lspProvisionMaxAttempts: 1,
     lspServerConfigPath: ".zace/runtime/lsp/servers.json",
     lspWaitForDiagnosticsMs: 500,
-    maxSteps: 2,
+    maxSteps: 4,
     pendingActionMaxAgeMs: 3_600_000,
     requireRiskyConfirmation: false,
     riskyConfirmationToken: "ZACE_APPROVE_RISKY",
@@ -51,7 +51,7 @@ function createTestConfig(): AgentConfig {
   };
 }
 
-describe("loop completion blocking for pending LSP bootstrap", () => {
+describe("lsp bootstrap attempt limit", () => {
   afterEach(async () => {
     await shutdownLsp();
     env.AGENT_LSP_ENABLED = originalLspEnabled;
@@ -64,11 +64,11 @@ describe("loop completion blocking for pending LSP bootstrap", () => {
     }
   });
 
-  test("does not allow COMPLETE while runtime LSP has no active server", async () => {
-    tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-loop-lsp-"));
+  test("returns waiting_for_user when bootstrap remediation exceeds attempt limit", async () => {
+    tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-loop-lsp-attempt-"));
     env.AGENT_LSP_ENABLED = true;
     env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = 300;
-    env.AGENT_LSP_SERVER_CONFIG_PATH = join(tempDirectoryPath, ".zace", "runtime", "lsp", "missing.json");
+    env.AGENT_LSP_SERVER_CONFIG_PATH = join(tempDirectoryPath, ".zace", "runtime", "lsp", "servers.json");
 
     const responses = [
       JSON.stringify({
@@ -88,10 +88,33 @@ describe("loop completion blocking for pending LSP bootstrap", () => {
         },
       }),
       JSON.stringify({
+        action: "continue",
+        reasoning: "Try to add LSP config.",
+        toolCall: {
+          arguments: {
+            command: [
+              "mkdir -p .zace/runtime/lsp",
+              "cat > .zace/runtime/lsp/servers.json <<'JSON'",
+              "{",
+              '  "typescript": {',
+              '    "command": ["typescript-language-server", "--stdio"],',
+              '    "filePatterns": ["*.ts"],',
+              '    "rootIndicators": ["tsconfig.json"]',
+              "  }",
+              "}",
+              "JSON",
+              "printf 'ZACE_FILE_CHANGED|.zace/runtime/lsp/servers.json\\n'",
+            ].join("\n"),
+            cwd: tempDirectoryPath,
+          },
+          name: "execute_command",
+        },
+      }),
+      JSON.stringify({
         action: "complete",
         gates: "none",
         reasoning: "Done.",
-        userMessage: "Completed.",
+        userMessage: "Done",
       }),
     ];
 
@@ -102,12 +125,9 @@ describe("loop completion blocking for pending LSP bootstrap", () => {
       getModelContextWindowTokens: async () => undefined,
     } as unknown as LlmClient;
 
-    const result = await runAgentLoop(llmClient, createTestConfig(), "create a demo file");
+    const result = await runAgentLoop(llmClient, createTestConfig(), "create demo");
 
-    expect(result.finalState).toBe("blocked");
-    expect(result.message).toContain("LSP bootstrap");
-    expect(
-      result.context.steps.some((step) => step.reasoning.includes("LSP bootstrap is pending"))
-    ).toBe(true);
+    expect(result.finalState).toBe("waiting_for_user");
+    expect(result.message).toContain("Reached bootstrap remediation limit");
   });
 });

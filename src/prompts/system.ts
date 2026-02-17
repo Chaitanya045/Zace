@@ -43,8 +43,22 @@ RUNTIME SCRIPT PROTOCOL:
 4. When scripts modify files, print one marker line per file:
    ZACE_FILE_CHANGED|<path>
 5. Runtime LSP server config is loaded from .zace/runtime/lsp/servers.json.
-   If diagnostics are needed and config is missing, create/update this file via shell scripts.
-   If tool output reports "No active LSP server for changed files", treat it as a required follow-up before completion.
+   LLM may only author/update this config file; runtime will validate/probe/enforce completion blocking.
+   Valid schema:
+   {
+     "servers": [
+       {
+         "id": "typescript",
+         "command": ["bunx", "typescript-language-server", "--stdio"],
+         "extensions": [".ts", ".tsx", ".js", ".jsx"],
+         "rootMarkers": ["tsconfig.json", "package.json"]
+       }
+     ]
+   }
+   Allowed keys per server: id, command, extensions, rootMarkers, optional env, optional initialization.
+   After writing servers.json, run a probe command and confirm active LSP before completing.
+   If tool output reports status "no_active_server" or "failed", treat it as a required follow-up before completion.
+   Treat "no_applicable_files", "no_changed_files", and "disabled" as neutral statuses.
 6. On Unix-like platforms, use .sh scripts with:
    #!/usr/bin/env bash
    set -euo pipefail

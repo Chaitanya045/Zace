@@ -206,4 +206,43 @@ describe("shell execute_command + LSP diagnostics integration", () => {
     expect(result.output).toContain("No active LSP server for changed files");
     expect(result.artifacts?.lspStatus).toBe("no_active_server");
   });
+
+  test("reports failed status when servers.json schema is invalid", async () => {
+    const executeCommandTool = shellTools.find((tool) => tool.name === "execute_command");
+    expect(executeCommandTool).toBeDefined();
+
+    const invalidConfigPath = join(tempDirectoryPath, ".zace", "runtime", "lsp", "invalid-servers.json");
+    await writeFile(
+      invalidConfigPath,
+      JSON.stringify(
+        {
+          typescript: {
+            command: ["typescript-language-server", "--stdio"],
+            filePatterns: ["*.ts"],
+            rootIndicators: ["tsconfig.json"],
+          },
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    env.AGENT_LSP_SERVER_CONFIG_PATH = invalidConfigPath;
+
+    const result = await executeCommandTool!.execute({
+      command: [
+        "cat > sample.ts <<'EOF'",
+        "const value: number = 1;",
+        "EOF",
+        "printf 'ZACE_FILE_CHANGED|sample.ts\\n'",
+      ].join("\n"),
+      cwd: tempDirectoryPath,
+      timeout: 30_000,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("status: failed");
+    expect(result.artifacts?.lspStatus).toBe("failed");
+    expect(result.artifacts?.lspStatusReason).toBeDefined();
+  });
 });

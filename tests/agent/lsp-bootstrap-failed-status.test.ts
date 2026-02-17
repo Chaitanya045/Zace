@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,7 +25,7 @@ function createTestConfig(): AgentConfig {
     compactionEnabled: true,
     compactionPreserveRecentMessages: 12,
     compactionTriggerRatio: 0.8,
-    completionValidationMode: "strict",
+    completionValidationMode: "balanced",
     contextWindowTokens: undefined,
     doomLoopThreshold: 3,
     executorAnalysis: "on_failure",
@@ -51,7 +51,7 @@ function createTestConfig(): AgentConfig {
   };
 }
 
-describe("loop completion blocking for pending LSP bootstrap", () => {
+describe("lsp bootstrap failed status handling", () => {
   afterEach(async () => {
     await shutdownLsp();
     env.AGENT_LSP_ENABLED = originalLspEnabled;
@@ -64,11 +64,29 @@ describe("loop completion blocking for pending LSP bootstrap", () => {
     }
   });
 
-  test("does not allow COMPLETE while runtime LSP has no active server", async () => {
-    tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-loop-lsp-"));
+  test("blocks completion when LSP status is failed due to invalid config", async () => {
+    tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-loop-lsp-failed-"));
+    const configPath = join(tempDirectoryPath, ".zace", "runtime", "lsp", "servers.json");
+    await mkdir(join(tempDirectoryPath, ".zace", "runtime", "lsp"), { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          typescript: {
+            command: ["typescript-language-server", "--stdio"],
+            filePatterns: ["*.ts"],
+            rootIndicators: ["tsconfig.json"],
+          },
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
     env.AGENT_LSP_ENABLED = true;
     env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = 300;
-    env.AGENT_LSP_SERVER_CONFIG_PATH = join(tempDirectoryPath, ".zace", "runtime", "lsp", "missing.json");
+    env.AGENT_LSP_SERVER_CONFIG_PATH = configPath;
 
     const responses = [
       JSON.stringify({
@@ -106,8 +124,6 @@ describe("loop completion blocking for pending LSP bootstrap", () => {
 
     expect(result.finalState).toBe("blocked");
     expect(result.message).toContain("LSP bootstrap");
-    expect(
-      result.context.steps.some((step) => step.reasoning.includes("LSP bootstrap is pending"))
-    ).toBe(true);
+    expect(result.message).toContain("Invalid input");
   });
 });

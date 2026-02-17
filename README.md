@@ -52,9 +52,14 @@ AGENT_LSP_SERVER_CONFIG_PATH=.zace/runtime/lsp/servers.json
 AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS=3000
 AGENT_LSP_MAX_DIAGNOSTICS_PER_FILE=20
 AGENT_LSP_MAX_FILES_IN_OUTPUT=5
+AGENT_LSP_AUTO_PROVISION=true
+AGENT_LSP_PROVISION_MAX_ATTEMPTS=2
+AGENT_LSP_BOOTSTRAP_BLOCK_ON_FAILED=true
 AGENT_COMPACTION_ENABLED=true
 AGENT_COMPACTION_TRIGGER_RATIO=0.8
 AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES=12
+AGENT_COMPLETION_VALIDATION_MODE=strict
+AGENT_GATE_DISALLOW_MASKING=true
 # Optional override if automatic model context lookup fails:
 # AGENT_CONTEXT_WINDOW_TOKENS=200000
 LLM_PROVIDER=openrouter
@@ -164,6 +169,8 @@ Zace now enforces completion gates before accepting `COMPLETE`.
 - If any gate fails, the agent continues working instead of completing.
 - If no gates are required, planner can explicitly respond with:
   - `GATES: none`
+- In `strict` mode, `GATES: none` is blocked after file changes; at least one real validation gate must run after the latest write.
+- In `strict` mode, masked gates are rejected (`|| true`, `|| echo`, `; true`, `&& true`, `exit 0`).
 - If no gates are supplied, completion is blocked until gates are provided (or explicitly set to `none`).
 - The agent should only return `BLOCKED` with an explicit reason if it cannot make the gates pass.
 
@@ -207,16 +214,25 @@ Zace discovers existing scripts on startup and syncs registry metadata during ex
 ## LSP diagnostics feedback
 
 - LSP runtime is generic and server-config driven (no built-in language catalog).
+- LLM may only author/update `servers.json`; runtime deterministically validates schema, probes servers, and blocks completion on unresolved bootstrap.
 - Server definitions are loaded from:
   - `.zace/runtime/lsp/servers.json`
 - The shell tool collects changed files from:
   - marker lines (`ZACE_FILE_CHANGED|<path>`)
   - git snapshot delta (post-run minus pre-run dirty-file set)
 - If changed files are found and LSP is enabled, Zace:
-  - touches changed files in active LSP clients
+  - probes changed files in active LSP clients
   - collects diagnostics
   - appends capped diagnostics blocks into tool output
-- If no active server matches changed files, Zace marks LSP bootstrap as pending and blocks `COMPLETE` until `.zace/runtime/lsp/servers.json` is created/updated and diagnostics run again.
+- Tool artifacts include machine-readable LSP metadata:
+  - `lspStatus`
+  - `lspStatusReason`
+  - `lspProbeAttempted`
+  - `lspProbeSucceeded`
+- `lspStatus` semantics:
+  - `no_active_server` / `failed`: bootstrap required and completion is blocked.
+  - `no_applicable_files` / `no_changed_files` / `disabled`: neutral (no bootstrap escalation).
+- If no active server is available for applicable source changes, Zace marks LSP bootstrap as pending and blocks `COMPLETE` until `.zace/runtime/lsp/servers.json` is created/updated and diagnostics run again.
 - Planner is instructed to generate/update runtime LSP config via shell based on the repository before completing.
 
 Example `servers.json`:
@@ -226,7 +242,7 @@ Example `servers.json`:
   "servers": [
     {
       "id": "typescript",
-      "command": ["bun", "x", "typescript-language-server", "--stdio"],
+      "command": ["bunx", "typescript-language-server", "--stdio"],
       "extensions": [".ts", ".tsx", ".js", ".jsx"],
       "rootMarkers": ["package.json", "tsconfig.json"]
     }

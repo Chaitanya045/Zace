@@ -11,7 +11,40 @@ export interface CompletionPlan {
   source: CompletionPlanSource;
 }
 
+export interface CompletionGateMaskingAssessment {
+  isMasked: boolean;
+  reason?: string;
+}
+
+export interface CompletionGateMaskingFinding {
+  gate: CompletionGate;
+  reason: string;
+}
+
 const COMPLETION_SPEC_REGEX = /^\s*(?:COMPLETION_GATES|DONE_CRITERIA)\s*:\s*(.+)$/gimu;
+
+const VALIDATION_MASKING_RULES = [
+  {
+    reason: "contains `|| true` masking",
+    regex: /\|\|\s*true(?:[\s;]|$)/u,
+  },
+  {
+    reason: "contains `|| echo` masking",
+    regex: /\|\|\s*echo(?:[\s;]|$)/u,
+  },
+  {
+    reason: "contains `; true` masking",
+    regex: /;\s*true(?:[\s;]|$)/u,
+  },
+  {
+    reason: "contains `&& true` masking",
+    regex: /&&\s*true(?:[\s;]|$)/u,
+  },
+  {
+    reason: "contains explicit `exit 0` masking",
+    regex: /\bexit\s+0(?:[\s;]|$)/u,
+  },
+] as const;
 
 function extractCompletionSpec(task: string): string | undefined {
   let match: null | RegExpExecArray;
@@ -90,4 +123,40 @@ export function describeCompletionPlan(plan: CompletionPlan): string[] {
   }
 
   return plan.gates.map((gate) => `${gate.label}: ${gate.command}`);
+}
+
+export function assessValidationGateMasking(command: string): CompletionGateMaskingAssessment {
+  const normalizedCommand = command.trim();
+  if (!normalizedCommand) {
+    return {
+      isMasked: false,
+    };
+  }
+
+  for (const rule of VALIDATION_MASKING_RULES) {
+    if (rule.regex.test(normalizedCommand)) {
+      return {
+        isMasked: true,
+        reason: rule.reason,
+      };
+    }
+  }
+
+  return {
+    isMasked: false,
+  };
+}
+
+export function findMaskedValidationGate(gates: CompletionGate[]): CompletionGateMaskingFinding | undefined {
+  for (const gate of gates) {
+    const assessment = assessValidationGateMasking(gate.command);
+    if (assessment.isMasked && assessment.reason) {
+      return {
+        gate,
+        reason: assessment.reason,
+      };
+    }
+  }
+
+  return undefined;
 }

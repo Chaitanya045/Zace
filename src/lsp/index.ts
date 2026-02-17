@@ -10,10 +10,11 @@ import {
 } from "./config";
 
 type LspState = {
-  brokenKeys: Set<string>;
+  brokenKeys: Map<string, string>;
   clients: Map<string, LspClient>;
   configFilePath?: string;
   configFileMtimeMs?: number;
+  lastConfigError?: string;
   servers: LspServerConfig[];
   spawning: Map<string, Promise<LspClient | undefined>>;
 };
@@ -24,8 +25,21 @@ type LspStatus = {
   status: "connected" | "error";
 };
 
+export type LspRuntimeInfo = {
+  brokenClientErrors: string[];
+  configFilePath?: string;
+  configuredServers: number;
+  lastConfigError?: string;
+};
+
+export type LspProbeResult = {
+  diagnosticsFiles: string[];
+  reason?: string;
+  status: "active" | "failed" | "no_active_server" | "no_files";
+};
+
 const state: LspState = {
-  brokenKeys: new Set(),
+  brokenKeys: new Map(),
   clients: new Map(),
   servers: [],
   spawning: new Map(),
@@ -43,8 +57,59 @@ function buildClientKey(rootPath: string, serverId: string): string {
   return `${rootPath}::${serverId}`;
 }
 
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+function isErrorDiagnostic(diagnostic: LspDiagnostic): boolean {
+  return diagnostic.severity === 1 || diagnostic.severity === undefined;
+}
+
+function buildNoActiveServerReasonForFiles(filePaths: string[]): string {
+  if (state.lastConfigError) {
+    return `lsp_config_parse_error: ${state.lastConfigError}`;
+  }
+
+  if (state.servers.length === 0) {
+    return "no_servers_configured";
+  }
+
+  const normalizedPaths = Array.from(
+    new Set(filePaths.map((filePath) => normalizeAbsolutePath(filePath)))
+  );
+  const hasMatchingServer = normalizedPaths.some((filePath) =>
+    state.servers.some((server) => serverSupportsFile(server, filePath))
+  );
+  if (!hasMatchingServer) {
+    return "no_matching_server_for_changed_files";
+  }
+
+  const firstBrokenReason = Array.from(state.brokenKeys.values())[0];
+  if (firstBrokenReason) {
+    return `server_start_failed: ${firstBrokenReason}`;
+  }
+
+  return "no_connected_lsp_client";
+}
+
+export function getRuntimeInfo(): LspRuntimeInfo {
+  return {
+    brokenClientErrors: Array.from(state.brokenKeys.values()),
+    configFilePath: state.configFilePath,
+    configuredServers: state.servers.length,
+    lastConfigError: state.lastConfigError,
+  };
+}
+
 async function refreshServerConfig(): Promise<void> {
-  const loaded = await loadLspServersConfig(env.AGENT_LSP_SERVER_CONFIG_PATH);
+  const loaded = await loadLspServersConfig(env.AGENT_LSP_SERVER_CONFIG_PATH).catch((error) => {
+    state.lastConfigError = formatError(error);
+    state.configFilePath = resolve(env.AGENT_LSP_SERVER_CONFIG_PATH);
+    state.configFileMtimeMs = undefined;
+    state.servers = [];
+    throw error;
+  });
+  state.lastConfigError = undefined;
   const configChanged =
     state.configFilePath !== loaded.filePath ||
     state.configFileMtimeMs !== loaded.mtimeMs;
@@ -113,13 +178,13 @@ async function createOrGetClient(server: LspServerConfig, filePath: string): Pro
   })
     .then((client) => {
       state.clients.set(key, client);
+      state.brokenKeys.delete(key);
       return client;
     })
     .catch((error) => {
-      state.brokenKeys.add(key);
-      log(
-        `Failed to initialize LSP client ${server.id}: ${error instanceof Error ? error.message : "Unknown error"}`
-      );
+      const reason = formatError(error);
+      state.brokenKeys.set(key, reason);
+      log(`Failed to initialize LSP client ${server.id}: ${reason}`);
       return undefined;
     })
     .finally(() => {
@@ -158,6 +223,7 @@ export async function shutdown(): Promise<void> {
   }
   state.clients.clear();
   state.brokenKeys.clear();
+  state.lastConfigError = undefined;
   state.servers = [];
   state.spawning.clear();
 }
@@ -222,6 +288,49 @@ export async function status(): Promise<LspStatus[]> {
     });
   }
   return statuses;
+}
+
+export async function probeFiles(filePaths: string[]): Promise<LspProbeResult> {
+  const normalized = Array.from(
+    new Set(filePaths.map((filePath) => normalizeAbsolutePath(filePath)))
+  );
+  if (normalized.length === 0) {
+    return {
+      diagnosticsFiles: [],
+      reason: "no_files_provided",
+      status: "no_files",
+    };
+  }
+
+  try {
+    await touchFiles(normalized, true);
+  } catch (error) {
+    return {
+      diagnosticsFiles: [],
+      reason: `probe_touch_failed: ${formatError(error)}`,
+      status: "failed",
+    };
+  }
+
+  const connectedStatuses = (await status()).filter((entry) => entry.status === "connected");
+  if (connectedStatuses.length === 0) {
+    return {
+      diagnosticsFiles: [],
+      reason: buildNoActiveServerReasonForFiles(normalized),
+      status: "no_active_server",
+    };
+  }
+
+  const diagnosticsByFile = await diagnostics();
+  const diagnosticsFiles = normalized.filter((filePath) => {
+    const fileDiagnostics = diagnosticsByFile[filePath] ?? [];
+    return fileDiagnostics.some((diagnostic) => isErrorDiagnostic(diagnostic));
+  });
+
+  return {
+    diagnosticsFiles,
+    status: "active",
+  };
 }
 
 function formatRangeStart(range: LspRange): string {

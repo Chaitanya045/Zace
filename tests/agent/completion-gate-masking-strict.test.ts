@@ -1,16 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { unlink } from "node:fs/promises";
 
 import type { LlmClient } from "../../src/llm/client";
 import type { AgentConfig } from "../../src/types/config";
 
 import { runAgentLoop } from "../../src/agent/loop";
-import { createAutoSessionId } from "../../src/cli/chat-session";
-import { getSessionFilePath, readSessionEntries } from "../../src/tools/session";
 
 function createTestConfig(): AgentConfig {
   return {
-    approvalMemoryEnabled: true,
+    approvalMemoryEnabled: false,
     approvalRulesPath: ".zace/runtime/policy/approvals.json",
     commandAllowPatterns: [],
     commandDenyPatterns: [],
@@ -32,10 +29,10 @@ function createTestConfig(): AgentConfig {
     lspMaxFilesInOutput: 5,
     lspProvisionMaxAttempts: 2,
     lspServerConfigPath: ".zace/runtime/lsp/servers.json",
-    lspWaitForDiagnosticsMs: 3000,
-    maxSteps: 2,
+    lspWaitForDiagnosticsMs: 500,
+    maxSteps: 1,
     pendingActionMaxAgeMs: 3_600_000,
-    requireRiskyConfirmation: true,
+    requireRiskyConfirmation: false,
     riskyConfirmationToken: "ZACE_APPROVE_RISKY",
     stagnationWindow: 3,
     stream: false,
@@ -43,40 +40,23 @@ function createTestConfig(): AgentConfig {
   };
 }
 
-describe("run events", () => {
-  test("run_event entries are persisted in ordered sequence", async () => {
-    const sessionId = createAutoSessionId(new Date("2026-02-17T18:00:00.000Z"));
-    const sessionPath = getSessionFilePath(sessionId);
-    const config = createTestConfig();
-
+describe("completion gate masking in strict mode", () => {
+  test("blocks COMPLETE when a validation gate is masked", async () => {
     const llmClient = {
       chat: async () => ({
         content: JSON.stringify({
-          action: "ask_user",
-          reasoning: "Need concrete task details.",
-          userMessage: "What file should I modify?",
+          action: "complete",
+          gates: ["echo ok || true"],
+          reasoning: "All done.",
+          userMessage: "Done",
         }),
       }),
       getModelContextWindowTokens: async () => undefined,
     } as unknown as LlmClient;
 
-    try {
-      await runAgentLoop(llmClient, config, "hello", {
-        sessionId,
-      });
+    const result = await runAgentLoop(llmClient, createTestConfig(), "say hello");
 
-      const entries = await readSessionEntries(sessionId);
-      const runEvents = entries.filter((entry) => entry.type === "run_event");
-      const sequence = runEvents.map((event) => event.event);
-
-      expect(sequence).toEqual([
-        "run_started",
-        "plan_started",
-        "plan_parsed",
-        "final_state_set",
-      ]);
-    } finally {
-      await unlink(sessionPath).catch(() => undefined);
-    }
+    expect(result.finalState).toBe("blocked");
+    expect(result.message).toContain("masked");
   });
 });

@@ -8,6 +8,7 @@ import type { AgentConfig } from "../types/config";
 import type { ToolResult } from "../types/tool";
 import type { AgentObserver } from "./observer";
 
+import { probeFiles as probeLspFiles } from "../lsp";
 import { buildSystemPrompt } from "../prompts/system";
 import { allTools } from "../tools";
 import { appendSessionMessage, appendSessionRunEvent, getSessionFilePath } from "../tools/session";
@@ -21,6 +22,7 @@ import {
 } from "./approval";
 import { maybeCompactContext } from "./compaction";
 import {
+  findMaskedValidationGate,
   describeCompletionPlan,
   resolveCompletionPlan,
   type CompletionGate,
@@ -418,12 +420,25 @@ function emitDiagnosticsObserverEvent(
   });
 }
 
-type LspBootstrapSignal = "active" | "none" | "required";
+type LspBootstrapSignal = "active" | "failed" | "none" | "required";
+
+type LspBootstrapState = "failed" | "idle" | "probing" | "ready" | "required";
+
+type LspBootstrapContext = {
+  attemptedCommands: string[];
+  lastFailureReason: null | string;
+  pendingChangedFiles: Set<string>;
+  provisionAttempts: number;
+  state: LspBootstrapState;
+};
 
 export function deriveLspBootstrapSignal(toolResult: ToolResult): LspBootstrapSignal {
   const status = toolResult.artifacts?.lspStatus;
   if (status === "no_active_server") {
     return "required";
+  }
+  if (status === "failed") {
+    return "failed";
   }
   if (status === "diagnostics" || status === "no_errors") {
     return "active";
@@ -431,20 +446,187 @@ export function deriveLspBootstrapSignal(toolResult: ToolResult): LspBootstrapSi
   return "none";
 }
 
+function shouldTrackPendingLspFiles(signal: LspBootstrapSignal): boolean {
+  return signal === "active" || signal === "failed" || signal === "required";
+}
+
 export function buildLspBootstrapRequirementMessage(
   lspServerConfigPath: string,
-  changedFiles: string[]
+  changedFiles: string[],
+  reason?: string
 ): string {
   const normalizedFiles = Array.from(new Set(changedFiles.map((value) => value.trim()).filter(Boolean)));
   const preview = normalizedFiles.slice(0, LSP_BOOTSTRAP_FILE_PREVIEW_LIMIT);
   const filesText = preview.length > 0
     ? `\nChanged files (sample): ${preview.join(", ")}${normalizedFiles.length > preview.length ? ", ..." : ""}`
     : "";
+  const reasonText = reason ? `\nReason: ${reason}` : "";
   return (
     `LSP bootstrap required: no active LSP server is configured for changed files.\n` +
     `Create or update ${lspServerConfigPath} for this repository and rerun validation commands before completing.` +
+    reasonText +
     filesText
   );
+}
+
+type LspBootstrapTransition = {
+  event?: "lsp_bootstrap_cleared" | "lsp_bootstrap_required";
+  message?: string;
+  payload?: Record<string, unknown>;
+  reason: null | string;
+  state: LspBootstrapState;
+};
+
+export function advanceLspBootstrapState(input: {
+  changedFiles: string[];
+  lspServerConfigPath: string;
+  previousReason: null | string;
+  previousState: LspBootstrapState;
+  signal: LspBootstrapSignal;
+  signalReason?: string;
+}): LspBootstrapTransition {
+  if (input.signal === "none") {
+    return {
+      reason: input.previousReason,
+      state: input.previousState,
+    };
+  }
+
+  if (input.signal === "active") {
+    const nextState: LspBootstrapState = "ready";
+    const nextReason: null = null;
+    const shouldEmit =
+      input.previousState !== "idle" &&
+      (input.previousState !== nextState || input.previousReason !== nextReason);
+    if (!shouldEmit) {
+      return {
+        reason: nextReason,
+        state: nextState,
+      };
+    }
+
+    return {
+      event: "lsp_bootstrap_cleared",
+      message: "LSP diagnostics are active for changed files; LSP bootstrap requirement is cleared.",
+      payload: {
+        lspServerConfigPath: input.lspServerConfigPath,
+      },
+      reason: nextReason,
+      state: nextState,
+    };
+  }
+
+  const nextState: LspBootstrapState = input.signal === "failed" ? "failed" : "required";
+  const normalizedReason = input.signalReason?.trim();
+  const nextReason = normalizedReason && normalizedReason.length > 0
+    ? normalizedReason
+    : input.previousReason;
+
+  if (input.previousState === nextState && input.previousReason === nextReason) {
+    return {
+      reason: nextReason,
+      state: nextState,
+    };
+  }
+
+  return {
+    event: "lsp_bootstrap_required",
+    message: buildLspBootstrapRequirementMessage(
+      input.lspServerConfigPath,
+      input.changedFiles,
+      nextReason ?? undefined
+    ),
+    payload: {
+      changedFiles: input.changedFiles.slice(0, 20),
+      lspFailureReason: nextReason,
+      lspServerConfigPath: input.lspServerConfigPath,
+      lspStatus: nextState === "failed" ? "failed" : "no_active_server",
+    },
+    reason: nextReason,
+    state: nextState,
+  };
+}
+
+export function shouldBlockForBootstrap(input: {
+  lspBootstrapBlockOnFailed: boolean;
+  lspEnabled: boolean;
+  lspState: LspBootstrapState;
+}): boolean {
+  if (!input.lspEnabled) {
+    return false;
+  }
+
+  if (input.lspState === "required") {
+    return true;
+  }
+
+  return input.lspBootstrapBlockOnFailed && input.lspState === "failed";
+}
+
+export function shouldBlockForMaskedGates(input: {
+  gateDisallowMasking: boolean;
+  gates: CompletionGate[];
+  strictCompletionValidation: boolean;
+}) {
+  if (!input.strictCompletionValidation || !input.gateDisallowMasking) {
+    return undefined;
+  }
+
+  return findMaskedValidationGate(input.gates);
+}
+
+export function shouldBlockForFreshness(input: {
+  lastSuccessfulValidationStep?: number;
+  lastWriteStep?: number;
+  strictCompletionValidation: boolean;
+}): boolean {
+  if (!input.strictCompletionValidation || input.lastWriteStep === undefined) {
+    return false;
+  }
+
+  if (input.lastSuccessfulValidationStep === undefined) {
+    return true;
+  }
+
+  return input.lastSuccessfulValidationStep < input.lastWriteStep;
+}
+
+function extractStructuredSection(output: string, sectionName: string): string | undefined {
+  const escapedSectionName = sectionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const match = output.match(new RegExp(`\\[${escapedSectionName}\\][\\s\\S]*?(?=\\n\\n\\[[^\\n]+\\]|$)`, "u"));
+  const section = match?.[0]?.trim();
+  return section && section.length > 0 ? section : undefined;
+}
+
+function buildToolMemoryDigest(input: {
+  attempt: number;
+  toolName: string;
+  toolResult: ToolResult;
+}): string {
+  const lines = [
+    `Tool ${input.toolName} attempt ${String(input.attempt)} result: ${input.toolResult.success ? "success" : "failure"}`,
+  ];
+
+  const lspSection = extractStructuredSection(input.toolResult.output, "lsp");
+  if (lspSection) {
+    lines.push(lspSection);
+  }
+
+  const executionSection = extractStructuredSection(input.toolResult.output, "execution");
+  if (executionSection) {
+    lines.push(executionSection);
+  }
+
+  const artifactsSection = extractStructuredSection(input.toolResult.output, "artifacts");
+  if (artifactsSection) {
+    lines.push(artifactsSection.split("\n").slice(0, 4).join("\n"));
+  }
+
+  if (!input.toolResult.success && input.toolResult.error) {
+    lines.push(`[failure]\n${input.toolResult.error}`);
+  }
+
+  return lines.join("\n\n");
 }
 
 async function sleep(delayMs: number): Promise<void> {
@@ -498,8 +680,16 @@ export async function runAgentLoop(
   let lastToolLoopSignature = "";
   let lastToolLoopSignatureCount = 0;
   let lastCompletionGateFailure: null | string = null;
-  let lspBootstrapRequired = false;
-  let lspBootstrapRequiredMessage: null | string = null;
+  let lastSuccessfulValidationStep: number | undefined;
+  let lastWriteStep: number | undefined;
+  const lspBootstrap: LspBootstrapContext = {
+    attemptedCommands: [],
+    lastFailureReason: null,
+    pendingChangedFiles: new Set<string>(),
+    provisionAttempts: 0,
+    state: "idle",
+  };
+  const lspServerConfigAbsolutePath = resolve(config.lspServerConfigPath);
   const toolCallSignatureHistory: string[] = [];
   const onceApprovedSignatures = new Set(options?.approvedCommandSignaturesOnce ?? []);
   const getCompletionCriteria = (): string[] => describeCompletionPlan(completionPlan);
@@ -523,6 +713,24 @@ export async function runAgentLoop(
     });
 
     return result;
+  };
+  const recordCompletionValidationBlocked = async (
+    step: number,
+    reason: string,
+    extraPayload?: Record<string, unknown>
+  ): Promise<void> => {
+    await appendRunEvent({
+      event: "completion_validation_blocked",
+      observer,
+      payload: {
+        reason,
+        ...extraPayload,
+      },
+      phase: "finalizing",
+      runId,
+      sessionId,
+      step,
+    });
   };
   const resolveCommandApproval = async (input: {
     command: string;
@@ -818,12 +1026,52 @@ export async function runAgentLoop(
 
       // Handle different plan outcomes
       if (planResult.action === "complete") {
-        if (config.lspEnabled && lspBootstrapRequired && lspBootstrapRequiredMessage) {
+        const strictCompletionValidation = config.completionValidationMode === "strict";
+        const lspBootstrapBlocking = shouldBlockForBootstrap({
+          lspBootstrapBlockOnFailed: config.lspBootstrapBlockOnFailed,
+          lspEnabled: config.lspEnabled,
+          lspState: lspBootstrap.state,
+        });
+        if (lspBootstrapBlocking) {
+          const bootstrapMessage = buildLspBootstrapRequirementMessage(
+            config.lspServerConfigPath,
+            Array.from(lspBootstrap.pendingChangedFiles),
+            lspBootstrap.lastFailureReason ?? undefined
+          );
           const failureMessage =
-            `Completion blocked until LSP bootstrap is resolved. ${lspBootstrapRequiredMessage}`;
+            `Completion blocked until LSP bootstrap is resolved. ${bootstrapMessage}`;
           lastCompletionGateFailure = failureMessage;
+          await recordCompletionValidationBlocked(stepNumber, failureMessage, {
+            lspBootstrapState: lspBootstrap.state,
+            lspFailureReason: lspBootstrap.lastFailureReason,
+            provisionAttempts: lspBootstrap.provisionAttempts,
+          });
+
+          if (!config.lspAutoProvision || lspBootstrap.provisionAttempts >= config.lspProvisionMaxAttempts) {
+            const attemptedCommandsText = lspBootstrap.attemptedCommands.length > 0
+              ? `\nRecent bootstrap commands:\n- ${lspBootstrap.attemptedCommands.join("\n- ")}`
+              : "";
+            const waitMessage =
+              `${failureMessage}\nReached bootstrap remediation limit (${String(config.lspProvisionMaxAttempts)} attempts).` +
+              `${attemptedCommandsText}`;
+            memory.addMessage("assistant", waitMessage);
+            context = addStep(context, {
+              reasoning: `Completion blocked by unresolved LSP bootstrap after bounded retries. ${waitMessage}`,
+              state: "waiting_for_user",
+              step: stepNumber,
+              toolCall: null,
+              toolResult: null,
+            });
+            return await finalizeResult({
+              context,
+              finalState: "waiting_for_user",
+              message: waitMessage,
+              success: false,
+            }, stepNumber, "lsp_bootstrap_retry_limit_reached");
+          }
+
           context = addStep(context, {
-            reasoning: `Completion requested while LSP bootstrap is pending. ${lspBootstrapRequiredMessage}`,
+            reasoning: `Completion requested while LSP bootstrap is pending. ${bootstrapMessage}`,
             state: "executing",
             step: stepNumber,
             toolCall: null,
@@ -850,10 +1098,33 @@ export async function runAgentLoop(
           );
         }
 
+        if (strictCompletionValidation && planResult.completionGatesDeclaredNone && lastWriteStep !== undefined) {
+          const failureMessage =
+            "Completion blocked: `gates: none` is not allowed after file changes in strict mode. Provide validation gates and rerun.";
+          lastCompletionGateFailure = failureMessage;
+          await recordCompletionValidationBlocked(stepNumber, failureMessage, {
+            completionValidationMode: config.completionValidationMode,
+            lastWriteStep,
+          });
+          context = addStep(context, {
+            reasoning: `Completion requested with gates:none after writes. ${failureMessage}`,
+            state: "executing",
+            step: stepNumber,
+            toolCall: null,
+            toolResult: null,
+          });
+          memory.addMessage("assistant", `Completion gate check result: ${failureMessage}`);
+          logStep(stepNumber, failureMessage);
+          continue;
+        }
+
         if (completionPlan.gates.length === 0 && !planResult.completionGatesDeclaredNone) {
           const failureMessage =
             "No completion gates available. Provide `GATES: <command_1>;;<command_2>` with COMPLETE, use DONE_CRITERIA, or explicitly declare `GATES: none`.";
           lastCompletionGateFailure = failureMessage;
+          await recordCompletionValidationBlocked(stepNumber, failureMessage, {
+            completionValidationMode: config.completionValidationMode,
+          });
           context = addStep(context, {
             reasoning: `Completion requested without gates. ${failureMessage}`,
             state: "executing",
@@ -866,6 +1137,45 @@ export async function runAgentLoop(
             `Completion gate check result: ${failureMessage}`
           );
           logStep(stepNumber, `Completion blocked by missing gates: ${failureMessage}`);
+          continue;
+        }
+
+        const maskedGate = shouldBlockForMaskedGates({
+          gateDisallowMasking: config.gateDisallowMasking,
+          gates: completionPlan.gates,
+          strictCompletionValidation,
+        });
+        if (maskedGate) {
+          const failureMessage =
+            `Completion blocked: validation gate ${maskedGate.gate.label} appears masked (${maskedGate.reason}). ` +
+            "Provide an unmasked validation command.";
+          lastCompletionGateFailure = failureMessage;
+          await appendRunEvent({
+            event: "validation_gate_masked",
+            observer,
+            payload: {
+              command: maskedGate.gate.command,
+              gateLabel: maskedGate.gate.label,
+              reason: maskedGate.reason,
+            },
+            phase: "finalizing",
+            runId,
+            sessionId,
+            step: stepNumber,
+          });
+          await recordCompletionValidationBlocked(stepNumber, failureMessage, {
+            gate: maskedGate.gate.label,
+            reason: maskedGate.reason,
+          });
+          memory.addMessage("assistant", `Completion gate check result: ${failureMessage}`);
+          context = addStep(context, {
+            reasoning: failureMessage,
+            state: "executing",
+            step: stepNumber,
+            toolCall: null,
+            toolResult: null,
+          });
+          logStep(stepNumber, failureMessage);
           continue;
         }
 
@@ -958,6 +1268,9 @@ export async function runAgentLoop(
           if (approvalBlockedMessage) {
             const failureMessage = `Completion blocked by approval policy: ${approvalBlockedMessage}`;
             lastCompletionGateFailure = failureMessage;
+            await recordCompletionValidationBlocked(stepNumber, failureMessage, {
+              completionValidationMode: config.completionValidationMode,
+            });
             memory.addMessage("assistant", failureMessage);
             context = addStep(context, {
               reasoning: failureMessage,
@@ -981,6 +1294,9 @@ export async function runAgentLoop(
           const hasFailure = gateResults.some((gateResult) => !gateResult.result.success);
           if (hasFailure) {
             lastCompletionGateFailure = failureMessage;
+            await recordCompletionValidationBlocked(stepNumber, failureMessage, {
+              completionValidationMode: config.completionValidationMode,
+            });
             context = addStep(context, {
               reasoning: `Completion requested but gates failed. ${failureMessage}`,
               state: "executing",
@@ -991,6 +1307,33 @@ export async function runAgentLoop(
             logStep(stepNumber, `Completion blocked by gates: ${failureMessage}`);
             continue;
           }
+
+          lastSuccessfulValidationStep = stepNumber;
+        }
+
+        if (shouldBlockForFreshness({
+          lastSuccessfulValidationStep,
+          lastWriteStep,
+          strictCompletionValidation,
+        })) {
+          const failureMessage =
+            "Completion blocked: validation freshness check failed. Re-run validation gates after the latest file changes.";
+          lastCompletionGateFailure = failureMessage;
+          await recordCompletionValidationBlocked(stepNumber, failureMessage, {
+            completionValidationMode: config.completionValidationMode,
+            lastSuccessfulValidationStep,
+            lastWriteStep,
+          });
+          memory.addMessage("assistant", `Completion gate check result: ${failureMessage}`);
+          context = addStep(context, {
+            reasoning: failureMessage,
+            state: "executing",
+            step: stepNumber,
+            toolCall: null,
+            toolResult: null,
+          });
+          logStep(stepNumber, failureMessage);
+          continue;
         }
 
         context = addStep(context, {
@@ -1124,8 +1467,13 @@ export async function runAgentLoop(
         }, stepNumber, "loop_guard_pre_execution");
       }
 
+      const plannedExecuteCommand =
+        planResult.toolCall.name === "execute_command"
+          ? getExecuteCommandText(planResult.toolCall.arguments)
+          : undefined;
+
       if (planResult.toolCall.name === "execute_command") {
-        const command = getExecuteCommandText(planResult.toolCall.arguments);
+        const command = plannedExecuteCommand;
         const commandWorkingDirectory = getExecuteCommandWorkingDirectory(
           planResult.toolCall.arguments
         );
@@ -1295,42 +1643,62 @@ export async function runAgentLoop(
           });
           emitDiagnosticsObserverEvent(observer, stepNumber, toolResult);
 
+          const changedFiles = toolResult.artifacts?.changedFiles ?? [];
+          if (changedFiles.length > 0) {
+            lastWriteStep = stepNumber;
+          }
+
           if (config.lspEnabled) {
             const lspBootstrapSignal = deriveLspBootstrapSignal(toolResult);
-            if (lspBootstrapSignal === "required") {
-              const nextMessage = buildLspBootstrapRequirementMessage(
-                config.lspServerConfigPath,
-                toolResult.artifacts?.changedFiles ?? []
-              );
-              const shouldEmitRequirement = !lspBootstrapRequired || lspBootstrapRequiredMessage !== nextMessage;
-              lspBootstrapRequired = true;
-              lspBootstrapRequiredMessage = nextMessage;
-              if (shouldEmitRequirement) {
-                memory.addMessage("assistant", lspBootstrapRequiredMessage);
-                await appendRunEvent({
-                  event: "lsp_bootstrap_required",
-                  observer,
-                  payload: {
-                    changedFiles: (toolResult.artifacts?.changedFiles ?? []).slice(0, 20),
-                    lspServerConfigPath: config.lspServerConfigPath,
-                  },
-                  phase: "executing",
-                  runId,
-                  sessionId,
-                  step: stepNumber,
-                });
+            const lspStatusReason = toolResult.artifacts?.lspStatusReason;
+            const nonConfigChangedFiles = changedFiles
+              .map((filePath) => resolve(filePath))
+              .filter((filePath) => filePath !== lspServerConfigAbsolutePath);
+            if (shouldTrackPendingLspFiles(lspBootstrapSignal)) {
+              for (const filePath of nonConfigChangedFiles) {
+                lspBootstrap.pendingChangedFiles.add(filePath);
               }
-            } else if (lspBootstrapSignal === "active" && lspBootstrapRequired) {
-              lspBootstrapRequired = false;
-              lspBootstrapRequiredMessage = null;
-              memory.addMessage(
-                "assistant",
-                "LSP diagnostics are active for changed files; LSP bootstrap requirement is cleared."
-              );
+            }
+            const transition = advanceLspBootstrapState({
+              changedFiles: Array.from(lspBootstrap.pendingChangedFiles),
+              lspServerConfigPath: config.lspServerConfigPath,
+              previousReason: lspBootstrap.lastFailureReason,
+              previousState: lspBootstrap.state,
+              signal: lspBootstrapSignal,
+              signalReason: lspStatusReason,
+            });
+            lspBootstrap.state = transition.state;
+            lspBootstrap.lastFailureReason = transition.reason;
+            if (lspBootstrapSignal === "active") {
+              lspBootstrap.pendingChangedFiles.clear();
+            }
+            if (transition.event && transition.message) {
+              memory.addMessage("assistant", transition.message);
               await appendRunEvent({
-                event: "lsp_bootstrap_cleared",
+                event: transition.event,
+                observer,
+                payload: transition.payload ?? {},
+                phase: "executing",
+                runId,
+                sessionId,
+                step: stepNumber,
+              });
+            }
+
+            const touchedLspConfig =
+              changedFiles.some((filePath) => resolve(filePath) === lspServerConfigAbsolutePath) ||
+              (plannedExecuteCommand?.includes(config.lspServerConfigPath) ?? false);
+            if (
+              touchedLspConfig &&
+              lspBootstrap.pendingChangedFiles.size > 0 &&
+              (lspBootstrap.state === "required" || lspBootstrap.state === "failed")
+            ) {
+              lspBootstrap.state = "probing";
+              await appendRunEvent({
+                event: "lsp_bootstrap_probe_started",
                 observer,
                 payload: {
+                  files: Array.from(lspBootstrap.pendingChangedFiles).slice(0, 20),
                   lspServerConfigPath: config.lspServerConfigPath,
                 },
                 phase: "executing",
@@ -1338,13 +1706,71 @@ export async function runAgentLoop(
                 sessionId,
                 step: stepNumber,
               });
+
+              const probeResult = await probeLspFiles(Array.from(lspBootstrap.pendingChangedFiles));
+              if (probeResult.status === "active") {
+                lspBootstrap.state = "ready";
+                lspBootstrap.lastFailureReason = null;
+                lspBootstrap.pendingChangedFiles.clear();
+                await appendRunEvent({
+                  event: "lsp_bootstrap_probe_succeeded",
+                  observer,
+                  payload: {
+                    diagnosticFiles: probeResult.diagnosticsFiles.slice(0, 20),
+                  },
+                  phase: "executing",
+                  runId,
+                  sessionId,
+                  step: stepNumber,
+                });
+                memory.addMessage(
+                  "assistant",
+                  "LSP bootstrap probe succeeded after servers config update."
+                );
+              } else {
+                const reason = probeResult.reason ?? "LSP bootstrap probe did not activate diagnostics";
+                lspBootstrap.state = probeResult.status === "failed" ? "failed" : "required";
+                lspBootstrap.lastFailureReason = reason;
+                lspBootstrap.provisionAttempts += 1;
+                if (plannedExecuteCommand) {
+                  const compactCommand = plannedExecuteCommand.replace(/\s+/gu, " ").trim();
+                  const preview = compactCommand.length > 220
+                    ? `${compactCommand.slice(0, 220)}...`
+                    : compactCommand;
+                  lspBootstrap.attemptedCommands.push(preview);
+                  if (lspBootstrap.attemptedCommands.length > 5) {
+                    lspBootstrap.attemptedCommands.shift();
+                  }
+                }
+                await appendRunEvent({
+                  event: "lsp_bootstrap_probe_failed",
+                  observer,
+                  payload: {
+                    reason,
+                    state: lspBootstrap.state,
+                  },
+                  phase: "executing",
+                  runId,
+                  sessionId,
+                  step: stepNumber,
+                });
+                memory.addMessage(
+                  "assistant",
+                  buildLspBootstrapRequirementMessage(
+                    config.lspServerConfigPath,
+                    Array.from(lspBootstrap.pendingChangedFiles),
+                    reason
+                  )
+                );
+              }
             }
           }
 
-          memory.addMessage(
-            "tool",
-            `Tool ${planResult.toolCall.name} attempt ${String(attempt)} result: ${toolResult.output}`
-          );
+          memory.addMessage("tool", buildToolMemoryDigest({
+            attempt,
+            toolName: planResult.toolCall.name,
+            toolResult,
+          }));
 
           const scriptCatalogUpdate = updateScriptCatalogFromOutput(
             context.scriptCatalog,

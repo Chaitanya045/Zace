@@ -38,6 +38,30 @@ describe("lsp bootstrap helpers", () => {
     expect(noErrorsSignal).toBe("active");
   });
 
+  test("marks failed status as failed", () => {
+    const signal = deriveLspBootstrapSignal({
+      artifacts: {
+        lspStatus: "failed",
+      },
+      output: "[lsp]\nstatus: failed",
+      success: false,
+    });
+
+    expect(signal).toBe("failed");
+  });
+
+  test("treats no_applicable_files as neutral for bootstrap state", () => {
+    const signal = deriveLspBootstrapSignal({
+      artifacts: {
+        lspStatus: "no_applicable_files",
+      },
+      output: "[lsp]\nstatus: no_applicable_files",
+      success: true,
+    });
+
+    expect(signal).toBe("none");
+  });
+
   test("builds actionable bootstrap message with changed file preview", () => {
     const message = buildLspBootstrapRequirementMessage(".zace/runtime/lsp/servers.json", [
       "/repo/src/a.ts",

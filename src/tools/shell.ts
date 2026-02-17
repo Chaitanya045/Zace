@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { z } from "zod";
 
@@ -12,9 +12,10 @@ import { env } from "../config/env";
 import {
   diagnostics as getLspDiagnostics,
   formatDiagnostic,
-  status as getLspStatus,
-  touchFiles as touchLspFiles,
+  getRuntimeInfo as getLspRuntimeInfo,
+  probeFiles as probeLspFiles,
 } from "../lsp";
+import { loadLspServersConfig, type LspServerConfig } from "../lsp/config";
 import { ToolExecutionError } from "../utils/errors";
 import { logToolCall, logToolResult } from "../utils/logger";
 import { stableStringify } from "../utils/stable-json";
@@ -31,6 +32,31 @@ const executeCommandSchema = z.object({
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const EXECUTION_COMMAND_PREVIEW_CHARS = 600;
+const NON_DIAGNOSTIC_SOURCE_EXTENSIONS = new Set([
+  ".bmp",
+  ".conf",
+  ".css",
+  ".csv",
+  ".env",
+  ".gif",
+  ".html",
+  ".ini",
+  ".jpeg",
+  ".jpg",
+  ".json",
+  ".jsonl",
+  ".lock",
+  ".log",
+  ".md",
+  ".png",
+  ".svg",
+  ".toml",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml",
+]);
+const OVERWRITE_REDIRECT_TARGET_REGEX = /(?:^|[\s;|&])(?:\d*)>(?!>|&)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/gu;
 const ZACE_MARKER_LINE_REGEX = /^ZACE_[A-Z0-9_]+\|.*$/u;
 const ZACE_FILE_CHANGED_PREFIX = "ZACE_FILE_CHANGED|";
 
@@ -119,10 +145,20 @@ type LspFeedback = {
   diagnosticsFiles: string[];
   errorCount: number;
   outputSection?: string;
-  status: "diagnostics" | "disabled" | "failed" | "no_active_server" | "no_changed_files" | "no_errors";
+  probeAttempted: boolean;
+  probeSucceeded: boolean;
+  reason?: string;
+  status:
+    | "diagnostics"
+    | "disabled"
+    | "failed"
+    | "no_active_server"
+    | "no_applicable_files"
+    | "no_changed_files"
+    | "no_errors";
 };
 
-type ChangedFilesSource = "git_delta" | "marker";
+type ChangedFilesSource = "git_delta" | "inferred_redirect" | "marker";
 type ProgressSignal = "files_changed" | "none" | "output_changed" | "success_without_changes";
 type ProcessSignal = Exclude<Parameters<typeof process.kill>[1], number | undefined>;
 
@@ -362,6 +398,55 @@ function normalizeCommandPath(pathValue: string, workingDirectory: string): stri
   return resolve(workingDirectory, trimmed);
 }
 
+function stripWrappingQuotes(value: string): string {
+  if (
+    (value.startsWith("\"") && value.endsWith("\"")) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+
+  return value;
+}
+
+function isDynamicShellPath(value: string): boolean {
+  return /[`$*?{}()]/u.test(value);
+}
+
+export function inferChangedFilesFromRedirectTargets(
+  command: string,
+  workingDirectory: string
+): string[] {
+  const inferredChangedFiles = new Set<string>();
+
+  for (const match of command.matchAll(OVERWRITE_REDIRECT_TARGET_REGEX)) {
+    const rawTarget = match[1];
+    if (!rawTarget) {
+      continue;
+    }
+
+    const normalizedTarget = stripWrappingQuotes(rawTarget.trim());
+    if (
+      !normalizedTarget ||
+      normalizedTarget === "-" ||
+      normalizedTarget === "/dev/null" ||
+      normalizedTarget.toLowerCase() === "nul" ||
+      normalizedTarget.startsWith("~") ||
+      isDynamicShellPath(normalizedTarget)
+    ) {
+      continue;
+    }
+
+    const resolvedTarget = normalizeCommandPath(normalizedTarget, workingDirectory);
+    if (!resolvedTarget) {
+      continue;
+    }
+    inferredChangedFiles.add(resolvedTarget);
+  }
+
+  return Array.from(inferredChangedFiles).sort((left, right) => left.localeCompare(right));
+}
+
 export function parseChangedFilesFromMarkerLines(
   markerLines: string[],
   workingDirectory: string
@@ -522,6 +607,76 @@ function filterErrorDiagnostics(diagnostics: LspDiagnostic[]): LspDiagnostic[] {
   return diagnostics.filter((diagnostic) => diagnostic.severity === 1 || diagnostic.severity === undefined);
 }
 
+function formatLspStatusSection(input: {
+  configPath: string;
+  details?: string[];
+  reason?: string;
+  status: LspFeedback["status"];
+}): string {
+  const lines = [
+    "[lsp]",
+    `status: ${input.status}`,
+    `config: ${input.configPath}`,
+  ];
+  if (input.reason) {
+    lines.push(`reason: ${input.reason}`);
+  }
+  for (const detail of input.details ?? []) {
+    if (!detail.trim()) {
+      continue;
+    }
+    lines.push(detail);
+  }
+  return lines.join("\n");
+}
+
+function serverSupportsFile(server: Pick<LspServerConfig, "extensions">, filePath: string): boolean {
+  if (server.extensions.length === 0) {
+    return true;
+  }
+
+  return server.extensions.includes(extname(filePath));
+}
+
+function isLikelyDiagnosticSourceFile(filePath: string): boolean {
+  const extension = extname(filePath).toLowerCase();
+  if (!extension) {
+    return false;
+  }
+
+  return !NON_DIAGNOSTIC_SOURCE_EXTENSIONS.has(extension);
+}
+
+async function resolveLspNoActiveServerReason(existingFiles: string[]): Promise<string> {
+  const configPath = env.AGENT_LSP_SERVER_CONFIG_PATH;
+  try {
+    const loaded = await loadLspServersConfig(configPath);
+    if (loaded.servers.length === 0) {
+      return "no_servers_configured";
+    }
+
+    const hasMatchingServer = existingFiles.some((filePath) =>
+      loaded.servers.some((server) => serverSupportsFile(server, filePath))
+    );
+    if (!hasMatchingServer) {
+      return "no_matching_server_for_changed_files";
+    }
+  } catch (error) {
+    return `lsp_config_parse_error: ${error instanceof Error ? error.message : "Unknown error"}`;
+  }
+
+  const runtimeInfo = getLspRuntimeInfo();
+  if (runtimeInfo.lastConfigError) {
+    return `lsp_config_parse_error: ${runtimeInfo.lastConfigError}`;
+  }
+
+  if (runtimeInfo.brokenClientErrors.length > 0) {
+    return `server_start_failed: ${runtimeInfo.brokenClientErrors[0]}`;
+  }
+
+  return "no_connected_lsp_client";
+}
+
 export function buildLspDiagnosticsOutput(input: {
   changedFiles: string[];
   diagnosticsByFile: Record<string, LspDiagnostic[]>;
@@ -548,6 +703,8 @@ export function buildLspDiagnosticsOutput(input: {
     return {
       diagnosticsFiles: [],
       errorCount: 0,
+      probeAttempted: true,
+      probeSucceeded: true,
       status: "no_errors",
     };
   }
@@ -575,6 +732,8 @@ export function buildLspDiagnosticsOutput(input: {
     diagnosticsFiles,
     errorCount,
     outputSection: sections.join("\n\n"),
+    probeAttempted: true,
+    probeSucceeded: true,
     status: "diagnostics",
   };
 }
@@ -589,10 +748,14 @@ async function fileExists(pathValue: string): Promise<boolean> {
 }
 
 async function collectLspFeedback(changedFiles: string[]): Promise<LspFeedback> {
+  const normalizedConfigPath = resolve(env.AGENT_LSP_SERVER_CONFIG_PATH);
+
   if (!env.AGENT_LSP_ENABLED) {
     return {
       diagnosticsFiles: [],
       errorCount: 0,
+      probeAttempted: false,
+      probeSucceeded: false,
       status: "disabled",
     };
   }
@@ -601,6 +764,8 @@ async function collectLspFeedback(changedFiles: string[]): Promise<LspFeedback> 
     return {
       diagnosticsFiles: [],
       errorCount: 0,
+      probeAttempted: false,
+      probeSucceeded: false,
       status: "no_changed_files",
     };
   }
@@ -620,16 +785,120 @@ async function collectLspFeedback(changedFiles: string[]): Promise<LspFeedback> 
     return {
       diagnosticsFiles: [],
       errorCount: 0,
-      outputSection: `[lsp]\nNo existing changed files available for diagnostics.`,
+      outputSection: formatLspStatusSection({
+        configPath: normalizedConfigPath,
+        details: ["No existing changed files available for diagnostics."],
+        reason: "no_existing_changed_files",
+        status: "no_changed_files",
+      }),
+      probeAttempted: false,
+      probeSucceeded: false,
+      reason: "no_existing_changed_files",
       status: "no_changed_files",
     };
   }
 
   try {
-    await touchLspFiles(existingFiles, true);
+    const diagnosticCandidateFiles = deduplicatePaths(
+      existingFiles.filter((filePath) => isLikelyDiagnosticSourceFile(filePath))
+    );
+    if (diagnosticCandidateFiles.length === 0) {
+      return {
+        diagnosticsFiles: [],
+        errorCount: 0,
+        outputSection: formatLspStatusSection({
+          configPath: normalizedConfigPath,
+          details: ["No applicable source files for LSP diagnostics."],
+          reason: "no_applicable_changed_files",
+          status: "no_applicable_files",
+        }),
+        probeAttempted: false,
+        probeSucceeded: false,
+        reason: "no_applicable_changed_files",
+        status: "no_applicable_files",
+      };
+    }
+
+    const loadedConfig = await loadLspServersConfig(env.AGENT_LSP_SERVER_CONFIG_PATH);
+    if (loadedConfig.servers.length === 0) {
+      return {
+        diagnosticsFiles: [],
+        errorCount: 0,
+        outputSection: formatLspStatusSection({
+          configPath: loadedConfig.filePath,
+          details: ["No active LSP server for changed files."],
+          reason: "no_servers_configured",
+          status: "no_active_server",
+        }),
+        probeAttempted: false,
+        probeSucceeded: false,
+        reason: "no_servers_configured",
+        status: "no_active_server",
+      };
+    }
+
+    const applicableFiles = deduplicatePaths(
+      diagnosticCandidateFiles.filter((filePath) =>
+        loadedConfig.servers.some((server) => serverSupportsFile(server, filePath))
+      )
+    );
+    if (applicableFiles.length === 0) {
+      return {
+        diagnosticsFiles: [],
+        errorCount: 0,
+        outputSection: formatLspStatusSection({
+          configPath: loadedConfig.filePath,
+          details: ["No applicable source files for active LSP servers."],
+          reason: "no_matching_server_for_changed_files",
+          status: "no_applicable_files",
+        }),
+        probeAttempted: false,
+        probeSucceeded: false,
+        reason: "no_matching_server_for_changed_files",
+        status: "no_applicable_files",
+      };
+    }
+
+    const probeResult = await probeLspFiles(applicableFiles);
+    if (probeResult.status === "failed") {
+      const reason = probeResult.reason ?? "probe_failed";
+      return {
+        diagnosticsFiles: [],
+        errorCount: 0,
+        outputSection: formatLspStatusSection({
+          configPath: loadedConfig.filePath,
+          details: ["LSP diagnostics probe failed."],
+          reason,
+          status: "failed",
+        }),
+        probeAttempted: true,
+        probeSucceeded: false,
+        reason,
+        status: "failed",
+      };
+    }
+
+    if (probeResult.status === "no_active_server") {
+      const reason = probeResult.reason ?? await resolveLspNoActiveServerReason(applicableFiles);
+      return {
+        diagnosticsFiles: [],
+        errorCount: 0,
+        outputSection: formatLspStatusSection({
+          configPath: loadedConfig.filePath,
+          details: ["No active LSP server for changed files."],
+          reason,
+          status: "no_active_server",
+        }),
+        probeAttempted: true,
+        probeSucceeded: false,
+        reason,
+        status: "no_active_server",
+      };
+    }
+
     const diagnosticsByFile = await getLspDiagnostics();
     const formatted = buildLspDiagnosticsOutput({
-      changedFiles: existingFiles,
+      changedFiles: applicableFiles,
       diagnosticsByFile,
       maxDiagnosticsPerFile: env.AGENT_LSP_MAX_DIAGNOSTICS_PER_FILE,
       maxFilesInOutput: env.AGENT_LSP_MAX_FILES_IN_OUTPUT,
@@ -638,29 +907,32 @@ async function collectLspFeedback(changedFiles: string[]): Promise<LspFeedback> 
       return formatted;
     }
 
-    const lspStatuses = await getLspStatus();
-    if (lspStatuses.length === 0) {
-      return {
-        diagnosticsFiles: [],
-        errorCount: 0,
-        outputSection:
-          `[lsp]\nNo active LSP server for changed files.\n` +
-          `Configure runtime servers in ${env.AGENT_LSP_SERVER_CONFIG_PATH}.`,
-        status: "no_active_server",
-      };
-    }
-
     return {
       diagnosticsFiles: [],
       errorCount: 0,
-      outputSection: `[lsp]\nNo error diagnostics reported for changed files.`,
+      outputSection: formatLspStatusSection({
+        configPath: loadedConfig.filePath,
+        details: ["No error diagnostics reported for changed files."],
+        status: "no_errors",
+      }),
+      probeAttempted: true,
+      probeSucceeded: true,
       status: "no_errors",
     };
   } catch (error) {
+    const reason = error instanceof Error ? error.message : "Unknown error";
     return {
       diagnosticsFiles: [],
       errorCount: 0,
-      outputSection: `[lsp]\nLSP diagnostics failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      outputSection: formatLspStatusSection({
+        configPath: normalizedConfigPath,
+        details: [`LSP diagnostics failed: ${reason}`],
+        reason,
+        status: "failed",
+      }),
+      probeAttempted: true,
+      probeSucceeded: false,
+      reason,
       status: "failed",
     };
   }
@@ -828,18 +1100,29 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
       markerLines,
       effectiveWorkingDirectory
     );
+    const inferredRedirectChangedFiles = inferChangedFilesFromRedirectTargets(
+      command,
+      effectiveWorkingDirectory
+    );
     const afterGitSnapshot = await collectGitSnapshot(effectiveWorkingDirectory);
     const gitChangedFiles = deriveChangedFilesFromGitSnapshots(
       beforeGitSnapshot?.files ?? [],
       afterGitSnapshot?.files ?? []
     );
-    const changedFiles = deduplicatePaths([...markerChangedFiles, ...gitChangedFiles]);
+    const changedFiles = deduplicatePaths([
+      ...markerChangedFiles,
+      ...gitChangedFiles,
+      ...inferredRedirectChangedFiles,
+    ]);
     const changedFilesSource: ChangedFilesSource[] = [];
     if (markerChangedFiles.length > 0) {
       changedFilesSource.push("marker");
     }
     if (gitChangedFiles.length > 0) {
       changedFilesSource.push("git_delta");
+    }
+    if (inferredRedirectChangedFiles.length > 0) {
+      changedFilesSource.push("inferred_redirect");
     }
     const commandSignature = buildExecuteCommandSignature(command, effectiveWorkingDirectory);
     const progressSignal = detectCommandProgressSignal({
@@ -878,10 +1161,14 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
       durationMs: execution.durationMs,
       exitCode: execution.exitCode ?? undefined,
       lifecycleEvent: execution.lifecycleEvent,
+      lspConfigPath: resolve(env.AGENT_LSP_SERVER_CONFIG_PATH),
       lspDiagnosticsFiles: lspFeedback.diagnosticsFiles,
       lspDiagnosticsIncluded: Boolean(lspFeedback.outputSection),
       lspErrorCount: lspFeedback.errorCount,
+      lspProbeAttempted: lspFeedback.probeAttempted,
+      lspProbeSucceeded: lspFeedback.probeSucceeded,
       lspStatus: lspFeedback.status,
+      lspStatusReason: lspFeedback.reason,
       outputLimitChars: effectiveOutputLimitChars,
       progressSignal,
       signal: execution.signal ?? undefined,

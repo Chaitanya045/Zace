@@ -7,7 +7,7 @@ export const toolCallSchema = z.object({
 
 export type ToolCall = z.infer<typeof toolCallSchema>;
 
-const changedFilesSourceSchema = z.enum(["git_delta", "marker"]);
+const changedFilesSourceSchema = z.enum(["git_delta", "inferred_redirect", "marker"]);
 const progressSignalSchema = z.enum([
   "files_changed",
   "none",
@@ -19,6 +19,7 @@ const lspStatusSchema = z.enum([
   "disabled",
   "failed",
   "no_active_server",
+  "no_applicable_files",
   "no_changed_files",
   "no_errors",
 ]);
@@ -33,10 +34,14 @@ export const toolResultArtifactsSchema = z.object({
   durationMs: z.number().int().nonnegative().optional(),
   exitCode: z.number().int().optional(),
   lifecycleEvent: shellLifecycleEventSchema.optional(),
+  lspConfigPath: z.string().optional(),
   lspDiagnosticsFiles: z.array(z.string()).optional(),
   lspDiagnosticsIncluded: z.boolean().optional(),
   lspErrorCount: z.number().int().nonnegative().optional(),
+  lspProbeAttempted: z.boolean().optional(),
+  lspProbeSucceeded: z.boolean().optional(),
   lspStatus: lspStatusSchema.optional(),
+  lspStatusReason: z.string().optional(),
   outputLimitChars: z.number().int().positive().optional(),
   progressSignal: progressSignalSchema.optional(),
   signal: z.string().optional(),
@@ -45,6 +50,8 @@ export const toolResultArtifactsSchema = z.object({
   stdoutPath: z.string().optional(),
   stdoutTruncated: z.boolean().optional(),
   timedOut: z.boolean().optional(),
+  validationMaskingDetected: z.boolean().optional(),
+  validationMaskingReason: z.string().optional(),
 });
 
 export const toolResultSchema = z.object({

@@ -9,13 +9,13 @@ export const lspServerConfigSchema = z.object({
   id: z.string().min(1),
   initialization: z.record(z.string(), z.unknown()).optional(),
   rootMarkers: z.array(z.string().min(1)).default([]),
-});
+}).strict();
 
 export const lspServersFileSchema = z.union([
   z.array(lspServerConfigSchema),
   z.object({
     servers: z.array(lspServerConfigSchema),
-  }),
+  }).strict(),
 ]);
 
 export type LspServerConfig = z.infer<typeof lspServerConfigSchema>;

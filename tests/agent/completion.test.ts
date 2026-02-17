@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { describeCompletionPlan, resolveCompletionPlan } from "../../src/agent/completion";
+import {
+  assessValidationGateMasking,
+  describeCompletionPlan,
+  resolveCompletionPlan,
+} from "../../src/agent/completion";
 
 describe("completion plan resolution", () => {
   test("defaults to planner-driven gates when task has no explicit criteria", () => {
@@ -34,5 +38,14 @@ describe("completion plan resolution", () => {
     });
 
     expect(lines.some((line) => line.includes("Planner should provide gates"))).toBe(true);
+  });
+
+  test("detects masked validation gate commands", () => {
+    const masked = assessValidationGateMasking("bun test || true");
+    const safe = assessValidationGateMasking("bun test");
+
+    expect(masked.isMasked).toBe(true);
+    expect(masked.reason).toContain("|| true");
+    expect(safe.isMasked).toBe(false);
   });
 });
