@@ -15,7 +15,23 @@ import {
   resolveCompletionPlan,
   type CompletionGate,
 } from "./completion";
+import {
+  buildReadProjectDocCommand,
+  extractProjectDocFromToolOutput,
+  PROJECT_DOC_CANDIDATE_PATHS,
+  resolveProjectDocsPolicy,
+  truncateProjectDocPreview,
+} from "./docs";
 import { analyzeToolResult, executeToolCall } from "./executor";
+import {
+  buildInitialRepoReconCommand,
+  buildToolLoopSignature,
+  createRepoGroundingState,
+  getLanguageMismatchReason,
+  isLikelyWriteCommand,
+  recordCommandObservation,
+  shouldRunReconBeforeCommand,
+} from "./guardrails";
 import { Memory } from "./memory";
 import { plan } from "./planner";
 import { assessCommandSafety } from "./safety";
@@ -40,6 +56,10 @@ export interface RunAgentLoopOptions {
 }
 
 const DISCOVER_SCRIPTS_COMMAND = buildDiscoverScriptsCommand();
+const MAX_CONSECUTIVE_NO_TOOL_CONTINUES = 2;
+const PROJECT_DOC_MAX_LINES = 220;
+const PROJECT_DOC_OUTPUT_LIMIT_CHARS = 10_000;
+const PROJECT_DOC_TIMEOUT_MS = 30_000;
 
 async function syncScriptRegistry(catalog: AgentContext["scriptCatalog"]): Promise<void> {
   await executeToolCall({
@@ -215,6 +235,28 @@ async function sleep(delayMs: number): Promise<void> {
   });
 }
 
+export function ensureUserFacingQuestion(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return "What would you like me to work on next?";
+  }
+
+  if (/\?\s*$/u.test(trimmed)) {
+    return trimmed;
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.includes("greeting") ||
+    lower.includes("not actionable") ||
+    lower.includes("concrete task")
+  ) {
+    return "What concrete coding task would you like me to perform in this repository?";
+  }
+
+  return `${trimmed} What should I do next?`;
+}
+
 export async function runAgentLoop(
   client: LlmClient,
   config: AgentConfig,
@@ -238,7 +280,11 @@ export async function runAgentLoop(
   });
   let context = createInitialContext(task, config.maxSteps);
   let completionPlan = resolveCompletionPlan(task);
+  let consecutiveNoToolContinues = 0;
+  let lastToolLoopSignature = "";
+  let lastToolLoopSignatureCount = 0;
   let lastCompletionGateFailure: null | string = null;
+  let repoGroundingState = createRepoGroundingState();
   const getCompletionCriteria = (): string[] => describeCompletionPlan(completionPlan);
 
   // Build dynamic system prompt with runtime context
@@ -287,6 +333,101 @@ export async function runAgentLoop(
         "assistant",
         `Startup script discovery complete. Registered or updated ${discoveredCatalogUpdate.notes.length} scripts in ${SCRIPT_REGISTRY_PATH}.`
       );
+    }
+    const repoReconCommand = buildInitialRepoReconCommand(process.platform);
+    const repoReconResult = await executeToolCall({
+      arguments: {
+        command: repoReconCommand,
+        outputLimitChars: 8_000,
+        timeout: 30_000,
+      },
+      name: "execute_command",
+    });
+    repoGroundingState = recordCommandObservation({
+      command: repoReconCommand,
+      output: repoReconResult.output,
+      state: repoGroundingState,
+      success: repoReconResult.success,
+    });
+    if (repoReconResult.success) {
+      memory.addMessage(
+        "assistant",
+        "Repository reconnaissance completed before write operations."
+      );
+    } else {
+      memory.addMessage(
+        "assistant",
+        "Repository reconnaissance could not complete; write operations will trigger another recon attempt."
+      );
+    }
+    const docsPolicy = resolveProjectDocsPolicy(task, PROJECT_DOC_CANDIDATE_PATHS);
+    if (docsPolicy.skipAllDocs) {
+      memory.addMessage(
+        "assistant",
+        "Skipping project documentation files because the user explicitly requested to avoid docs."
+      );
+    } else {
+      const excludedDocPaths = new Set(docsPolicy.excludedDocPaths.map((path) => path.toLowerCase()));
+      const loadedDocs: Array<{ content: string; path: string }> = [];
+      for (const docPath of PROJECT_DOC_CANDIDATE_PATHS) {
+        if (excludedDocPaths.has(docPath.toLowerCase())) {
+          continue;
+        }
+
+        const readDocResult = await executeToolCall({
+          arguments: {
+            command: buildReadProjectDocCommand({
+              filePath: docPath,
+              maxLines: PROJECT_DOC_MAX_LINES,
+              platform: process.platform,
+            }),
+            outputLimitChars: PROJECT_DOC_OUTPUT_LIMIT_CHARS,
+            timeout: PROJECT_DOC_TIMEOUT_MS,
+          },
+          name: "execute_command",
+        });
+        if (!readDocResult.success) {
+          continue;
+        }
+
+        const extractedDoc = extractProjectDocFromToolOutput({
+          filePath: docPath,
+          toolOutput: readDocResult.output,
+        });
+        if (!extractedDoc) {
+          continue;
+        }
+
+        loadedDocs.push({
+          content: truncateProjectDocPreview(extractedDoc),
+          path: docPath,
+        });
+      }
+
+      if (excludedDocPaths.size > 0) {
+        memory.addMessage(
+          "assistant",
+          `Skipped project docs per user request: ${Array.from(excludedDocPaths.values()).join(", ")}.`
+        );
+      }
+      if (loadedDocs.length > 0) {
+        const docsContext = loadedDocs
+          .map((doc) => `### ${doc.path}\n${doc.content}`)
+          .join("\n\n");
+        memory.addMessage(
+          "system",
+          `Project documentation context (follow this unless the user overrides):\n\n${docsContext}`
+        );
+        memory.addMessage(
+          "assistant",
+          `Loaded project documentation context from: ${loadedDocs.map((doc) => doc.path).join(", ")}.`
+        );
+      } else {
+        memory.addMessage(
+          "assistant",
+          "No project documentation files were loaded."
+        );
+      }
     }
 
     while (context.currentStep < context.maxSteps) {
@@ -432,12 +573,13 @@ export async function runAgentLoop(
         return {
           context,
           finalState: "completed",
-          message: planResult.reasoning,
+          message: planResult.userMessage ?? planResult.reasoning,
           success: true,
         };
       }
 
       if (planResult.action === "blocked") {
+        const blockedMessage = planResult.userMessage ?? planResult.reasoning;
         context = addStep(context, {
           reasoning: planResult.reasoning,
           state: "blocked",
@@ -448,12 +590,15 @@ export async function runAgentLoop(
         return {
           context,
           finalState: "blocked",
-          message: planResult.reasoning,
+          message: blockedMessage,
           success: false,
         };
       }
 
       if (planResult.action === "ask_user") {
+        const askUserMessage = ensureUserFacingQuestion(
+          planResult.userMessage ?? planResult.reasoning
+        );
         context = addStep(context, {
           reasoning: planResult.reasoning,
           state: "waiting_for_user",
@@ -464,13 +609,14 @@ export async function runAgentLoop(
         return {
           context,
           finalState: "waiting_for_user",
-          message: planResult.reasoning,
+          message: askUserMessage,
           success: false,
         };
       }
 
       // Execution phase
       if (!planResult.toolCall) {
+        consecutiveNoToolContinues += 1;
         logStep(stepNumber, "No tool call specified, continuing...");
         context = addStep(context, {
           reasoning: planResult.reasoning,
@@ -479,7 +625,73 @@ export async function runAgentLoop(
           toolCall: null,
           toolResult: null,
         });
+        if (consecutiveNoToolContinues >= MAX_CONSECUTIVE_NO_TOOL_CONTINUES) {
+          const noProgressMessage =
+            `Planner returned no executable tool call for ${String(consecutiveNoToolContinues)} consecutive steps. ` +
+            "Please clarify the expected concrete action (file path, language, or command intent).";
+          memory.addMessage("assistant", noProgressMessage);
+          return {
+            context,
+            finalState: "waiting_for_user",
+            message: noProgressMessage,
+            success: false,
+          };
+        }
         continue;
+      }
+      consecutiveNoToolContinues = 0;
+
+      if (planResult.toolCall.name === "execute_command") {
+        const command = getExecuteCommandText(planResult.toolCall.arguments);
+        if (command && shouldRunReconBeforeCommand(command, repoGroundingState)) {
+          const reconCommand = buildInitialRepoReconCommand(process.platform);
+          const reconResult = await executeToolCall({
+            arguments: {
+              command: reconCommand,
+              outputLimitChars: 8_000,
+              timeout: 30_000,
+            },
+            name: "execute_command",
+          });
+          repoGroundingState = recordCommandObservation({
+            command: reconCommand,
+            output: reconResult.output,
+            state: repoGroundingState,
+            success: reconResult.success,
+          });
+          memory.addMessage(
+            "assistant",
+            reconResult.success
+              ? "Performed repository reconnaissance before executing a write command."
+              : "Repository reconnaissance failed before write command; proceeding with current context."
+          );
+        }
+
+        if (command) {
+          const mismatchReason = getLanguageMismatchReason({
+            command,
+            state: repoGroundingState,
+            task,
+          });
+          if (mismatchReason) {
+            memory.addMessage("assistant", mismatchReason);
+            context = addStep(context, {
+              reasoning: `Blocked write command due to language mismatch: ${mismatchReason}`,
+              state: "executing",
+              step: stepNumber,
+              toolCall: {
+                arguments: planResult.toolCall.arguments,
+                name: planResult.toolCall.name,
+              },
+              toolResult: {
+                error: "Command blocked by repository language guardrail",
+                output: mismatchReason,
+                success: false,
+              },
+            });
+            continue;
+          }
+        }
       }
 
       if (
@@ -556,6 +768,17 @@ export async function runAgentLoop(
             "tool",
             `Tool ${planResult.toolCall.name} attempt ${String(attempt)} result: ${toolResult.output}`
           );
+          if (toolCall.name === "execute_command") {
+            const executedCommand = getExecuteCommandText(toolCall.arguments);
+            if (executedCommand) {
+              repoGroundingState = recordCommandObservation({
+                command: executedCommand,
+                output: toolResult.output,
+                state: repoGroundingState,
+                success: toolResult.success,
+              });
+            }
+          }
 
           const scriptCatalogUpdate = updateScriptCatalogFromOutput(
             context.scriptCatalog,
@@ -638,6 +861,40 @@ export async function runAgentLoop(
           },
           toolResult,
         });
+
+        const loopSignature = buildToolLoopSignature({
+          argumentsObject: planResult.toolCall.arguments,
+          output: toolResult.output,
+          success: toolResult.success,
+          toolName: planResult.toolCall.name,
+        });
+        if (loopSignature === lastToolLoopSignature) {
+          lastToolLoopSignatureCount += 1;
+        } else {
+          lastToolLoopSignature = loopSignature;
+          lastToolLoopSignatureCount = 1;
+        }
+
+        const commandText =
+          planResult.toolCall.name === "execute_command"
+            ? getExecuteCommandText(planResult.toolCall.arguments)
+            : undefined;
+        const repetitionLimit =
+          commandText && isLikelyWriteCommand(commandText)
+            ? 2
+            : 3;
+        if (lastToolLoopSignatureCount >= repetitionLimit) {
+          const repetitionMessage =
+            `Stopping repeated execution loop: the same tool outcome was observed ${String(lastToolLoopSignatureCount)} times in a row. ` +
+            "Please refine the request or provide additional constraints.";
+          memory.addMessage("assistant", repetitionMessage);
+          return {
+            context,
+            finalState: "waiting_for_user",
+            message: repetitionMessage,
+            success: false,
+          };
+        }
 
         // If tool failed and retry is suggested, log it
         if (!toolResult.success) {

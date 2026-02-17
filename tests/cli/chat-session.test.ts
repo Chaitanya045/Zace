@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { unlink } from "node:fs/promises";
 
-import type { AgentResult } from "../agent/loop";
+import type { AgentResult } from "../../src/agent/loop";
 
-import { appendSessionMessage, getSessionFilePath, readSessionEntries } from "../tools/session";
-import { createAutoSessionId, persistSessionTurn, resolveSessionId } from "./chat-session";
+import { createAutoSessionId, persistSessionTurn, resolveSessionId } from "../../src/cli/chat-session";
+import { appendSessionMessage, getSessionFilePath, readSessionEntries } from "../../src/tools/session";
 
 function createTestSessionId(): string {
   return createAutoSessionId(new Date());

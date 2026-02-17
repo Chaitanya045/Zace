@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import type { AgentToolCallEvent, AgentToolResultEvent } from "../agent/observer";
+import type { AgentToolCallEvent, AgentToolResultEvent } from "../../src/agent/observer";
 
-import { buildToolCallTimelineEntry, buildToolResultTimelineEntry } from "./event-model";
+import { buildToolCallTimelineEntry, buildToolResultTimelineEntry } from "../../src/ui/event-model";
 
 describe("ui event model", () => {
   test("maps tool call event to timeline draft", () => {

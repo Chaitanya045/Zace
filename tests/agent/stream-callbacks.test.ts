@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import type { LlmClient } from "../llm/client";
-import type { ToolCall, ToolResult } from "../types/tool";
+import type { LlmClient } from "../../src/llm/client";
+import type { ToolCall, ToolResult } from "../../src/types/tool";
 
-import { analyzeToolResult } from "./executor";
-import { plan } from "./planner";
-import { createInitialContext } from "./state";
+import { analyzeToolResult } from "../../src/agent/executor";
+import { plan } from "../../src/agent/planner";
+import { createInitialContext } from "../../src/agent/state";
 
 describe("stream callbacks", () => {
   test("planner invokes stream callbacks in order", async () => {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { createStreamBuffer } from "./buffer";
+import { createStreamBuffer } from "../../src/ui/buffer";
 
 const TEST_INTERVAL_MS = 5;
 
