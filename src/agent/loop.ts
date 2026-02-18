@@ -22,8 +22,9 @@ import {
 } from "./approval";
 import { maybeCompactContext } from "./compaction";
 import {
-  findMaskedValidationGate,
+  discoverAutomaticCompletionGates,
   describeCompletionPlan,
+  findMaskedValidationGate,
   resolveCompletionPlan,
   type CompletionGate,
 } from "./completion";
@@ -143,7 +144,10 @@ type CompletionGateResult = {
   result: ToolResult;
 };
 
-async function runCompletionGates(gates: CompletionGate[]): Promise<CompletionGateResult[]> {
+async function runCompletionGates(
+  gates: CompletionGate[],
+  workingDirectory: string
+): Promise<CompletionGateResult[]> {
   const results: CompletionGateResult[] = [];
 
   for (const gate of gates) {
@@ -152,6 +156,7 @@ async function runCompletionGates(gates: CompletionGate[]): Promise<CompletionGa
       result = await executeToolCall({
         arguments: {
           command: gate.command,
+          cwd: workingDirectory,
         },
         name: "execute_command",
       });
@@ -696,7 +701,9 @@ export async function runAgentLoop(
   let lastToolLoopSignature = "";
   let lastToolLoopSignatureCount = 0;
   let lastCompletionGateFailure: null | string = null;
+  let lastExecutionWorkingDirectory = process.cwd();
   let lastSuccessfulValidationStep: number | undefined;
+  let lastWriteWorkingDirectory: string | undefined;
   let lastWriteStep: number | undefined;
   const lspBootstrap: LspBootstrapContext = {
     attemptedCommands: [],
@@ -1043,6 +1050,7 @@ export async function runAgentLoop(
       // Handle different plan outcomes
       if (planResult.action === "complete") {
         const strictCompletionValidation = config.completionValidationMode === "strict";
+        const validationWorkingDirectory = lastWriteWorkingDirectory ?? lastExecutionWorkingDirectory;
         const lspBootstrapBlocking = shouldBlockForBootstrap({
           lspBootstrapBlockOnFailed: config.lspBootstrapBlockOnFailed,
           lspEnabled: config.lspEnabled,
@@ -1112,6 +1120,25 @@ export async function runAgentLoop(
             "assistant",
             `Planner supplied completion gates: ${describeCompletionPlan(completionPlan).join(" | ")}`
           );
+        }
+
+        if (
+          completionPlan.gates.length === 0 &&
+          !planResult.completionGatesDeclaredNone &&
+          lastWriteStep !== undefined
+        ) {
+          const autoDiscoveredGates = await discoverAutomaticCompletionGates(validationWorkingDirectory);
+          if (autoDiscoveredGates.length > 0) {
+            completionPlan = {
+              ...completionPlan,
+              gates: autoDiscoveredGates,
+              source: "auto_discovered",
+            };
+            memory.addMessage(
+              "assistant",
+              `Runtime auto-discovered completion gates in ${validationWorkingDirectory}: ${describeCompletionPlan(completionPlan).join(" | ")}`
+            );
+          }
         }
 
         if (strictCompletionValidation && planResult.completionGatesDeclaredNone && lastWriteStep !== undefined) {
@@ -1200,6 +1227,7 @@ export async function runAgentLoop(
           for (const gate of completionPlan.gates) {
             const gateApproval = await resolveCommandApproval({
               command: gate.command,
+              workingDirectory: validationWorkingDirectory,
             });
 
             if (gateApproval.status === "allow") {
@@ -1299,7 +1327,7 @@ export async function runAgentLoop(
             continue;
           }
 
-          const gateResults = await runCompletionGates(completionPlan.gates);
+          const gateResults = await runCompletionGates(completionPlan.gates, validationWorkingDirectory);
           const failureMessage = buildCompletionFailureMessage(gateResults);
 
           memory.addMessage(
@@ -1487,12 +1515,14 @@ export async function runAgentLoop(
         planResult.toolCall.name === "execute_command"
           ? getExecuteCommandText(planResult.toolCall.arguments)
           : undefined;
+      const plannedExecuteWorkingDirectory =
+        planResult.toolCall.name === "execute_command"
+          ? resolve(getExecuteCommandWorkingDirectory(planResult.toolCall.arguments) ?? process.cwd())
+          : undefined;
 
       if (planResult.toolCall.name === "execute_command") {
         const command = plannedExecuteCommand;
-        const commandWorkingDirectory = getExecuteCommandWorkingDirectory(
-          planResult.toolCall.arguments
-        );
+        const commandWorkingDirectory = plannedExecuteWorkingDirectory;
         if (command) {
           const commandApproval = await resolveCommandApproval({
             command,
@@ -1659,9 +1689,15 @@ export async function runAgentLoop(
           });
           emitDiagnosticsObserverEvent(observer, stepNumber, toolResult);
 
+          if (plannedExecuteWorkingDirectory) {
+            lastExecutionWorkingDirectory = plannedExecuteWorkingDirectory;
+          }
           const changedFiles = toolResult.artifacts?.changedFiles ?? [];
           if (changedFiles.length > 0) {
             lastWriteStep = stepNumber;
+            if (plannedExecuteWorkingDirectory) {
+              lastWriteWorkingDirectory = plannedExecuteWorkingDirectory;
+            }
           }
 
           if (config.lspEnabled) {

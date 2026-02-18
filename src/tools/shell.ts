@@ -137,8 +137,13 @@ type CommandArtifacts = {
   stdoutPath: string;
 };
 
+type GitFileFingerprint = {
+  mtimeMs: null | number;
+  size: null | number;
+};
+
 type GitSnapshot = {
-  files: Set<string>;
+  files: Map<string, GitFileFingerprint>;
 };
 
 type LspFeedback = {
@@ -524,6 +529,21 @@ function parseGitPathList(rawOutput: string, repositoryRoot: string): Set<string
   return resolvedPaths;
 }
 
+async function fingerprintGitFile(filePath: string): Promise<GitFileFingerprint> {
+  try {
+    const fileStat = await stat(filePath);
+    return {
+      mtimeMs: fileStat.mtimeMs,
+      size: fileStat.size,
+    };
+  } catch {
+    return {
+      mtimeMs: null,
+      size: null,
+    };
+  }
+}
+
 async function collectGitSnapshot(workingDirectory: string): Promise<GitSnapshot | undefined> {
   const repositoryRoot = await resolveGitRepositoryRoot(workingDirectory);
   if (!repositoryRoot) {
@@ -547,24 +567,69 @@ async function collectGitSnapshot(workingDirectory: string): Promise<GitSnapshot
     }
   }
 
+  const fingerprints = new Map<string, GitFileFingerprint>();
+  const fingerprintEntries = await Promise.all(
+    Array.from(dirtyFiles, async (filePath) => [
+      filePath,
+      await fingerprintGitFile(filePath),
+    ] as const)
+  );
+
+  for (const [filePath, fingerprint] of fingerprintEntries) {
+    fingerprints.set(filePath, fingerprint);
+  }
+
   return {
-    files: dirtyFiles,
+    files: fingerprints,
   };
 }
 
 export function deriveChangedFilesFromGitSnapshots(
-  beforeFiles: Iterable<string>,
-  afterFiles: Iterable<string>
+  beforeFiles: Iterable<string> | Map<string, GitFileFingerprint>,
+  afterFiles: Iterable<string> | Map<string, GitFileFingerprint>
 ): string[] {
-  const beforeSet = new Set(Array.from(beforeFiles, (pathValue) => resolve(pathValue)));
-  const delta: string[] = [];
-  for (const filePath of afterFiles) {
-    const normalized = resolve(filePath);
-    if (!beforeSet.has(normalized)) {
-      delta.push(normalized);
+  const normalizeSnapshot = (
+    snapshot: Iterable<string> | Map<string, GitFileFingerprint>
+  ): Map<string, GitFileFingerprint | undefined> => {
+    if (snapshot instanceof Map) {
+      return new Map(
+        Array.from(snapshot.entries(), ([filePath, fingerprint]) => [resolve(filePath), fingerprint])
+      );
+    }
+
+    return new Map(
+      Array.from(snapshot, (filePath) => [resolve(filePath), undefined])
+    );
+  };
+
+  const beforeMap = normalizeSnapshot(beforeFiles);
+  const afterMap = normalizeSnapshot(afterFiles);
+  const changedFiles = new Set<string>();
+
+  for (const filePath of afterMap.keys()) {
+    const hasBefore = beforeMap.has(filePath);
+    const hasAfter = afterMap.has(filePath);
+
+    if (!hasBefore && hasAfter) {
+      changedFiles.add(filePath);
+      continue;
+    }
+
+    const beforeFingerprint = beforeMap.get(filePath);
+    const afterFingerprint = afterMap.get(filePath);
+    if (!beforeFingerprint || !afterFingerprint) {
+      continue;
+    }
+
+    if (
+      beforeFingerprint.mtimeMs !== afterFingerprint.mtimeMs ||
+      beforeFingerprint.size !== afterFingerprint.size
+    ) {
+      changedFiles.add(filePath);
     }
   }
-  return delta.sort((left, right) => left.localeCompare(right));
+
+  return Array.from(changedFiles).sort((left, right) => left.localeCompare(right));
 }
 
 function deduplicatePaths(paths: Iterable<string>): string[] {

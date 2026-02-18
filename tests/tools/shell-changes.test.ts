@@ -28,12 +28,36 @@ describe("shell changed-file and diagnostics helpers", () => {
     ]);
   });
 
-  test("derives changed files from git snapshots using post-minus-pre delta", () => {
+  test("derives changed files from git snapshots using path delta", () => {
     const before = ["/repo/src/a.ts", "/repo/src/b.ts"];
     const after = ["/repo/src/b.ts", "/repo/src/c.ts"];
 
     const changed = deriveChangedFilesFromGitSnapshots(before, after);
     expect(changed).toEqual([resolve("/repo/src/c.ts")]);
+  });
+
+  test("derives changed files from git snapshots using fingerprint delta for already-dirty files", () => {
+    const before = new Map([
+      [
+        "/repo/src/b.ts",
+        {
+          mtimeMs: 1000,
+          size: 20,
+        },
+      ],
+    ]);
+    const after = new Map([
+      [
+        "/repo/src/b.ts",
+        {
+          mtimeMs: 2000,
+          size: 22,
+        },
+      ],
+    ]);
+
+    const changed = deriveChangedFilesFromGitSnapshots(before, after);
+    expect(changed).toEqual([resolve("/repo/src/b.ts")]);
   });
 
   test("builds a stable execute-command signature", () => {
