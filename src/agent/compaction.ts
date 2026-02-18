@@ -120,6 +120,7 @@ export async function maybeCompactContext(input: {
     );
 
     const summaryResponse = await input.client.chat({
+      callKind: "compaction",
       messages: buildCompactionMessages(input.memory),
     });
     const compacted = input.memory.compactWithSummary(

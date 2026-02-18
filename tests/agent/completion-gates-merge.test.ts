@@ -27,6 +27,7 @@ function createTestConfig(): AgentConfig {
     executorAnalysis: "on_failure",
     gateDisallowMasking: true,
     llmApiKey: "test",
+    llmCompatNormalizeToolRole: true,
     llmModel: "test-model",
     llmProvider: "openrouter",
     lspAutoProvision: true,
@@ -106,6 +107,7 @@ describe("completion gate merging", () => {
 
       expect(result.finalState).toBe("blocked");
       expect(result.message).toContain("auto:lint");
+      expect(result.message.toLowerCase()).not.toContain("lsp bootstrap");
     } finally {
       await rm(workspace, { force: true, recursive: true });
     }

@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { LlmClient } from "../../src/llm/client";
 import type { AgentConfig } from "../../src/types/config";
 
 import { runAgentLoop } from "../../src/agent/loop";
+import { readSessionEntries } from "../../src/tools/session";
 
 function createTestConfig(): AgentConfig {
   return {
@@ -38,10 +38,13 @@ function createTestConfig(): AgentConfig {
     lspProvisionMaxAttempts: 2,
     lspServerConfigPath: ".zace/runtime/lsp/servers.json",
     lspWaitForDiagnosticsMs: 500,
-    maxSteps: 2,
+    maxSteps: 1,
     pendingActionMaxAgeMs: 3_600_000,
+    plannerMaxInvalidArtifactChars: 4000,
+    plannerOutputMode: "prompt_only",
     plannerParseMaxRepairs: 2,
     plannerParseRetryOnFailure: true,
+    plannerSchemaStrict: true,
     requireRiskyConfirmation: false,
     riskyConfirmationToken: "ZACE_APPROVE_RISKY",
     stagnationWindow: 3,
@@ -50,65 +53,37 @@ function createTestConfig(): AgentConfig {
   };
 }
 
-describe("session quality gate regression", () => {
-  test("does not complete when weak planner gates ignore lint failures", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "zace-session-quality-gates-"));
+describe("session 214235 regression", () => {
+  test("planner parse exhaustion stores artifact path and emits deterministic run events", async () => {
+    const sessionId = "chat-20260218-214235-regression";
+    await mkdir(".zace/sessions", { recursive: true });
+
     try {
-      await writeFile(
-        join(workspace, "package.json"),
-        JSON.stringify(
-          {
-            packageManager: "bun@1.3.0",
-            scripts: {
-              lint: "sh -c 'echo lint-failed >&2; exit 1'",
-              test: "sh -c 'echo tests-ok'",
-            },
-          },
-          null,
-          2
-        ),
-        "utf8"
-      );
-      await writeFile(join(workspace, "bun.lock"), "", "utf8");
-
-      const responses = [
-        JSON.stringify({
-          action: "continue",
-          reasoning: "Create file.",
-          toolCall: {
-            arguments: {
-              command: [
-                "cat > bst.ts <<'EOF'",
-                "export const bst = 1;",
-                "EOF",
-                "printf 'ZACE_FILE_CHANGED|bst.ts\\n'",
-              ].join("\n"),
-              cwd: workspace,
-            },
-            name: "execute_command",
-          },
-        }),
-        JSON.stringify({
-          action: "complete",
-          gates: ["sh -c 'echo weak-gate-pass'"],
-          reasoning: "Done.",
-          userMessage: "Done.",
-        }),
-      ];
-
       const llmClient = {
         chat: async () => ({
-          content: responses.shift() ?? "{\"action\":\"blocked\",\"reasoning\":\"No response\"}",
+          content: "planner output without any json payload",
         }),
         getModelContextWindowTokens: async () => undefined,
       } as unknown as LlmClient;
 
-      const result = await runAgentLoop(llmClient, createTestConfig(), "create bst file");
+      const result = await runAgentLoop(
+        llmClient,
+        createTestConfig(),
+        "create a file in this dir and write bst code init",
+        { sessionId }
+      );
 
       expect(result.finalState).toBe("blocked");
-      expect(result.message).toContain("auto:lint");
+      expect(result.message).toContain(".zace/runtime/planner/invalid-");
+      const entries = await readSessionEntries(sessionId);
+      const runEvents = entries
+        .filter((entry) => entry.type === "run_event")
+        .map((entry) => entry.event);
+      expect(runEvents).toContain("planner_parse_exhausted");
+      expect(runEvents).toContain("planner_blocked_parse_exhausted");
+      expect(runEvents).toContain("planner_invalid_output_captured");
     } finally {
-      await rm(workspace, { force: true, recursive: true });
+      await rm(join(".zace/sessions", `${sessionId}.jsonl`), { force: true });
     }
   }, 20_000);
 });

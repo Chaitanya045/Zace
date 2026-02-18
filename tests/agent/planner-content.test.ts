@@ -4,6 +4,7 @@ import type { LlmClient } from "../../src/llm/client";
 import type { AgentContext } from "../../src/types/agent";
 
 import { parsePlannerContent, plan } from "../../src/agent/planner";
+import { parsePlannerJsonOnly } from "../../src/agent/planner/parser";
 
 describe("planner response parsing", () => {
   test("parses strict JSON continue response", () => {
@@ -25,6 +26,21 @@ describe("planner response parsing", () => {
       throw new Error("Expected continue action");
     }
     expect(parsed.toolCall?.name).toBe("execute_command");
+  });
+
+  test("rejects execute_command continue payload when command is missing", () => {
+    const strictParse = parsePlannerJsonOnly(
+      JSON.stringify({
+        action: "continue",
+        reasoning: "Run command",
+        toolCall: {
+          arguments: {},
+          name: "execute_command",
+        },
+      })
+    );
+
+    expect(strictParse.success).toBe(false);
   });
 
   test("parses strict JSON complete response with gates none", () => {

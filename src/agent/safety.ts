@@ -43,6 +43,7 @@ export async function assessCommandSafety(
 ): Promise<CommandSafetyAssessment> {
   const prompt = buildCommandSafetyPrompt(command, context);
   const response = await client.chat({
+    callKind: "safety",
     messages: [
       { content: COMMAND_SAFETY_SYSTEM_PROMPT, role: "system" as const },
       { content: prompt, role: "user" as const },
@@ -76,6 +77,7 @@ export async function assessApprovalResponse(
 ): Promise<ApprovalResponseAssessment> {
   const prompt = buildApprovalResponsePrompt(input);
   const response = await client.chat({
+    callKind: "safety",
     messages: [
       { content: APPROVAL_RESPONSE_SYSTEM_PROMPT, role: "system" as const },
       { content: prompt, role: "user" as const },

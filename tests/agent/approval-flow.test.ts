@@ -42,6 +42,7 @@ function createTestConfig(rulesPath: string): AgentConfig {
     executorAnalysis: "on_failure",
     gateDisallowMasking: true,
     llmApiKey: "test",
+    llmCompatNormalizeToolRole: true,
     llmModel: "test-model",
     llmProvider: "openrouter",
     lspAutoProvision: true,

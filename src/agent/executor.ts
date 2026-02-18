@@ -98,7 +98,10 @@ export async function analyzeToolResult(
   let response: Awaited<ReturnType<LlmClient["chat"]>>;
   try {
     response = await client.chat(
-      { messages },
+      {
+        callKind: "executor",
+        messages,
+      },
       options?.stream
         ? {
           onToken: (token) => {

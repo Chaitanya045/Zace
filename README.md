@@ -15,6 +15,7 @@ It runs as a planner-executor loop where the model decides the next action and a
 - Runtime script reuse under `.zace/runtime/scripts`
 - Script metadata registry at `.zace/runtime/scripts/registry.tsv`
 - OpenRouter-backed LLM client
+- Provider-compatibility transport normalization for planner/executor/safety/compaction LLM calls
 - Ink-based chat UI with shadcn-inspired minimal terminal design
 - Runtime project-doc discovery (no fixed built-in doc path list)
 - Automatic context compaction when planner context reaches 80% usage
@@ -58,7 +59,12 @@ AGENT_LSP_BOOTSTRAP_BLOCK_ON_FAILED=true
 AGENT_COMPACTION_ENABLED=true
 AGENT_COMPACTION_TRIGGER_RATIO=0.8
 AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES=12
+AGENT_PLANNER_OUTPUT_MODE=auto
+AGENT_PLANNER_SCHEMA_STRICT=true
+AGENT_PLANNER_MAX_INVALID_ARTIFACT_CHARS=4000
+AGENT_LLM_COMPAT_NORMALIZE_TOOL_ROLE=true
 AGENT_COMPLETION_VALIDATION_MODE=strict
+AGENT_COMPLETION_REQUIRE_LSP=false
 AGENT_GATE_DISALLOW_MASKING=true
 # Optional override if automatic model context lookup fails:
 # AGENT_CONTEXT_WINDOW_TOKENS=200000
@@ -72,6 +78,28 @@ AGENT_TOOL_OUTPUT_LIMIT_CHARS=4000
 AGENT_COMMAND_ALLOW_PATTERNS=
 AGENT_COMMAND_DENY_PATTERNS=
 ```
+
+## Architecture
+
+- Agent loop orchestration:
+  - `/Users/chaitanya/Work/forge/src/agent/loop.ts` (compat facade)
+  - `/Users/chaitanya/Work/forge/src/agent/core/run-agent-loop.ts` (runtime orchestration)
+- Planner domain:
+  - `/Users/chaitanya/Work/forge/src/agent/planner.ts` (compat facade)
+  - `/Users/chaitanya/Work/forge/src/agent/planner/plan.ts`
+  - `/Users/chaitanya/Work/forge/src/agent/planner/parser.ts`
+  - `/Users/chaitanya/Work/forge/src/agent/planner/schema.ts`
+  - `/Users/chaitanya/Work/forge/src/agent/planner/repair.ts`
+  - `/Users/chaitanya/Work/forge/src/agent/planner/invalid-artifacts.ts`
+- Shell tool domain:
+  - `/Users/chaitanya/Work/forge/src/tools/shell.ts` (compat facade)
+  - `/Users/chaitanya/Work/forge/src/tools/shell/index.ts`
+  - `/Users/chaitanya/Work/forge/src/tools/shell/process-lifecycle.ts`
+  - `/Users/chaitanya/Work/forge/src/tools/shell/changed-files.ts`
+- LLM compatibility pipeline:
+  - `/Users/chaitanya/Work/forge/src/llm/compat/index.ts`
+  - `/Users/chaitanya/Work/forge/src/llm/compat/normalize-messages.ts`
+  - `/Users/chaitanya/Work/forge/src/llm/compat/classify-error.ts`
 
 ## Usage
 

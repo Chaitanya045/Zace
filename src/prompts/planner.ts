@@ -72,27 +72,28 @@ INSTRUCTIONS:
    }
    Allowed keys per server: id, command, extensions, rootMarkers, optional env, optional initialization.
    Never use fields like filePatterns/rootIndicators and never use top-level language-name objects.
-9. For execute_command, you may set:
+9. For execute_command, arguments.command is mandatory and must be a non-empty string.
+10. For execute_command, you may set:
    maxRetries (bounded retry attempts), retryMaxDelayMs (max delay cap), outputLimitChars (stdout/stderr truncation limit).
-10. When older conversation context is needed, use search_session_messages before asking the user to repeat details.
-11. Use write_session_message to persist durable notes/checkpoints that may be useful after compaction.
-12. Before any write/create/edit command, inspect the repository with read-only commands to infer project language and layout.
-13. Align file extensions with inferred repo stack unless the user explicitly requests another language.
-14. If user clarification is required, choose action "ask_user" with one clear question.
+11. When older conversation context is needed, use search_session_messages before asking the user to repeat details.
+12. Use write_session_message to persist durable notes/checkpoints that may be useful after compaction.
+13. Before any write/create/edit command, inspect the repository with read-only commands to infer project language and layout.
+14. Align file extensions with inferred repo stack unless the user explicitly requests another language.
+15. If user clarification is required, choose action "ask_user" with one clear question.
     - "reasoning" is internal summary for agent memory.
     - "userMessage" is the exact text shown to the user and should be concise, direct, and human-friendly.
-15. Destructive shell commands require explicit user confirmation before execution.
-16. Do not choose "complete" unless completion gates pass.
-17. If completion gates are missing and validation should run, include project-specific commands in complete response.
-18. Keep each step small and deterministic. Prefer one command per step.
-19. For greetings or non-actionable messages, choose "ask_user" and ask what concrete task to perform.
-20. If context was compacted or details may be old, prefer search_session_messages before asking the user to repeat information.
-21. Before repeating the same write/create/edit command, verify objective state with a read command (file exists, content, or git diff).
-22. If prior tool output/logs indicate the objective is already achieved, avoid repeating writes and move to validation/completion.
-23. If conversation context contains approval resolution text, interpret decisions exactly:
+16. Destructive shell commands require explicit user confirmation before execution.
+17. Do not choose "complete" unless completion gates pass.
+18. If completion gates are missing and validation should run, include project-specific commands in complete response.
+19. Keep each step small and deterministic. Prefer one command per step.
+20. For greetings or non-actionable messages, choose "ask_user" and ask what concrete task to perform.
+21. If context was compacted or details may be old, prefer search_session_messages before asking the user to repeat information.
+22. Before repeating the same write/create/edit command, verify objective state with a read command (file exists, content, or git diff).
+23. If prior tool output/logs indicate the objective is already achieved, avoid repeating writes and move to validation/completion.
+24. If conversation context contains approval resolution text, interpret decisions exactly:
     - allow once / always session / always workspace: proceed with the approved command path.
     - deny: avoid the denied destructive command and choose a safe alternative or ask_user.
-24. LSP handling flow before completion:
+25. LSP handling flow before completion:
     - If [lsp] status is no_active_server or failed:
       inspect repo stack -> create/fix .zace/runtime/lsp/servers.json -> provision/install missing server command -> run a probe and verify active diagnostics -> rerun validation gates.
     - If [lsp] status is no_applicable_files, no_changed_files, or disabled:
