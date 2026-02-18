@@ -8,10 +8,15 @@ import { buildPlannerPrompt } from "../prompts/planner";
 import { toolCallSchema } from "../types/tool";
 import { logStep } from "../utils/logger";
 
+export type PlannerParseMode = "failed" | "legacy" | "repair_json" | "schema_json";
+
 export interface PlanResult {
   action: "ask_user" | "blocked" | "complete" | "continue";
   completionGateCommands?: string[];
   completionGatesDeclaredNone?: boolean;
+  parseAttempts: number;
+  parseMode: PlannerParseMode;
+  rawInvalidCount: number;
   reasoning: string;
   userMessage?: string;
   toolCall?: { arguments: Record<string, unknown>; name: string };
@@ -23,6 +28,8 @@ type PlanOptions = {
   onStreamEnd?: () => void;
   onStreamStart?: () => void;
   onStreamToken?: (token: string) => void;
+  plannerParseMaxRepairs?: number;
+  plannerParseRetryOnFailure?: boolean;
   stream?: boolean;
 };
 
@@ -58,7 +65,20 @@ const plannerResponseSchema = z.union([
   plannerBlockedResponseSchema,
 ]);
 
-type ParsedPlanResult = Omit<PlanResult, "usage">;
+type ParsedPlanResult = Omit<
+  PlanResult,
+  "parseAttempts" | "parseMode" | "rawInvalidCount" | "usage"
+>;
+
+type StrictParseResult =
+  | {
+      parsed: ParsedPlanResult;
+      success: true;
+    }
+  | {
+      reason: string;
+      success: false;
+    };
 
 const PLANNER_PARSE_FALLBACK_REASONING =
   "I need a clearer task to continue. Please tell me exactly what file/path and outcome you want.";
@@ -241,15 +261,30 @@ function extractJsonPayload(content: string): null | unknown {
   return null;
 }
 
-export function parsePlannerContent(content: string): ParsedPlanResult {
+function parsePlannerJsonOnly(content: string): StrictParseResult {
   const jsonPayload = extractJsonPayload(content);
-  if (jsonPayload) {
-    const parsedJsonResponse = plannerResponseSchema.safeParse(jsonPayload);
-    if (parsedJsonResponse.success) {
-      return toPlanResultFromParsedJson(parsedJsonResponse.data);
-    }
+  if (!jsonPayload) {
+    return {
+      reason: "missing_json_payload",
+      success: false,
+    };
   }
 
+  const parsedJsonResponse = plannerResponseSchema.safeParse(jsonPayload);
+  if (!parsedJsonResponse.success) {
+    return {
+      reason: parsedJsonResponse.error.message,
+      success: false,
+    };
+  }
+
+  return {
+    parsed: toPlanResultFromParsedJson(parsedJsonResponse.data),
+    success: true,
+  };
+}
+
+function parsePlannerLegacy(content: string): ParsedPlanResult | undefined {
   const legacyComplete = parseLegacyComplete(content);
   if (legacyComplete) {
     return legacyComplete;
@@ -270,19 +305,25 @@ export function parsePlannerContent(content: string): ParsedPlanResult {
     return legacyContinue;
   }
 
+  return undefined;
+}
+
+export function parsePlannerContent(content: string): ParsedPlanResult {
+  const strict = parsePlannerJsonOnly(content);
+  if (strict.success) {
+    return strict.parsed;
+  }
+
+  const legacy = parsePlannerLegacy(content);
+  if (legacy) {
+    return legacy;
+  }
+
   return {
     action: "ask_user",
     reasoning: PLANNER_PARSE_FALLBACK_REASONING,
     userMessage: PLANNER_PARSE_FALLBACK_USER_MESSAGE,
   };
-}
-
-function isPlannerParseFallback(result: ParsedPlanResult): boolean {
-  return (
-    result.action === "ask_user" &&
-    result.reasoning === PLANNER_PARSE_FALLBACK_REASONING &&
-    result.userMessage === PLANNER_PARSE_FALLBACK_USER_MESSAGE
-  );
 }
 
 function buildPlannerJsonRepairPrompt(previousResponse: string): string {
@@ -298,6 +339,19 @@ function buildPlannerJsonRepairPrompt(previousResponse: string): string {
   ].join("\n");
 }
 
+function buildPlannerJsonRetryPrompt(previousResponse: string): string {
+  const compactResponse = previousResponse.replace(/\s+/gu, " ").trim();
+  const preview = compactResponse.length > 800
+    ? `${compactResponse.slice(0, 800)}...`
+    : compactResponse;
+  return [
+    "Retry the planner response now.",
+    "Output must be strict JSON matching the planner schema and nothing else.",
+    "Do not include markdown fences, XML tags, or explanatory text.",
+    `Last invalid response preview: ${preview}`,
+  ].join("\n");
+}
+
 export async function plan(
   client: LlmClient,
   context: AgentContext,
@@ -307,11 +361,12 @@ export async function plan(
   logStep(context.currentStep + 1, "Planning next action");
 
   const prompt = buildPlannerPrompt(context, options?.completionCriteria);
-
-  const messages = [
+  const baseMessages = [
     ...memory.getMessages(),
     { content: prompt, role: "user" as const },
   ];
+  const maxRepairs = Math.max(0, options?.plannerParseMaxRepairs ?? 2);
+  const retryOnFailure = options?.plannerParseRetryOnFailure ?? true;
 
   if (options?.stream) {
     options.onStreamStart?.();
@@ -319,7 +374,7 @@ export async function plan(
   let response: Awaited<ReturnType<LlmClient["chat"]>>;
   try {
     response = await client.chat(
-      { messages },
+      { messages: baseMessages },
       options?.stream
         ? {
             onToken: (token) => {
@@ -334,28 +389,105 @@ export async function plan(
       options.onStreamEnd?.();
     }
   }
-  const content = response.content.trim();
-  let usage = response.usage;
-  let parsedResult = parsePlannerContent(content);
 
-  if (isPlannerParseFallback(parsedResult)) {
-    const repairResponse = await client.chat({
-      messages: [
-        ...messages,
-        { content, role: "assistant" as const },
-        { content: buildPlannerJsonRepairPrompt(content), role: "user" as const },
-      ],
-    });
-    const repairedContent = repairResponse.content.trim();
-    const repairedParsed = parsePlannerContent(repairedContent);
-    if (!isPlannerParseFallback(repairedParsed)) {
-      parsedResult = repairedParsed;
-      usage = repairResponse.usage ?? usage;
-    }
+  let usage = response.usage;
+  const initialContent = response.content.trim();
+  let lastInvalidContent = initialContent;
+  let lastInvalidReason = "";
+  let parseAttempts = 1;
+  let rawInvalidCount = 0;
+
+  const initialStrict = parsePlannerJsonOnly(initialContent);
+  if (initialStrict.success) {
+    return {
+      ...initialStrict.parsed,
+      parseAttempts,
+      parseMode: "schema_json",
+      rawInvalidCount,
+      usage,
+    };
   }
 
+  rawInvalidCount += 1;
+  lastInvalidReason = initialStrict.reason;
+
+  for (let repairAttempt = 0; repairAttempt < maxRepairs; repairAttempt += 1) {
+    const repairResponse = await client.chat({
+      messages: [
+        ...baseMessages,
+        { content: lastInvalidContent, role: "assistant" as const },
+        { content: buildPlannerJsonRepairPrompt(lastInvalidContent), role: "user" as const },
+      ],
+    });
+    parseAttempts += 1;
+    usage = repairResponse.usage ?? usage;
+
+    const repairedContent = repairResponse.content.trim();
+    const repairedStrict = parsePlannerJsonOnly(repairedContent);
+    if (repairedStrict.success) {
+      return {
+        ...repairedStrict.parsed,
+        parseAttempts,
+        parseMode: "repair_json",
+        rawInvalidCount,
+        usage,
+      };
+    }
+
+    rawInvalidCount += 1;
+    lastInvalidContent = repairedContent;
+    lastInvalidReason = repairedStrict.reason;
+  }
+
+  if (retryOnFailure) {
+    const retryResponse = await client.chat({
+      messages: [
+        ...baseMessages,
+        { content: lastInvalidContent, role: "assistant" as const },
+        { content: buildPlannerJsonRetryPrompt(lastInvalidContent), role: "user" as const },
+      ],
+    });
+    parseAttempts += 1;
+    usage = retryResponse.usage ?? usage;
+
+    const retryContent = retryResponse.content.trim();
+    const retryStrict = parsePlannerJsonOnly(retryContent);
+    if (retryStrict.success) {
+      return {
+        ...retryStrict.parsed,
+        parseAttempts,
+        parseMode: "repair_json",
+        rawInvalidCount,
+        usage,
+      };
+    }
+
+    rawInvalidCount += 1;
+    lastInvalidContent = retryContent;
+    lastInvalidReason = retryStrict.reason;
+  }
+
+  const legacy = parsePlannerLegacy(lastInvalidContent) ?? parsePlannerLegacy(initialContent);
+  if (legacy) {
+    return {
+      ...legacy,
+      parseAttempts,
+      parseMode: "legacy",
+      rawInvalidCount,
+      usage,
+    };
+  }
+
+  const failureMessage =
+    `Planner output parsing failed after ${String(parseAttempts)} attempts. ` +
+    `Expected strict JSON matching planner schema. Last parse reason: ${lastInvalidReason || "unknown_parse_error"}.`;
   return {
-    ...parsedResult,
+    action: "blocked",
+    parseAttempts,
+    parseMode: "failed",
+    rawInvalidCount,
+    reasoning: failureMessage,
     usage,
+    userMessage: "Planner response was malformed repeatedly. Please retry the request.",
   };
 }

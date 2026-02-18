@@ -8,8 +8,6 @@ import type { AgentConfig } from "../../src/types/config";
 
 import { runAgentLoop } from "../../src/agent/loop";
 
-let tempDirectoryPath = "";
-
 function createTestConfig(): AgentConfig {
   return {
     approvalMemoryEnabled: false,
@@ -51,12 +49,12 @@ function createTestConfig(): AgentConfig {
   };
 }
 
-describe("completion auto-gates", () => {
-  test("auto-discovers and runs lint/test gates after writes", async () => {
-    tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-completion-auto-gates-"));
+describe("session quality gate regression", () => {
+  test("does not complete when weak planner gates ignore lint failures", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "zace-session-quality-gates-"));
     try {
       await writeFile(
-        join(tempDirectoryPath, "package.json"),
+        join(workspace, "package.json"),
         JSON.stringify(
           {
             packageManager: "bun@1.3.0",
@@ -70,27 +68,28 @@ describe("completion auto-gates", () => {
         ),
         "utf8"
       );
-      await writeFile(join(tempDirectoryPath, "bun.lock"), "", "utf8");
+      await writeFile(join(workspace, "bun.lock"), "", "utf8");
 
       const responses = [
         JSON.stringify({
           action: "continue",
-          reasoning: "Write a file.",
+          reasoning: "Create file.",
           toolCall: {
             arguments: {
               command: [
-                "cat > demo.ts <<'EOF'",
-                "const value = 1;",
+                "cat > bst.ts <<'EOF'",
+                "export const bst = 1;",
                 "EOF",
-                "printf 'ZACE_FILE_CHANGED|demo.ts\\n'",
+                "printf 'ZACE_FILE_CHANGED|bst.ts\\n'",
               ].join("\n"),
-              cwd: tempDirectoryPath,
+              cwd: workspace,
             },
             name: "execute_command",
           },
         }),
         JSON.stringify({
           action: "complete",
+          gates: ["sh -c 'echo weak-gate-pass'"],
           reasoning: "Done.",
           userMessage: "Done.",
         }),
@@ -103,14 +102,12 @@ describe("completion auto-gates", () => {
         getModelContextWindowTokens: async () => undefined,
       } as unknown as LlmClient;
 
-      const result = await runAgentLoop(llmClient, createTestConfig(), "create demo file");
+      const result = await runAgentLoop(llmClient, createTestConfig(), "create bst file");
 
       expect(result.finalState).toBe("blocked");
       expect(result.message).toContain("auto:lint");
-      expect(result.message).toContain("failed");
     } finally {
-      await rm(tempDirectoryPath, { force: true, recursive: true });
-      tempDirectoryPath = "";
+      await rm(workspace, { force: true, recursive: true });
     }
   }, 20_000);
 });

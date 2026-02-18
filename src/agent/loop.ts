@@ -25,6 +25,7 @@ import {
   discoverAutomaticCompletionGates,
   describeCompletionPlan,
   findMaskedValidationGate,
+  mergeCompletionGates,
   resolveCompletionPlan,
   type CompletionGate,
 } from "./completion";
@@ -34,6 +35,7 @@ import {
   extractProjectDocFromToolOutput,
   parseDiscoveredProjectDocCandidates,
   resolveProjectDocsPolicy,
+  selectProjectDocCandidates,
   truncateProjectDocPreview,
 } from "./docs";
 import { analyzeToolResult, executeToolCall } from "./executor";
@@ -72,7 +74,6 @@ export interface RunAgentLoopOptions {
 const DISCOVER_SCRIPTS_COMMAND = buildDiscoverScriptsCommand();
 const MAX_CONSECUTIVE_NO_TOOL_CONTINUES = 2;
 const PROJECT_DOC_DISCOVERY_MAX_FILES = 24;
-const PROJECT_DOC_LOAD_MAX_FILES = 8;
 const PROJECT_DOC_MAX_LINES = 220;
 const PROJECT_DOC_OUTPUT_LIMIT_CHARS = 10_000;
 const PROJECT_DOC_TIMEOUT_MS = 30_000;
@@ -603,6 +604,23 @@ function extractStructuredSection(output: string, sectionName: string): string |
   return section && section.length > 0 ? section : undefined;
 }
 
+function compactSectionPreview(section: string, maxChars: number, maxLines: number): string {
+  const lines = section.split("\n").slice(0, maxLines);
+  const compacted = lines.join("\n");
+  if (compacted.length <= maxChars) {
+    return compacted;
+  }
+
+  return `${compacted.slice(0, maxChars)}\n...[section preview truncated]`;
+}
+
+function compactExecutionSection(executionSection: string): string {
+  const filteredLines = executionSection
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("command:"));
+  return filteredLines.join("\n");
+}
+
 function buildToolMemoryDigest(input: {
   attempt: number;
   toolName: string;
@@ -619,23 +637,19 @@ function buildToolMemoryDigest(input: {
 
   const stdoutSection = extractStructuredSection(input.toolResult.output, "stdout");
   if (stdoutSection && !stdoutSection.includes("(empty)")) {
-    const stdoutPreview = stdoutSection.length > 700
-      ? `${stdoutSection.slice(0, 700)}\n...[stdout preview truncated]`
-      : stdoutSection;
+    const stdoutPreview = compactSectionPreview(stdoutSection, 240, 8);
     lines.push(stdoutPreview);
   }
 
   const stderrSection = extractStructuredSection(input.toolResult.output, "stderr");
   if (stderrSection && !stderrSection.includes("(empty)")) {
-    const stderrPreview = stderrSection.length > 400
-      ? `${stderrSection.slice(0, 400)}\n...[stderr preview truncated]`
-      : stderrSection;
+    const stderrPreview = compactSectionPreview(stderrSection, 280, 10);
     lines.push(stderrPreview);
   }
 
   const executionSection = extractStructuredSection(input.toolResult.output, "execution");
   if (executionSection) {
-    lines.push(executionSection);
+    lines.push(compactExecutionSection(executionSection));
   }
 
   const artifactsSection = extractStructuredSection(input.toolResult.output, "artifacts");
@@ -671,6 +685,43 @@ export function ensureUserFacingQuestion(message: string): string {
   }
 
   return `${trimmed} What should I do next?`;
+}
+
+function buildDocsContextWithinBudget(
+  loadedDocs: Array<{ content: string; path: string }>,
+  maxChars: number
+): Array<{ content: string; path: string }> {
+  if (maxChars <= 0 || loadedDocs.length === 0) {
+    return [];
+  }
+
+  const selected: Array<{ content: string; path: string }> = [];
+  let usedChars = 0;
+
+  for (const doc of loadedDocs) {
+    const remainingChars = maxChars - usedChars;
+    if (remainingChars <= 0) {
+      break;
+    }
+
+    const maxDocChars = Math.max(0, remainingChars - (`### ${doc.path}\n\n`).length);
+    if (maxDocChars <= 0) {
+      break;
+    }
+
+    const boundedContent = truncateProjectDocPreview(doc.content, maxDocChars);
+    if (!boundedContent.trim()) {
+      continue;
+    }
+
+    selected.push({
+      content: boundedContent,
+      path: doc.path,
+    });
+    usedChars += (`### ${doc.path}\n\n${boundedContent}\n\n`).length;
+  }
+
+  return selected;
 }
 
 export async function runAgentLoop(
@@ -885,32 +936,68 @@ export async function runAgentLoop(
         `Startup script discovery complete. Registered or updated ${discoveredCatalogUpdate.notes.length} scripts in ${SCRIPT_REGISTRY_PATH}.`
       );
     }
-    const discoverDocsResult = await executeToolCall({
-      arguments: {
-        command: buildDiscoverProjectDocsCommand({
-          maxFiles: PROJECT_DOC_DISCOVERY_MAX_FILES,
-          platform: process.platform,
-        }),
-        outputLimitChars: PROJECT_DOC_OUTPUT_LIMIT_CHARS,
-        timeout: PROJECT_DOC_TIMEOUT_MS,
-      },
-      name: "execute_command",
-    });
-    const discoveredDocCandidates = discoverDocsResult.success
-      ? parseDiscoveredProjectDocCandidates(discoverDocsResult.output, PROJECT_DOC_DISCOVERY_MAX_FILES)
-      : [];
+    let discoveredDocCandidates: string[] = [];
+    if (config.docContextMode !== "off") {
+      const discoverDocsResult = await executeToolCall({
+        arguments: {
+          command: buildDiscoverProjectDocsCommand({
+            maxFiles: PROJECT_DOC_DISCOVERY_MAX_FILES,
+            platform: process.platform,
+          }),
+          outputLimitChars: PROJECT_DOC_OUTPUT_LIMIT_CHARS,
+          timeout: PROJECT_DOC_TIMEOUT_MS,
+        },
+        name: "execute_command",
+      });
+      discoveredDocCandidates = discoverDocsResult.success
+        ? parseDiscoveredProjectDocCandidates(discoverDocsResult.output, PROJECT_DOC_DISCOVERY_MAX_FILES)
+        : [];
+    }
+
     const docsPolicy = resolveProjectDocsPolicy(task, discoveredDocCandidates);
-    if (docsPolicy.skipAllDocs) {
+    if (config.docContextMode === "off") {
+      memory.addMessage(
+        "assistant",
+        "Skipping project documentation preload because AGENT_DOC_CONTEXT_MODE is set to off."
+      );
+      await appendRunEvent({
+        event: "docs_context_skipped",
+        observer,
+        payload: {
+          mode: config.docContextMode,
+          reason: "doc_context_mode_off",
+        },
+        phase: "planning",
+        runId,
+        sessionId,
+        step: 0,
+      });
+    } else if (docsPolicy.skipAllDocs) {
       memory.addMessage(
         "assistant",
         "Skipping project documentation files because the user explicitly requested to avoid docs."
       );
+      await appendRunEvent({
+        event: "docs_context_skipped",
+        observer,
+        payload: {
+          mode: config.docContextMode,
+          reason: "user_disabled_docs",
+        },
+        phase: "planning",
+        runId,
+        sessionId,
+        step: 0,
+      });
     } else {
-      const excludedDocPaths = new Set(docsPolicy.excludedDocPaths.map((path) => path.toLowerCase()));
+      const candidateDocsToLoad = selectProjectDocCandidates({
+        discoveredDocCandidates,
+        maxFiles: config.docContextMaxFiles,
+        mode: config.docContextMode,
+        policy: docsPolicy,
+        task,
+      });
       const loadedDocs: Array<{ content: string; path: string }> = [];
-      const candidateDocsToLoad = discoveredDocCandidates
-        .filter((path) => !excludedDocPaths.has(path.toLowerCase()))
-        .slice(0, PROJECT_DOC_LOAD_MAX_FILES);
       for (const docPath of candidateDocsToLoad) {
         const readDocResult = await executeToolCall({
           arguments: {
@@ -942,39 +1029,62 @@ export async function runAgentLoop(
         });
       }
 
-      if (excludedDocPaths.size > 0) {
+      const boundedDocs = buildDocsContextWithinBudget(loadedDocs, config.docContextMaxChars);
+      if (docsPolicy.excludedDocPaths.length > 0) {
         memory.addMessage(
           "assistant",
-          `Skipped project docs per user request: ${Array.from(excludedDocPaths.values()).join(", ")}.`
+          `Skipped project docs per user request: ${docsPolicy.excludedDocPaths.join(", ")}.`
         );
       }
-      if (loadedDocs.length > 0) {
-        const docsContext = loadedDocs
+      if (boundedDocs.length > 0) {
+        const docsContext = boundedDocs
           .map((doc) => `### ${doc.path}\n${doc.content}`)
           .join("\n\n");
         memory.addMessage(
           "system",
           `Project documentation context (follow this unless the user overrides):\n\n${docsContext}`
         );
-        const loadedCount = loadedDocs.length;
-        const discoveredCount = discoveredDocCandidates.length;
-        const loadNote = discoveredCount > loadedCount
-          ? ` (loaded ${String(loadedCount)} of ${String(discoveredCount)} discovered)`
-          : "";
         memory.addMessage(
           "assistant",
-          `Loaded project documentation context from: ${loadedDocs.map((doc) => doc.path).join(", ")}${loadNote}.`
+          `Loaded project documentation context from: ${boundedDocs.map((doc) => doc.path).join(", ")}.`
         );
-      } else if (discoveredDocCandidates.length > 0) {
-        memory.addMessage(
-          "assistant",
-          "Project docs were discovered but none were loaded after exclusions or read attempts."
-        );
+        await appendRunEvent({
+          event: "docs_context_loaded",
+          observer,
+          payload: {
+            discoveredCandidates: discoveredDocCandidates.length,
+            loadedPaths: boundedDocs.map((doc) => doc.path),
+            mode: config.docContextMode,
+          },
+          phase: "planning",
+          runId,
+          sessionId,
+          step: 0,
+        });
       } else {
+        const reason = candidateDocsToLoad.length > 0
+          ? "docs_read_empty_or_budget_exhausted"
+          : "no_targeted_doc_candidates";
         memory.addMessage(
           "assistant",
-          "No project documentation files were discovered."
+          candidateDocsToLoad.length > 0
+            ? "Project docs were selected but none were loaded after read/budget constraints."
+            : "No targeted project documentation files were selected for preload."
         );
+        await appendRunEvent({
+          event: "docs_context_skipped",
+          observer,
+          payload: {
+            discoveredCandidates: discoveredDocCandidates.length,
+            mode: config.docContextMode,
+            reason,
+            selectedCandidates: candidateDocsToLoad.length,
+          },
+          phase: "planning",
+          runId,
+          sessionId,
+          step: 0,
+        });
       }
     }
 
@@ -1007,14 +1117,77 @@ export async function runAgentLoop(
         onStreamToken: (token) => {
           observer?.onPlannerStreamToken?.(token);
         },
+        plannerParseMaxRepairs: config.plannerParseMaxRepairs,
+        plannerParseRetryOnFailure: config.plannerParseRetryOnFailure,
         stream: config.stream,
       });
+      if (planResult.rawInvalidCount > 0) {
+        await appendRunEvent({
+          event: "planner_parse_failed",
+          observer,
+          payload: {
+            parseAttempts: planResult.parseAttempts,
+            parseMode: planResult.parseMode,
+            rawInvalidCount: planResult.rawInvalidCount,
+          },
+          phase: "planning",
+          runId,
+          sessionId,
+          step: stepNumber,
+        });
+      }
+      if (planResult.parseAttempts > 1) {
+        await appendRunEvent({
+          event: "planner_parse_repair_attempted",
+          observer,
+          payload: {
+            parseAttempts: planResult.parseAttempts,
+            parseMode: planResult.parseMode,
+          },
+          phase: "planning",
+          runId,
+          sessionId,
+          step: stepNumber,
+        });
+      }
+      if (planResult.parseMode === "repair_json" || planResult.parseMode === "legacy") {
+        await appendRunEvent({
+          event: "planner_parse_recovered",
+          observer,
+          payload: {
+            parseAttempts: planResult.parseAttempts,
+            parseMode: planResult.parseMode,
+            rawInvalidCount: planResult.rawInvalidCount,
+          },
+          phase: "planning",
+          runId,
+          sessionId,
+          step: stepNumber,
+        });
+      }
+      if (planResult.parseMode === "failed") {
+        await appendRunEvent({
+          event: "planner_parse_exhausted",
+          observer,
+          payload: {
+            parseAttempts: planResult.parseAttempts,
+            rawInvalidCount: planResult.rawInvalidCount,
+          },
+          phase: "planning",
+          runId,
+          sessionId,
+          step: stepNumber,
+        });
+      }
       await appendRunEvent({
         event: "plan_parsed",
         observer,
         payload: {
           action: planResult.action,
           hasToolCall: Boolean(planResult.toolCall),
+          parseAttempts: planResult.parseAttempts,
+          parseMode: planResult.parseMode,
+          rawInvalidCount: planResult.rawInvalidCount,
         },
         phase: "planning",
         runId,
@@ -1110,34 +1283,42 @@ export async function runAgentLoop(
         }
 
         const plannerCompletionGates = parsePlannerCompletionGates(planResult.completionGateCommands);
-        if (completionPlan.gates.length === 0 && plannerCompletionGates.length > 0) {
-          completionPlan = {
-            ...completionPlan,
-            gates: plannerCompletionGates,
-            source: "planner",
-          };
-          memory.addMessage(
-            "assistant",
-            `Planner supplied completion gates: ${describeCompletionPlan(completionPlan).join(" | ")}`
-          );
-        }
-
-        if (
-          completionPlan.gates.length === 0 &&
-          !planResult.completionGatesDeclaredNone &&
-          lastWriteStep !== undefined
-        ) {
-          const autoDiscoveredGates = await discoverAutomaticCompletionGates(validationWorkingDirectory);
-          if (autoDiscoveredGates.length > 0) {
+        if (plannerCompletionGates.length > 0) {
+          const mergedWithPlanner = mergeCompletionGates(completionPlan.gates, plannerCompletionGates);
+          if (mergedWithPlanner.length !== completionPlan.gates.length) {
             completionPlan = {
               ...completionPlan,
-              gates: autoDiscoveredGates,
-              source: "auto_discovered",
+              gates: mergedWithPlanner,
+              source: completionPlan.gates.length === 0 ? "planner" : "merged",
             };
             memory.addMessage(
               "assistant",
-              `Runtime auto-discovered completion gates in ${validationWorkingDirectory}: ${describeCompletionPlan(completionPlan).join(" | ")}`
+              `Planner supplied completion gates: ${describeCompletionPlan(completionPlan).join(" | ")}`
             );
+          }
+        }
+
+        const shouldDiscoverGates =
+          lastWriteStep !== undefined &&
+          (
+            (strictCompletionValidation && config.completionRequireDiscoveredGates) ||
+            (completionPlan.gates.length === 0 && !planResult.completionGatesDeclaredNone)
+          );
+        if (shouldDiscoverGates) {
+          const autoDiscoveredGates = await discoverAutomaticCompletionGates(validationWorkingDirectory);
+          if (autoDiscoveredGates.length > 0) {
+            const mergedWithDiscovered = mergeCompletionGates(completionPlan.gates, autoDiscoveredGates);
+            if (mergedWithDiscovered.length !== completionPlan.gates.length) {
+              completionPlan = {
+                ...completionPlan,
+                gates: mergedWithDiscovered,
+                source: completionPlan.gates.length === 0 ? "auto_discovered" : "merged",
+              };
+              memory.addMessage(
+                "assistant",
+                `Runtime merged discovered completion gates in ${validationWorkingDirectory}: ${describeCompletionPlan(completionPlan).join(" | ")}`
+              );
+            }
           }
         }
 
@@ -1701,6 +1882,21 @@ export async function runAgentLoop(
           }
 
           if (config.lspEnabled) {
+            const lspStatus = toolResult.artifacts?.lspStatus;
+            if (lspStatus) {
+              await appendRunEvent({
+                event: "lsp_status_observed",
+                observer,
+                payload: {
+                  reason: toolResult.artifacts?.lspStatusReason,
+                  status: lspStatus,
+                },
+                phase: "executing",
+                runId,
+                sessionId,
+                step: stepNumber,
+              });
+            }
             const lspBootstrapSignal = deriveLspBootstrapSignal(toolResult);
             const lspStatusReason = toolResult.artifacts?.lspStatusReason;
             const nonConfigChangedFiles = changedFiles

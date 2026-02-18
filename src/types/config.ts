@@ -1,6 +1,7 @@
 import {
   env,
   type CompletionValidationMode,
+  type DocContextMode,
   type ExecutorAnalysisMode,
 } from "../config/env";
 
@@ -12,8 +13,12 @@ export type AgentConfig = {
   compactionEnabled: boolean;
   compactionPreserveRecentMessages: number;
   compactionTriggerRatio: number;
+  completionRequireDiscoveredGates: boolean;
   completionValidationMode: CompletionValidationMode;
   contextWindowTokens?: number;
+  docContextMaxChars: number;
+  docContextMaxFiles: number;
+  docContextMode: DocContextMode;
   doomLoopThreshold: number;
   executorAnalysis: ExecutorAnalysisMode;
   gateDisallowMasking: boolean;
@@ -30,6 +35,8 @@ export type AgentConfig = {
   llmProvider: "openrouter";
   maxSteps: number;
   pendingActionMaxAgeMs: number;
+  plannerParseMaxRepairs: number;
+  plannerParseRetryOnFailure: boolean;
   requireRiskyConfirmation: boolean;
   riskyConfirmationToken: string;
   stagnationWindow: number;
@@ -46,8 +53,12 @@ export function getAgentConfig(): AgentConfig {
     compactionEnabled: env.AGENT_COMPACTION_ENABLED,
     compactionPreserveRecentMessages: env.AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES,
     compactionTriggerRatio: env.AGENT_COMPACTION_TRIGGER_RATIO,
+    completionRequireDiscoveredGates: env.AGENT_COMPLETION_REQUIRE_DISCOVERED_GATES,
     completionValidationMode: env.AGENT_COMPLETION_VALIDATION_MODE,
     contextWindowTokens: env.AGENT_CONTEXT_WINDOW_TOKENS,
+    docContextMaxChars: env.AGENT_DOC_CONTEXT_MAX_CHARS,
+    docContextMaxFiles: env.AGENT_DOC_CONTEXT_MAX_FILES,
+    docContextMode: env.AGENT_DOC_CONTEXT_MODE,
     doomLoopThreshold: env.AGENT_DOOM_LOOP_THRESHOLD,
     executorAnalysis: env.AGENT_EXECUTOR_ANALYSIS,
     gateDisallowMasking: env.AGENT_GATE_DISALLOW_MASKING,
@@ -64,6 +75,8 @@ export function getAgentConfig(): AgentConfig {
     lspWaitForDiagnosticsMs: env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS,
     maxSteps: env.AGENT_MAX_STEPS,
     pendingActionMaxAgeMs: env.AGENT_PENDING_ACTION_MAX_AGE_MS,
+    plannerParseMaxRepairs: env.AGENT_PLANNER_PARSE_MAX_REPAIRS,
+    plannerParseRetryOnFailure: env.AGENT_PLANNER_PARSE_RETRY_ON_FAILURE,
     requireRiskyConfirmation: env.AGENT_REQUIRE_RISKY_CONFIRMATION,
     riskyConfirmationToken: env.AGENT_RISKY_CONFIRMATION_TOKEN,
     stagnationWindow: env.AGENT_STAGNATION_WINDOW,

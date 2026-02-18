@@ -17,8 +17,12 @@ function createTestConfig(): AgentConfig {
     compactionEnabled: true,
     compactionPreserveRecentMessages: 12,
     compactionTriggerRatio: 0.8,
+    completionRequireDiscoveredGates: true,
     completionValidationMode: "strict",
     contextWindowTokens: undefined,
+    docContextMaxChars: 6000,
+    docContextMaxFiles: 3,
+    docContextMode: "targeted",
     doomLoopThreshold: 3,
     executorAnalysis: "on_failure",
     gateDisallowMasking: true,
@@ -35,6 +39,8 @@ function createTestConfig(): AgentConfig {
     lspWaitForDiagnosticsMs: 3000,
     maxSteps: 2,
     pendingActionMaxAgeMs: 3_600_000,
+    plannerParseMaxRepairs: 2,
+    plannerParseRetryOnFailure: true,
     requireRiskyConfirmation: true,
     riskyConfirmationToken: "ZACE_APPROVE_RISKY",
     stagnationWindow: 3,
@@ -69,12 +75,20 @@ describe("run events", () => {
       const runEvents = entries.filter((entry) => entry.type === "run_event");
       const sequence = runEvents.map((event) => event.event);
 
-      expect(sequence).toEqual([
-        "run_started",
-        "plan_started",
-        "plan_parsed",
-        "final_state_set",
-      ]);
+      expect(sequence).toContain("run_started");
+      expect(sequence).toContain("plan_started");
+      expect(sequence).toContain("plan_parsed");
+      expect(sequence).toContain("final_state_set");
+      expect(
+        sequence.includes("docs_context_loaded") || sequence.includes("docs_context_skipped")
+      ).toBe(true);
+      const runStartedIndex = sequence.indexOf("run_started");
+      const planStartedIndex = sequence.indexOf("plan_started");
+      const planParsedIndex = sequence.indexOf("plan_parsed");
+      const finalStateIndex = sequence.indexOf("final_state_set");
+      expect(runStartedIndex).toBeLessThan(planStartedIndex);
+      expect(planStartedIndex).toBeLessThan(planParsedIndex);
+      expect(planParsedIndex).toBeLessThan(finalStateIndex);
     } finally {
       await unlink(sessionPath).catch(() => undefined);
     }

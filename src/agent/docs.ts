@@ -3,11 +3,14 @@ const DEFAULT_DOC_DISCOVERY_MAX_FILES = 24;
 const DEFAULT_DOC_PREVIEW_MAX_CHARS = 4_000;
 const DOC_CANDIDATE_MARKER_PREFIX = "ZACE_DOC_CANDIDATE|";
 const DOC_MARKER_PREFIX = "ZACE_DOC";
+const TARGET_DOC_BASENAME_PRIORITY = ["agents.md", "readme.md", "claude.md"] as const;
 
 export interface ProjectDocsPolicy {
   excludedDocPaths: string[];
   skipAllDocs: boolean;
 }
+
+export type DocContextMode = "broad" | "off" | "targeted";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -75,6 +78,105 @@ function normalizeDiscoveredDocPath(pathValue: string): string | undefined {
   }
 
   return segments.join("/");
+}
+
+function basename(pathValue: string): string {
+  const segments = pathValue.split("/");
+  return (segments.at(-1) ?? pathValue).toLowerCase();
+}
+
+function depth(pathValue: string): number {
+  return pathValue.split("/").length;
+}
+
+function findMatchingCandidate(
+  candidates: readonly string[],
+  rawReference: string
+): string | undefined {
+  const normalizedReference = normalizeDiscoveredDocPath(rawReference);
+  if (!normalizedReference) {
+    return undefined;
+  }
+
+  const lowerReference = normalizedReference.toLowerCase();
+  const exactMatch = candidates.find((candidate) => candidate.toLowerCase() === lowerReference);
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const referenceBaseName = basename(normalizedReference);
+  const basenameMatches = candidates
+    .filter((candidate) => basename(candidate) === referenceBaseName)
+    .sort((left, right) => depth(left) - depth(right));
+  return basenameMatches[0];
+}
+
+function extractExplicitDocReferences(task: string): string[] {
+  const references = new Set<string>();
+  const pattern = /\b([A-Za-z0-9_./-]+\.(?:md|txt))\b/giu;
+
+  for (const match of task.matchAll(pattern)) {
+    const candidate = normalizeDiscoveredDocPath(match[1] ?? "");
+    if (candidate) {
+      references.add(candidate);
+    }
+  }
+
+  return Array.from(references);
+}
+
+export function selectProjectDocCandidates(input: {
+  discoveredDocCandidates: readonly string[];
+  maxFiles: number;
+  mode: DocContextMode;
+  policy: ProjectDocsPolicy;
+  task: string;
+}): string[] {
+  if (input.mode === "off" || input.policy.skipAllDocs || input.maxFiles <= 0) {
+    return [];
+  }
+
+  const excluded = new Set(input.policy.excludedDocPaths.map((path) => path.toLowerCase()));
+  const discovered = input.discoveredDocCandidates.filter(
+    (candidate) => !excluded.has(candidate.toLowerCase())
+  );
+  if (input.mode === "broad") {
+    return discovered.slice(0, input.maxFiles);
+  }
+
+  const selected = new Set<string>();
+  const addCandidate = (candidate?: string): void => {
+    if (!candidate || excluded.has(candidate.toLowerCase())) {
+      return;
+    }
+    selected.add(candidate);
+  };
+
+  for (const reference of extractExplicitDocReferences(input.task)) {
+    addCandidate(findMatchingCandidate(discovered, reference) ?? reference);
+    if (selected.size >= input.maxFiles) {
+      return Array.from(selected);
+    }
+  }
+
+  for (const targetBaseName of TARGET_DOC_BASENAME_PRIORITY) {
+    const matches = discovered
+      .filter((candidate) => basename(candidate) === targetBaseName)
+      .sort((left, right) => {
+        const depthDifference = depth(left) - depth(right);
+        if (depthDifference !== 0) {
+          return depthDifference;
+        }
+
+        return left.localeCompare(right);
+      });
+    addCandidate(matches[0]);
+    if (selected.size >= input.maxFiles) {
+      return Array.from(selected);
+    }
+  }
+
+  return Array.from(selected);
 }
 
 export function buildDiscoverProjectDocsCommand(input: {

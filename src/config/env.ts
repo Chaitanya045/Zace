@@ -16,6 +16,14 @@ export function isCompletionValidationMode(value: string): value is CompletionVa
   return (COMPLETION_VALIDATION_MODES as readonly string[]).includes(value);
 }
 
+export const DOC_CONTEXT_MODES = ["broad", "off", "targeted"] as const;
+
+export type DocContextMode = (typeof DOC_CONTEXT_MODES)[number];
+
+export function isDocContextMode(value: string): value is DocContextMode {
+  return (DOC_CONTEXT_MODES as readonly string[]).includes(value);
+}
+
 const commandPatternListSchema = z.string().default("").transform((value) =>
   value
     .split(";;")
@@ -32,8 +40,12 @@ const envSchema = z.object({
   AGENT_COMPACTION_ENABLED: z.coerce.boolean().default(true),
   AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES: z.coerce.number().int().min(1).default(12),
   AGENT_COMPACTION_TRIGGER_RATIO: z.coerce.number().gt(0).lte(1).default(0.8),
+  AGENT_COMPLETION_REQUIRE_DISCOVERED_GATES: z.coerce.boolean().default(true),
   AGENT_COMPLETION_VALIDATION_MODE: z.enum(COMPLETION_VALIDATION_MODES).default("strict"),
   AGENT_CONTEXT_WINDOW_TOKENS: z.coerce.number().int().positive().optional(),
+  AGENT_DOC_CONTEXT_MAX_CHARS: z.coerce.number().int().positive().default(6000),
+  AGENT_DOC_CONTEXT_MAX_FILES: z.coerce.number().int().positive().default(3),
+  AGENT_DOC_CONTEXT_MODE: z.enum(DOC_CONTEXT_MODES).default("targeted"),
   AGENT_DOOM_LOOP_THRESHOLD: z.coerce.number().int().min(2).default(3),
   AGENT_EXECUTOR_ANALYSIS: z.enum(EXECUTOR_ANALYSIS_MODES).default("on_failure"),
   AGENT_GATE_DISALLOW_MASKING: z.coerce.boolean().default(true),
@@ -47,6 +59,8 @@ const envSchema = z.object({
   AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS: z.coerce.number().int().positive().default(3000),
   AGENT_MAX_STEPS: z.coerce.number().int().positive().default(10),
   AGENT_PENDING_ACTION_MAX_AGE_MS: z.coerce.number().int().positive().default(3_600_000),
+  AGENT_PLANNER_PARSE_MAX_REPAIRS: z.coerce.number().int().nonnegative().default(2),
+  AGENT_PLANNER_PARSE_RETRY_ON_FAILURE: z.coerce.boolean().default(true),
   AGENT_REQUIRE_RISKY_CONFIRMATION: z.coerce.boolean().default(true),
   AGENT_RISKY_CONFIRMATION_TOKEN: z.string().min(1).default("ZACE_APPROVE_RISKY"),
   AGENT_STAGNATION_WINDOW: z.coerce.number().int().min(1).default(3),

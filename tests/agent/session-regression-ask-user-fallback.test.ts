@@ -46,23 +46,43 @@ function createTestConfig(): AgentConfig {
   };
 }
 
-describe("completion gate masking in strict mode", () => {
-  test("blocks COMPLETE when a validation gate is masked", async () => {
+describe("session fallback regression", () => {
+  test("does not fall back to generic ask_user after malformed planner output", async () => {
+    let chatCalls = 0;
     const llmClient = {
-      chat: async () => ({
-        content: JSON.stringify({
-          action: "complete",
-          gates: ["echo ok || true"],
-          reasoning: "All done.",
-          userMessage: "Done",
-        }),
-      }),
+      chat: async () => {
+        chatCalls += 1;
+        if (chatCalls === 1) {
+          return {
+            content: "Planning: I'll inspect project files.\n<tool_call>",
+          };
+        }
+
+        return {
+          content: JSON.stringify({
+            action: "continue",
+            reasoning: "Inspect project root.",
+            toolCall: {
+              arguments: {
+                command: "ls -la",
+              },
+              name: "execute_command",
+            },
+          }),
+        };
+      },
       getModelContextWindowTokens: async () => undefined,
     } as unknown as LlmClient;
 
-    const result = await runAgentLoop(llmClient, createTestConfig(), "say hello");
+    const result = await runAgentLoop(
+      llmClient,
+      createTestConfig(),
+      "create a file in this dir and write bst code init"
+    );
 
+    expect(chatCalls).toBe(2);
     expect(result.finalState).toBe("blocked");
-    expect(result.message).toContain("masked");
+    expect(result.message).not.toContain("What would you like me to do next?");
+    expect(result.context.steps[0]?.toolCall?.name).toBe("execute_command");
   });
 });

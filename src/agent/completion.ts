@@ -6,7 +6,7 @@ export interface CompletionGate {
   label: string;
 }
 
-export type CompletionPlanSource = "auto_discovered" | "none" | "planner" | "task_explicit";
+export type CompletionPlanSource = "auto_discovered" | "merged" | "none" | "planner" | "task_explicit";
 
 export interface CompletionPlan {
   gates: CompletionGate[];
@@ -305,6 +305,29 @@ export function describeCompletionPlan(plan: CompletionPlan): string[] {
   }
 
   return plan.gates.map((gate) => `${gate.label}: ${gate.command}`);
+}
+
+export function mergeCompletionGates(
+  primary: CompletionGate[],
+  secondary: CompletionGate[]
+): CompletionGate[] {
+  const merged: CompletionGate[] = [];
+  const seenCommands = new Set<string>();
+
+  for (const gate of [...primary, ...secondary]) {
+    const normalizedCommand = gate.command.trim();
+    if (!normalizedCommand || seenCommands.has(normalizedCommand)) {
+      continue;
+    }
+
+    seenCommands.add(normalizedCommand);
+    merged.push({
+      command: normalizedCommand,
+      label: gate.label,
+    });
+  }
+
+  return merged;
 }
 
 export function assessValidationGateMasking(command: string): CompletionGateMaskingAssessment {
