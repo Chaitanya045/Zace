@@ -612,6 +612,22 @@ function buildToolMemoryDigest(input: {
     lines.push(lspSection);
   }
 
+  const stdoutSection = extractStructuredSection(input.toolResult.output, "stdout");
+  if (stdoutSection && !stdoutSection.includes("(empty)")) {
+    const stdoutPreview = stdoutSection.length > 700
+      ? `${stdoutSection.slice(0, 700)}\n...[stdout preview truncated]`
+      : stdoutSection;
+    lines.push(stdoutPreview);
+  }
+
+  const stderrSection = extractStructuredSection(input.toolResult.output, "stderr");
+  if (stderrSection && !stderrSection.includes("(empty)")) {
+    const stderrPreview = stderrSection.length > 400
+      ? `${stderrSection.slice(0, 400)}\n...[stderr preview truncated]`
+      : stderrSection;
+    lines.push(stderrPreview);
+  }
+
   const executionSection = extractStructuredSection(input.toolResult.output, "execution");
   if (executionSection) {
     lines.push(executionSection);

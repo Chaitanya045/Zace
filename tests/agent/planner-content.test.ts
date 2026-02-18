@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { parsePlannerContent } from "../../src/agent/planner";
+import type { LlmClient } from "../../src/llm/client";
+import type { AgentContext } from "../../src/types/agent";
+
+import { parsePlannerContent, plan } from "../../src/agent/planner";
 
 describe("planner response parsing", () => {
   test("parses strict JSON continue response", () => {
@@ -81,5 +84,52 @@ describe("planner response parsing", () => {
       "CONTINUE: trying command\n{ not valid json { still not valid } }\nextra text"
     );
     expect(parsed.action).toBe("ask_user");
+  });
+
+  test("retries once when planner output is malformed and then returns valid JSON", async () => {
+    let chatCalls = 0;
+    const llmClient = {
+      chat: async () => {
+        chatCalls += 1;
+        if (chatCalls === 1) {
+          return {
+            content: "Planning: I'll inspect files.\n<tool_call>",
+          };
+        }
+
+        return {
+          content: JSON.stringify({
+            action: "continue",
+            reasoning: "Inspect repository files first",
+            toolCall: {
+              arguments: {
+                command: "ls -la",
+              },
+              name: "execute_command",
+            },
+          }),
+        };
+      },
+    } as unknown as LlmClient;
+
+    const context: AgentContext = {
+      currentStep: 0,
+      fileSummaries: new Map(),
+      maxSteps: 3,
+      scriptCatalog: new Map(),
+      steps: [],
+      task: "create a file and implement bst",
+    };
+
+    const result = await plan(
+      llmClient,
+      context,
+      {
+        getMessages: () => [],
+      }
+    );
+
+    expect(chatCalls).toBe(2);
+    expect(result.action).toBe("continue");
   });
 });

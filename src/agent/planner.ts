@@ -60,6 +60,11 @@ const plannerResponseSchema = z.union([
 
 type ParsedPlanResult = Omit<PlanResult, "usage">;
 
+const PLANNER_PARSE_FALLBACK_REASONING =
+  "I need a clearer task to continue. Please tell me exactly what file/path and outcome you want.";
+const PLANNER_PARSE_FALLBACK_USER_MESSAGE =
+  "What would you like me to do next? Please include the target file/path and expected outcome.";
+
 function parseLegacyComplete(content: string): null | ParsedPlanResult {
   if (!content.toUpperCase().includes("COMPLETE:")) {
     return null;
@@ -267,11 +272,30 @@ export function parsePlannerContent(content: string): ParsedPlanResult {
 
   return {
     action: "ask_user",
-    reasoning:
-      "I need a clearer task to continue. Please tell me exactly what file/path and outcome you want.",
-    userMessage:
-      "What would you like me to do next? Please include the target file/path and expected outcome.",
+    reasoning: PLANNER_PARSE_FALLBACK_REASONING,
+    userMessage: PLANNER_PARSE_FALLBACK_USER_MESSAGE,
   };
+}
+
+function isPlannerParseFallback(result: ParsedPlanResult): boolean {
+  return (
+    result.action === "ask_user" &&
+    result.reasoning === PLANNER_PARSE_FALLBACK_REASONING &&
+    result.userMessage === PLANNER_PARSE_FALLBACK_USER_MESSAGE
+  );
+}
+
+function buildPlannerJsonRepairPrompt(previousResponse: string): string {
+  const compactResponse = previousResponse.replace(/\s+/gu, " ").trim();
+  const preview = compactResponse.length > 1200
+    ? `${compactResponse.slice(0, 1200)}...`
+    : compactResponse;
+  return [
+    "Your previous planner response did not match the required strict JSON schema.",
+    "Return strict JSON only, exactly matching the schema from the planner prompt.",
+    "Do not include markdown, XML tags, or prose outside JSON.",
+    `Previous response preview: ${preview}`,
+  ].join("\n");
 }
 
 export async function plan(
@@ -311,8 +335,25 @@ export async function plan(
     }
   }
   const content = response.content.trim();
-  const usage = response.usage;
-  const parsedResult = parsePlannerContent(content);
+  let usage = response.usage;
+  let parsedResult = parsePlannerContent(content);
+
+  if (isPlannerParseFallback(parsedResult)) {
+    const repairResponse = await client.chat({
+      messages: [
+        ...messages,
+        { content, role: "assistant" as const },
+        { content: buildPlannerJsonRepairPrompt(content), role: "user" as const },
+      ],
+    });
+    const repairedContent = repairResponse.content.trim();
+    const repairedParsed = parsePlannerContent(repairedContent);
+    if (!isPlannerParseFallback(repairedParsed)) {
+      parsedResult = repairedParsed;
+      usage = repairResponse.usage ?? usage;
+    }
+  }
+
   return {
     ...parsedResult,
     usage,
