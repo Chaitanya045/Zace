@@ -271,11 +271,17 @@ export async function handleCompletionPhase<TResult>(input: {
       }
     }
 
-    if (
+    const strictNoneDeclaredAfterWrites =
       strictCompletionValidation &&
       input.planResult.completionGatesDeclaredNone &&
-      input.state.lastWriteStep !== undefined
-    ) {
+      input.state.lastWriteStep !== undefined;
+    if (strictNoneDeclaredAfterWrites && input.state.completionPlan.gates.length > 0) {
+      input.memory.addMessage(
+        "assistant",
+        "Planner declared `gates: none`, but runtime discovered validation gates after file changes; enforcing discovered gates in strict mode."
+      );
+    }
+    if (strictNoneDeclaredAfterWrites && input.state.completionPlan.gates.length === 0) {
       const failureMessage =
         "Completion blocked: `gates: none` is not allowed after file changes in strict mode. Provide validation gates and rerun.";
       input.state.lastCompletionGateFailure = failureMessage;

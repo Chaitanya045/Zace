@@ -22,6 +22,8 @@ describe("planner context hygiene", () => {
 
     expect(digest).toContain("[execution]");
     expect(digest).toContain("[artifacts]");
+    expect(digest).toContain("[stdout_preview]");
+    expect(digest).toContain("[stderr_preview]");
     expect(digest.includes("A".repeat(256))).toBe(false);
     expect(digest.includes("B".repeat(256))).toBe(false);
   });
