@@ -95,9 +95,67 @@ ${followUpContext}${approvalContext}`;
 export async function loadSessionState(
   sessionId: string,
   pendingActionMaxAgeMs: number,
-  approvalMemoryEnabled: boolean = true
+  approvalMemoryEnabled: boolean = true,
+  interruptedRunRecoveryEnabled: boolean = true
 ): Promise<SessionState> {
-  const entries = await readSessionEntries(sessionId);
+  let entries = await readSessionEntries(sessionId);
+  if (interruptedRunRecoveryEnabled) {
+    const startedRunIds = new Set<string>();
+    const finalizedRunIds = new Set<string>();
+    const maxStepByRunId = new Map<string, number>();
+
+    for (const entry of entries) {
+      if (entry.type !== "run_event") {
+        continue;
+      }
+      const currentMax = maxStepByRunId.get(entry.runId) ?? 0;
+      maxStepByRunId.set(entry.runId, Math.max(currentMax, entry.step));
+      if (entry.event === "run_started") {
+        startedRunIds.add(entry.runId);
+      }
+      if (entry.event === "final_state_set") {
+        finalizedRunIds.add(entry.runId);
+      }
+    }
+
+    const incompleteRunIds = Array.from(startedRunIds).filter((runId) => !finalizedRunIds.has(runId));
+    if (incompleteRunIds.length > 0) {
+      const now = new Date().toISOString();
+      await appendSessionEntries(
+        sessionId,
+        incompleteRunIds.flatMap((runId) => {
+          const step = maxStepByRunId.get(runId) ?? 0;
+          return [
+            {
+              event: "run_interrupted_recovered",
+              payload: {
+                reason: "missing_final_state_set",
+              },
+              phase: "finalizing" as const,
+              runId,
+              step,
+              timestamp: now,
+              type: "run_event" as const,
+            },
+            {
+              event: "final_state_set",
+              payload: {
+                finalState: "interrupted",
+                reason: "recovered_missing_final_state_set",
+                success: false,
+              },
+              phase: "finalizing" as const,
+              runId,
+              step,
+              timestamp: now,
+              type: "run_event" as const,
+            },
+          ];
+        })
+      );
+      entries = await readSessionEntries(sessionId);
+    }
+  }
   const turns = entries
     .filter((entry) => entry.type === "run")
     .map((entry) => ({

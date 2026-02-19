@@ -43,6 +43,14 @@ export function ChatApp(props: ChatAppProps) {
 
   useInput((input, key) => {
     if (key.ctrl && input.toLowerCase() === "c") {
+      const interruptState = controller.requestInterrupt();
+      if (interruptState === "requested") {
+        return;
+      }
+      if (interruptState === "already_requested") {
+        exit();
+        return;
+      }
       exit();
       return;
     }

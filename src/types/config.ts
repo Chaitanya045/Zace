@@ -43,11 +43,16 @@ export type AgentConfig = {
   plannerParseMaxRepairs: number;
   plannerParseRetryOnFailure: boolean;
   plannerSchemaStrict?: boolean;
+  readonlyStagnationWindow: number;
   requireRiskyConfirmation: boolean;
   riskyConfirmationToken: string;
   stagnationWindow: number;
   stream: boolean;
+  transientRetryMaxAttempts: number;
+  transientRetryMaxDelayMs: number;
+  interruptedRunRecoveryEnabled: boolean;
   verbose: boolean;
+  writeRegressionErrorSpike: number;
 };
 
 export function getAgentConfig(): AgentConfig {
@@ -69,6 +74,7 @@ export function getAgentConfig(): AgentConfig {
     doomLoopThreshold: env.AGENT_DOOM_LOOP_THRESHOLD,
     executorAnalysis: env.AGENT_EXECUTOR_ANALYSIS,
     gateDisallowMasking: env.AGENT_GATE_DISALLOW_MASKING,
+    interruptedRunRecoveryEnabled: env.AGENT_INTERRUPTED_RUN_RECOVERY_ENABLED,
     llmApiKey: env.OPENROUTER_API_KEY,
     llmCompatNormalizeToolRole: env.AGENT_LLM_COMPAT_NORMALIZE_TOOL_ROLE,
     llmModel: env.OPENROUTER_MODEL,
@@ -88,10 +94,14 @@ export function getAgentConfig(): AgentConfig {
     plannerParseMaxRepairs: env.AGENT_PLANNER_PARSE_MAX_REPAIRS,
     plannerParseRetryOnFailure: env.AGENT_PLANNER_PARSE_RETRY_ON_FAILURE,
     plannerSchemaStrict: env.AGENT_PLANNER_SCHEMA_STRICT,
+    readonlyStagnationWindow: env.AGENT_READONLY_STAGNATION_WINDOW,
     requireRiskyConfirmation: env.AGENT_REQUIRE_RISKY_CONFIRMATION,
     riskyConfirmationToken: env.AGENT_RISKY_CONFIRMATION_TOKEN,
     stagnationWindow: env.AGENT_STAGNATION_WINDOW,
     stream: env.AGENT_STREAM,
+    transientRetryMaxAttempts: env.AGENT_TRANSIENT_RETRY_MAX_ATTEMPTS,
+    transientRetryMaxDelayMs: env.AGENT_TRANSIENT_RETRY_MAX_DELAY_MS,
     verbose: env.AGENT_VERBOSE,
+    writeRegressionErrorSpike: env.AGENT_WRITE_REGRESSION_ERROR_SPIKE,
   };
 }

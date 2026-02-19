@@ -91,11 +91,26 @@ export async function runPlainChatMode(
   let pendingFollowUpQuestion: string | undefined;
   const rl = createInterface({ input, output });
   const streamObserver = createPlainStreamObserver(config);
+  let activeAbortController: globalThis.AbortController | undefined;
+  let interruptRequested = false;
+
+  const sigintHandler = (): void => {
+    if (activeAbortController && !activeAbortController.signal.aborted && !interruptRequested) {
+      interruptRequested = true;
+      activeAbortController.abort();
+      console.log("\n\nInterrupt requested. Press Ctrl+C again to force exit.\n");
+      return;
+    }
+    process.exit(130);
+  };
+
+  process.on("SIGINT", sigintHandler);
 
   const sessionState = await loadSessionState(
     sessionId,
     config.pendingActionMaxAgeMs,
-    config.approvalMemoryEnabled
+    config.approvalMemoryEnabled,
+    config.interruptedRunRecoveryEnabled
   );
   turns.push(...sessionState.turns);
   pendingApproval = sessionState.pendingApproval;
@@ -175,12 +190,16 @@ export async function runPlainChatMode(
       console.log(`\n🔨 Zace: ${message}\n`);
 
       const startedAt = new Date();
+      activeAbortController = new globalThis.AbortController();
+      interruptRequested = false;
       const result = await runAgentLoop(client, config, task, {
+        abortSignal: activeAbortController.signal,
         approvedCommandSignaturesOnce,
         observer: streamObserver,
         sessionId,
       });
       const endedAt = new Date();
+      activeAbortController = undefined;
 
       console.log(`\n${getResultIcon(result.success, result.finalState)} ${result.message}\n`);
       console.log(`Steps executed: ${result.context.steps.length}`);
@@ -192,7 +211,8 @@ export async function runPlainChatMode(
         const refreshedSessionState = await loadSessionState(
           sessionId,
           config.pendingActionMaxAgeMs,
-          config.approvalMemoryEnabled
+          config.approvalMemoryEnabled,
+          config.interruptedRunRecoveryEnabled
         );
         pendingApproval = refreshedSessionState.pendingApproval;
         pendingFollowUpQuestion = refreshedSessionState.pendingFollowUpQuestion ?? result.message;
@@ -210,6 +230,7 @@ export async function runPlainChatMode(
       });
     }
   } finally {
+    process.off("SIGINT", sigintHandler);
     rl.close();
   }
 }

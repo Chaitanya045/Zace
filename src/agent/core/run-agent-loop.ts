@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import type { LlmClient } from "../../llm/client";
 import type { AgentContext, AgentState } from "../../types/agent";
 import type { AgentConfig } from "../../types/config";
-import type { ToolResult } from "../../types/tool";
+import type { AbortSignalLike, ToolExecutionContext, ToolResult } from "../../types/tool";
 import type { AgentObserver } from "../observer";
 
 import { probeFiles as probeLspFiles } from "../../lsp";
@@ -44,6 +44,7 @@ import {
   selectProjectDocCandidates,
   truncateProjectDocPreview,
 } from "../docs";
+import { classifyRetry } from "../execution/retry-classifier";
 import { buildToolMemoryDigest } from "../execution/tool-memory-digest";
 import { analyzeToolResult, executeToolCall } from "../executor";
 import {
@@ -82,10 +83,11 @@ export interface AgentResult {
 
 export interface RunAgentLoopOptions {
   approvedCommandSignaturesOnce?: string[];
+  abortSignal?: AbortSignalLike;
   executeToolCall?: (toolCall: {
     arguments: Record<string, unknown>;
     name: string;
-  }) => Promise<ToolResult>;
+  }, context?: ToolExecutionContext) => Promise<ToolResult>;
   observer?: AgentObserver;
   sessionId?: string;
 }
@@ -353,14 +355,18 @@ function parseNonNegativeInteger(value: unknown): number | undefined {
 
 function getRetryConfiguration(
   toolCall: { arguments: Record<string, unknown>; name: string },
-  maxStepRetries: number
+  defaults: {
+    maxRetries: number;
+    retryMaxDelayMs: number;
+  }
 ): {
   maxRetries: number;
   retryMaxDelayMs?: number;
 } {
   if (toolCall.name !== "execute_command") {
     return {
-      maxRetries: maxStepRetries,
+      maxRetries: defaults.maxRetries,
+      retryMaxDelayMs: defaults.retryMaxDelayMs,
     };
   }
 
@@ -368,10 +374,14 @@ function getRetryConfiguration(
   const retryMaxDelayMs = parseNonNegativeInteger(toolCall.arguments.retryMaxDelayMs);
 
   return {
-    maxRetries: requestedMaxRetries === undefined
-      ? maxStepRetries
-      : Math.min(requestedMaxRetries, maxStepRetries),
-    retryMaxDelayMs,
+    maxRetries: Math.min(
+      requestedMaxRetries === undefined ? defaults.maxRetries : requestedMaxRetries,
+      defaults.maxRetries
+    ),
+    retryMaxDelayMs: Math.min(
+      retryMaxDelayMs === undefined ? defaults.retryMaxDelayMs : retryMaxDelayMs,
+      defaults.retryMaxDelayMs
+    ),
   };
 }
 
@@ -488,6 +498,10 @@ export async function runAgentLoop(
 
   const observer = options?.observer;
   const sessionId = options?.sessionId;
+  const abortSignal = options?.abortSignal;
+  const toolExecutionContext: ToolExecutionContext | undefined = abortSignal
+    ? { abortSignal }
+    : undefined;
   const runId = randomUUID();
   const sessionFilePath = sessionId ? getSessionFilePath(sessionId) : undefined;
   const memory = new Memory({
@@ -510,6 +524,7 @@ export async function runAgentLoop(
   let lastSuccessfulValidationStep: number | undefined;
   let lastWriteWorkingDirectory: string | undefined;
   let lastWriteStep: number | undefined;
+  let lastWriteLspErrorCount: number | undefined;
   const lspBootstrap: LspBootstrapContext = {
     attemptedCommands: [],
     lastFailureReason: null,
@@ -542,6 +557,38 @@ export async function runAgentLoop(
     });
 
     return result;
+  };
+  const finalizeInterrupted = async (input: {
+    step: number;
+    reason: string;
+    toolCall?: null | { arguments: Record<string, unknown>; name: string };
+    toolResult?: null | ToolResult;
+  }): Promise<AgentResult> => {
+    await appendRunEvent({
+      event: "run_interrupted",
+      observer,
+      payload: {
+        reason: input.reason,
+      },
+      phase: "finalizing",
+      runId,
+      sessionId,
+      step: input.step,
+    });
+    const message = "Run interrupted. No further actions were taken.";
+    context = addStep(context, {
+      reasoning: `Interrupted: ${input.reason}`,
+      state: "interrupted",
+      step: input.step,
+      toolCall: input.toolCall ?? null,
+      toolResult: input.toolResult ?? null,
+    });
+    return await finalizeResult({
+      context,
+      finalState: "interrupted",
+      message,
+      success: false,
+    }, input.step, input.reason);
   };
   const recordCompletionValidationBlocked = async (
     step: number,
@@ -671,20 +718,41 @@ export async function runAgentLoop(
       step: 0,
     });
 
+    if (abortSignal?.aborted) {
+      return await finalizeInterrupted({
+        reason: "abort_signal_pre_startup",
+        step: 0,
+      });
+    }
+
     const discoveredScripts = await runToolCall({
       arguments: {
         command: DISCOVER_SCRIPTS_COMMAND,
         timeout: 30_000,
       },
       name: "execute_command",
-    });
+    }, toolExecutionContext);
+    if (discoveredScripts.artifacts?.lifecycleEvent === "abort" || discoveredScripts.artifacts?.aborted) {
+      return await finalizeInterrupted({
+        reason: "startup_command_aborted",
+        step: 0,
+        toolCall: {
+          arguments: {
+            command: DISCOVER_SCRIPTS_COMMAND,
+            timeout: 30_000,
+          },
+          name: "execute_command",
+        },
+        toolResult: discoveredScripts,
+      });
+    }
     const discoveredCatalogUpdate = updateScriptCatalogFromOutput(
       context.scriptCatalog,
       discoveredScripts.output,
       0
     );
     context = updateScriptCatalog(context, discoveredCatalogUpdate.catalog);
-    await syncScriptRegistry(context.scriptCatalog, runToolCall);
+    await syncScriptRegistry(context.scriptCatalog, (toolCall) => runToolCall(toolCall, toolExecutionContext));
     if (discoveredCatalogUpdate.notes.length > 0) {
       memory.addMessage(
         "assistant",
@@ -703,7 +771,7 @@ export async function runAgentLoop(
           timeout: PROJECT_DOC_TIMEOUT_MS,
         },
         name: "execute_command",
-      });
+      }, toolExecutionContext);
       discoveredDocCandidates = discoverDocsResult.success
         ? parseDiscoveredProjectDocCandidates(discoverDocsResult.output, PROJECT_DOC_DISCOVERY_MAX_FILES)
         : [];
@@ -765,7 +833,7 @@ export async function runAgentLoop(
             timeout: PROJECT_DOC_TIMEOUT_MS,
           },
           name: "execute_command",
-        });
+        }, toolExecutionContext);
         if (!readDocResult.success) {
           continue;
         }
@@ -846,6 +914,12 @@ export async function runAgentLoop(
 
     while (context.currentStep < context.maxSteps) {
       const stepNumber = context.currentStep + 1;
+      if (abortSignal?.aborted) {
+        return await finalizeInterrupted({
+          reason: "abort_signal_pre_step",
+          step: stepNumber,
+        });
+      }
       logStep(stepNumber, `Starting step ${stepNumber}/${context.maxSteps}`);
       observer?.onStepStart?.({
         maxSteps: context.maxSteps,
@@ -1366,7 +1440,7 @@ export async function runAgentLoop(
           const gateResults = await runCompletionGates(
             completionPlan.gates,
             validationWorkingDirectory,
-            runToolCall
+            (toolCall) => runToolCall(toolCall, toolExecutionContext)
           );
           const failureMessage = buildCompletionFailureMessage(gateResults);
 
@@ -1672,8 +1746,10 @@ export async function runAgentLoop(
           name: planResult.toolCall.name,
         };
 
-        const maxStepRetries = Math.max(0, context.maxSteps - stepNumber);
-        const retryConfiguration = getRetryConfiguration(toolCall, maxStepRetries);
+        const retryConfiguration = getRetryConfiguration(toolCall, {
+          maxRetries: config.transientRetryMaxAttempts,
+          retryMaxDelayMs: config.transientRetryMaxDelayMs,
+        });
 
         let attempt = 0;
         let analysis: Awaited<ReturnType<typeof analyzeToolResult>> | null = null;
@@ -1685,6 +1761,13 @@ export async function runAgentLoop(
 
         while (true) {
           attempt += 1;
+          if (abortSignal?.aborted) {
+            return await finalizeInterrupted({
+              reason: "abort_signal_pre_tool_call",
+              step: stepNumber,
+              toolCall,
+            });
+          }
           observer?.onToolCall?.({
             arguments: toolCall.arguments,
             attempt,
@@ -1704,7 +1787,15 @@ export async function runAgentLoop(
             sessionId,
             step: stepNumber,
           });
-          toolResult = await runToolCall(toolCall);
+          toolResult = await runToolCall(toolCall, toolExecutionContext);
+          const retryClassification = classifyRetry(toolCall, toolResult);
+          toolResult = {
+            ...toolResult,
+            artifacts: {
+              ...toolResult.artifacts,
+              retryCategory: retryClassification.category,
+            },
+          };
           observer?.onToolResult?.({
             attempt,
             error: toolResult.error,
@@ -1729,6 +1820,15 @@ export async function runAgentLoop(
           });
           emitDiagnosticsObserverEvent(observer, stepNumber, toolResult);
 
+          if (toolResult.artifacts?.lifecycleEvent === "abort" || toolResult.artifacts?.aborted) {
+            return await finalizeInterrupted({
+              reason: "tool_call_aborted",
+              step: stepNumber,
+              toolCall,
+              toolResult,
+            });
+          }
+
           if (plannedExecuteWorkingDirectory) {
             lastExecutionWorkingDirectory = plannedExecuteWorkingDirectory;
           }
@@ -1738,6 +1838,52 @@ export async function runAgentLoop(
             if (plannedExecuteWorkingDirectory) {
               lastWriteWorkingDirectory = plannedExecuteWorkingDirectory;
             }
+
+            const currentErrorCount = toolResult.artifacts?.lspErrorCount;
+            if (
+              typeof currentErrorCount === "number" &&
+              typeof lastWriteLspErrorCount === "number" &&
+              currentErrorCount - lastWriteLspErrorCount >= config.writeRegressionErrorSpike
+            ) {
+              const regressionReason =
+                `LSP error spike after write: ${String(lastWriteLspErrorCount)} -> ${String(currentErrorCount)} (+${String(currentErrorCount - lastWriteLspErrorCount)}).`;
+              toolResult = {
+                ...toolResult,
+                artifacts: {
+                  ...toolResult.artifacts,
+                  writeRegressionDetected: true,
+                  writeRegressionReason: regressionReason,
+                },
+              };
+              memory.addMessage(
+                "assistant",
+                `[write_regression_detected] ${regressionReason} Prioritize repairing diagnostics before proceeding.`
+              );
+              await appendRunEvent({
+                event: "write_regression_detected",
+                observer,
+                payload: {
+                  errorCount: currentErrorCount,
+                  previousErrorCount: lastWriteLspErrorCount,
+                  reason: regressionReason,
+                },
+                phase: "executing",
+                runId,
+                sessionId,
+                step: stepNumber,
+              });
+            }
+            if (typeof currentErrorCount === "number") {
+              lastWriteLspErrorCount = currentErrorCount;
+            }
+          }
+          if (
+            toolCall.name === "execute_command" &&
+            toolResult.success &&
+            typeof plannedExecuteCommand === "string" &&
+            /\b(?:bun|npm|pnpm|yarn|cargo|go|python|pytest|ruff|eslint|tsc|vitest|jest)\b/iu.test(plannedExecuteCommand)
+          ) {
+            lastSuccessfulValidationStep = stepNumber;
           }
 
           if (config.lspEnabled) {
@@ -1886,7 +2032,10 @@ export async function runAgentLoop(
           );
           context = updateScriptCatalog(context, scriptCatalogUpdate.catalog);
           if (scriptCatalogUpdate.notes.length > 0) {
-            await syncScriptRegistry(context.scriptCatalog, runToolCall);
+            await syncScriptRegistry(
+              context.scriptCatalog,
+              (toolCall) => runToolCall(toolCall, toolExecutionContext)
+            );
             memory.addMessage(
               "assistant",
               `Script registry updated with ${scriptCatalogUpdate.notes.length} marker events at ${SCRIPT_REGISTRY_PATH}.`
@@ -1934,6 +2083,33 @@ export async function runAgentLoop(
             break;
           }
 
+          const retryCategory = toolResult.artifacts?.retryCategory ?? "unknown";
+          if (retryCategory !== "transient") {
+            const suppressedReason =
+              `Retry suppressed: category=${retryCategory} classifier=${retryClassification.reason}`;
+            toolResult = {
+              ...toolResult,
+              artifacts: {
+                ...toolResult.artifacts,
+                retrySuppressedReason: suppressedReason,
+              },
+            };
+            await appendRunEvent({
+              event: "retry_suppressed_non_transient",
+              observer,
+              payload: {
+                category: retryCategory,
+                reason: suppressedReason,
+                toolName: toolCall.name,
+              },
+              phase: "executing",
+              runId,
+              sessionId,
+              step: stepNumber,
+            });
+            break;
+          }
+
           const retryDelayMs = getRetryDelayMs(
             analysis.retryDelayMs,
             retryConfiguration.retryMaxDelayMs
@@ -1961,6 +2137,53 @@ export async function runAgentLoop(
           toolResult,
         });
         toolCallSignatureHistory.push(plannedToolCallSignature);
+
+        if (lastWriteStep !== undefined && lastWriteStep < stepNumber) {
+          const recentWindow = Math.max(1, Math.trunc(config.readonlyStagnationWindow));
+          const recentSinceWrite = context.steps
+            .filter((step) => step.step > lastWriteStep && step.toolCall && step.toolResult)
+            .slice(-recentWindow);
+          const hasEnough = recentSinceWrite.length >= recentWindow;
+          const allReadonlyInspection = recentSinceWrite.every((step) => {
+            if (step.toolCall?.name !== "execute_command") {
+              return false;
+            }
+            const changed = step.toolResult?.artifacts?.changedFiles ?? [];
+            if (changed.length > 0) {
+              return false;
+            }
+            if (!step.toolResult?.success) {
+              return false;
+            }
+            const commandText = getExecuteCommandText(step.toolCall.arguments) ?? "";
+            return /\b(?:cat|ls|wc|head|tail|rg|grep|git\s+diff|git\s+status|stat)\b/iu.test(commandText);
+          });
+          const validationSinceWrite =
+            typeof lastSuccessfulValidationStep === "number" ? lastSuccessfulValidationStep > lastWriteStep : false;
+          if (hasEnough && allReadonlyInspection && !validationSinceWrite) {
+            const message =
+              "Detected read-only inspection stagnation after a write without any validation. " +
+              "Run a validation gate (e.g. lint/tests/build) or switch strategy to repair errors before continuing.";
+            await appendRunEvent({
+              event: "readonly_stagnation_guard_triggered",
+              observer,
+              payload: {
+                window: recentWindow,
+              },
+              phase: "executing",
+              runId,
+              sessionId,
+              step: stepNumber,
+            });
+            memory.addMessage("assistant", `[readonly_stagnation_guard_triggered] ${message}`);
+            return await finalizeResult({
+              context,
+              finalState: "waiting_for_user",
+              message,
+              success: false,
+            }, stepNumber, "readonly_stagnation_guard_triggered");
+          }
+        }
 
         const loopSignature = buildToolLoopSignature({
           argumentsObject: planResult.toolCall.arguments,

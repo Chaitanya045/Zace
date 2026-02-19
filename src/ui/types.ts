@@ -43,6 +43,7 @@ export type ChatUiAction =
 export interface ChatUiController {
   appendComposerChar: (value: string) => void;
   backspaceComposer: () => void;
+  requestInterrupt: () => "already_requested" | "not_running" | "requested";
   state: ChatUiState;
   submitComposer: () => Promise<void>;
 }

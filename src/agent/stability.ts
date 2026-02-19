@@ -4,7 +4,6 @@ import { stableStringify } from "../utils/stable-json";
 
 const PROGRESS_SIGNALS = new Set([
   "files_changed",
-  "output_changed",
 ]);
 
 export function buildToolCallSignature(

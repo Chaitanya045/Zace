@@ -83,7 +83,7 @@ describe("shell changed-file and diagnostics helpers", () => {
         stdout: "updated",
         success: true,
       })
-    ).toBe("output_changed");
+    ).toBe("success_without_changes");
     expect(
       detectCommandProgressSignal({
         changedFiles: [],

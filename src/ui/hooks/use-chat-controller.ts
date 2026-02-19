@@ -63,6 +63,8 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
   const pendingFollowUpQuestionRef = useRef<string | undefined>(undefined);
   const sequenceRef = useRef(0);
   const streamEntryRef = useRef<Partial<Record<StreamSlot, string>>>({});
+  const activeAbortControllerRef = useRef<globalThis.AbortController | undefined>(undefined);
+  const interruptRequestedRef = useRef(false);
 
   const createTimelineEntry = useCallback(
     (entry: {
@@ -110,7 +112,8 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
         const sessionState = await loadSessionState(
           input.sessionId,
           input.config.pendingActionMaxAgeMs,
-          input.config.approvalMemoryEnabled
+          input.config.approvalMemoryEnabled,
+          input.config.interruptedRunRecoveryEnabled
         );
         if (!isMounted) {
           return;
@@ -469,8 +472,12 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
     };
 
     const startedAt = new Date();
+    const abortController = new globalThis.AbortController();
+    activeAbortControllerRef.current = abortController;
+    interruptRequestedRef.current = false;
     try {
       const result = await runAgentLoop(input.client, input.config, task, {
+        abortSignal: abortController.signal,
         approvedCommandSignaturesOnce,
         observer,
         sessionId: input.sessionId,
@@ -508,7 +515,8 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
         const refreshedSessionState = await loadSessionState(
           input.sessionId,
           input.config.pendingActionMaxAgeMs,
-          input.config.approvalMemoryEnabled
+          input.config.approvalMemoryEnabled,
+          input.config.interruptedRunRecoveryEnabled
         );
         pendingApprovalRef.current = refreshedSessionState.pendingApproval;
         dispatch({
@@ -549,6 +557,8 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
         value: "error",
       });
     } finally {
+      activeAbortControllerRef.current = undefined;
+      interruptRequestedRef.current = false;
       clearStreamSlot("planner");
       clearStreamSlot("executor");
       streamBuffer.flushAll();
@@ -573,9 +583,34 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
     streamBuffer,
   ]);
 
+  const requestInterrupt = useCallback((): "already_requested" | "not_running" | "requested" => {
+    if (!state.isBusy) {
+      return "not_running";
+    }
+
+    const controller = activeAbortControllerRef.current;
+    if (!controller) {
+      return "not_running";
+    }
+
+    if (interruptRequestedRef.current || controller.signal.aborted) {
+      return "already_requested";
+    }
+
+    interruptRequestedRef.current = true;
+    controller.abort();
+    createTimelineEntry({
+      body: "Interrupt requested. Waiting for the current command/step to stop. Press Ctrl+C again to force exit.",
+      kind: "status",
+      tone: "danger",
+    });
+    return "requested";
+  }, [createTimelineEntry, state.isBusy]);
+
   return {
     appendComposerChar,
     backspaceComposer,
+    requestInterrupt,
     state,
     submitComposer,
   };

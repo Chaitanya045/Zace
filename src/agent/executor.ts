@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { LlmClient } from "../llm/client";
-import type { ToolCall, ToolResult } from "../types/tool";
+import type { ToolCall, ToolExecutionContext, ToolResult } from "../types/tool";
 
 import { buildExecutorPrompt, type ExecutorRetryContext } from "../prompts/executor";
 import { buildSystemPrompt } from "../prompts/system";
@@ -35,7 +35,10 @@ const executorAnalysisSchema = z.object({
   shouldRetry: z.boolean(),
 });
 
-export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
+export async function executeToolCall(
+  toolCall: ToolCall,
+  context?: ToolExecutionContext
+): Promise<ToolResult> {
   logStep(0, `Executing tool: ${toolCall.name}`);
 
   const tool = getToolByName(toolCall.name);
@@ -49,7 +52,7 @@ export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
     logToolCall(toolCall.name, validatedArgs);
 
     // Execute the tool
-    const result = await tool.execute(validatedArgs);
+    const result = await tool.execute(validatedArgs, context);
     logToolResult(result);
 
     return result;

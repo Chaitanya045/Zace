@@ -28,6 +28,8 @@ CRITICAL RULES:
 4. Be explicit about uncertainty and ask for clarification when required
 5. Prefer correctness, determinism, and clarity over cleverness
 6. Follow existing patterns in the repository strictly
+7. Do not combine file edits and validation in one shell command (one intent per command)
+8. After a write/edit command fails, do not rerun the identical edit command; inspect state and switch strategy
 
 SEARCH COMMAND GUIDANCE:
 1. Prefer ripgrep (rg) for searching files and text because it is fast and recursive.

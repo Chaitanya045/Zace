@@ -5,6 +5,7 @@ export type AgentState =
   | "completed"
   | "error"
   | "executing"
+  | "interrupted"
   | "planning"
   | "waiting_for_user";
 

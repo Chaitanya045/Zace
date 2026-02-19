@@ -24,6 +24,7 @@ const lspStatusSchema = z.enum([
   "no_errors",
 ]);
 const shellLifecycleEventSchema = z.enum(["abort", "none", "timeout"]);
+const retryCategorySchema = z.enum(["non_transient", "transient", "unknown"]);
 
 export const toolResultArtifactsSchema = z.object({
   aborted: z.boolean().optional(),
@@ -44,6 +45,8 @@ export const toolResultArtifactsSchema = z.object({
   lspStatusReason: z.string().optional(),
   outputLimitChars: z.number().int().positive().optional(),
   progressSignal: progressSignalSchema.optional(),
+  retryCategory: retryCategorySchema.optional(),
+  retrySuppressedReason: z.string().optional(),
   signal: z.string().optional(),
   stderrPath: z.string().optional(),
   stderrTruncated: z.boolean().optional(),
@@ -52,6 +55,8 @@ export const toolResultArtifactsSchema = z.object({
   timedOut: z.boolean().optional(),
   validationMaskingDetected: z.boolean().optional(),
   validationMaskingReason: z.string().optional(),
+  writeRegressionDetected: z.boolean().optional(),
+  writeRegressionReason: z.string().optional(),
 });
 
 export const toolResultSchema = z.object({
@@ -63,9 +68,25 @@ export const toolResultSchema = z.object({
 
 export type ToolResult = z.infer<typeof toolResultSchema>;
 
+export type AbortSignalLike = {
+  aborted: boolean;
+  addEventListener: (
+    type: "abort",
+    listener: () => void,
+    options?: {
+      once?: boolean;
+    }
+  ) => void;
+  removeEventListener: (type: "abort", listener: () => void) => void;
+};
+
+export type ToolExecutionContext = {
+  abortSignal?: AbortSignalLike;
+};
+
 export interface Tool {
   description: string;
-  execute: (_args: unknown) => Promise<ToolResult>;
+  execute: (_args: unknown, _context?: ToolExecutionContext) => Promise<ToolResult>;
   name: string;
   parameters: z.ZodSchema<unknown>;
 }

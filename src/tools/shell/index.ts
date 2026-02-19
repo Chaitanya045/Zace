@@ -4,7 +4,7 @@ import { extname, join, resolve } from "node:path";
 import { z } from "zod";
 
 import type { LspDiagnostic } from "../../lsp/client";
-import type { Tool, ToolResult } from "../../types/tool";
+import type { Tool, ToolExecutionContext, ToolResult } from "../../types/tool";
 
 import { env } from "../../config/env";
 import {
@@ -342,10 +342,6 @@ export function detectCommandProgressSignal(input: {
 
   if (!input.success) {
     return "none";
-  }
-
-  if (input.stdout.trim().length > 0 || input.stderr.trim().length > 0) {
-    return "output_changed";
   }
 
   return "success_without_changes";
@@ -819,7 +815,7 @@ function buildRenderedOutput(
   };
 }
 
-async function executeCommand(args: unknown): Promise<ToolResult> {
+async function executeCommand(args: unknown, context?: ToolExecutionContext): Promise<ToolResult> {
   try {
     const { command, cwd, env: commandEnv, outputLimitChars, timeout } = executeCommandSchema.parse(args);
     const effectiveOutputLimitChars = outputLimitChars ?? env.AGENT_TOOL_OUTPUT_LIMIT_CHARS;
@@ -835,6 +831,7 @@ async function executeCommand(args: unknown): Promise<ToolResult> {
     const beforeGitSnapshot = await collectGitSnapshot(effectiveWorkingDirectory);
     const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_MS;
     const execution = await runSpawnedShellCommand({
+      abortSignal: context?.abortSignal,
       command,
       commandEnv,
       timeoutMs: effectiveTimeout,

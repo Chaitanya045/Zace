@@ -99,6 +99,10 @@ INSTRUCTIONS:
     - If [lsp] status is no_applicable_files, no_changed_files, or disabled:
       treat as neutral (do not reopen bootstrap requirement).
 
+ADDITIONAL SAFETY:
+- Do not combine file edits and validation in a single execute_command (separate write step and validate step).
+- After a write/edit command fails, do not rerun the identical edit command; inspect current file state and change approach.
+
 RESPONSE FORMAT:
 - Return strict JSON only. No markdown, no prose outside JSON.
 - Use exactly one action per response:

@@ -38,7 +38,7 @@ describe("loop stability", () => {
           state: "executing",
           step: 2,
           toolCall: { arguments: { command: "echo hi" }, name: "execute_command" },
-          toolResult: { artifacts: { progressSignal: "output_changed" }, output: "more output", success: true },
+          toolResult: { artifacts: { progressSignal: "success_without_changes" }, output: "more output", success: true },
         },
       ],
       window: 2,
