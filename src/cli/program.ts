@@ -95,25 +95,5 @@ export function runCli(): void {
       }
     });
 
-  applyCommonOptions(
-    program
-      .command("chat")
-      .description("Alias for starting interactive chat mode")
-  ).action(async (options: CliOptions) => {
-    try {
-      await runChatCommand(options);
-      process.exit(0);
-    } catch (error) {
-      console.error(
-        "\n❌ Fatal error:",
-        error instanceof Error ? error.message : String(error)
-      );
-      if (error instanceof Error && error.stack) {
-        console.error(error.stack);
-      }
-      process.exit(1);
-    }
-  });
-
   program.parse();
 }
