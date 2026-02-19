@@ -36,6 +36,68 @@ export interface ApprovalResponseAssessment {
   reason: string;
 }
 
+const DESTRUCTIVE_COMMAND_FALLBACK_RULES: Array<{
+  reason: string;
+  regex: RegExp;
+}> = [
+  {
+    reason: "fallback: file deletion command",
+    regex: /\b(?:rm|rmdir|unlink)\b/u,
+  },
+  {
+    reason: "fallback: force git history rewrite",
+    regex: /\bgit\s+reset\s+--hard\b|\bgit\s+push\b[^\n]*\s--force(?:-with-lease)?\b/u,
+  },
+  {
+    reason: "fallback: git clean removes untracked files",
+    regex: /\bgit\s+clean\b[^\n]*\s-f\b/u,
+  },
+  {
+    reason: "fallback: recursive permission/ownership mutation",
+    regex: /\b(?:chmod|chown|chgrp)\b[^\n]*(?:\s+-R\b|\s+--recursive\b)/u,
+  },
+  {
+    reason: "fallback: high-impact system command",
+    regex: /\b(?:mkfs|dd|shutdown|reboot|poweroff)\b/u,
+  },
+];
+
+function fallbackAssessCommandSafety(
+  command: string,
+  context?: CommandSafetyPromptContext
+): CommandSafetyAssessment {
+  const normalizedCommand = command.trim();
+  if (!normalizedCommand) {
+    return {
+      isDestructive: false,
+      reason: "fallback: empty command",
+    };
+  }
+
+  const overwriteTargets = context?.overwriteRedirectTargets ?? [];
+  const existingOverwriteTarget = overwriteTargets.find((target) => target.exists === "yes");
+  if (existingOverwriteTarget) {
+    return {
+      isDestructive: true,
+      reason: `fallback: overwrites existing file via redirect (${existingOverwriteTarget.rawPath})`,
+    };
+  }
+
+  for (const rule of DESTRUCTIVE_COMMAND_FALLBACK_RULES) {
+    if (rule.regex.test(normalizedCommand)) {
+      return {
+        isDestructive: true,
+        reason: rule.reason,
+      };
+    }
+  }
+
+  return {
+    isDestructive: false,
+    reason: "fallback: no destructive patterns detected",
+  };
+}
+
 export async function assessCommandSafety(
   client: LlmClient,
   command: string,
@@ -53,10 +115,7 @@ export async function assessCommandSafety(
   const content = response.content.trim();
   const jsonMatch = content.match(/\{[\s\S]*\}/u);
   if (!jsonMatch) {
-    return {
-      isDestructive: true,
-      reason: "Unable to parse safety assessment response",
-    };
+    return fallbackAssessCommandSafety(command, context);
   }
 
   try {
@@ -64,10 +123,7 @@ export async function assessCommandSafety(
     const validated = commandSafetyAssessmentSchema.parse(parsed);
     return validated;
   } catch {
-    return {
-      isDestructive: true,
-      reason: "Invalid safety assessment response format",
-    };
+    return fallbackAssessCommandSafety(command, context);
   }
 }
 
