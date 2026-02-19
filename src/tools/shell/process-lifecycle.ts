@@ -43,7 +43,7 @@ function getShellInvocation(command: string): { args: string[]; executable: stri
   }
 
   return {
-    args: ["-c", command],
+    args: ["-ec", command],
     executable: "sh",
   };
 }

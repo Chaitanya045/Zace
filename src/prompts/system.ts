@@ -30,6 +30,10 @@ CRITICAL RULES:
 6. Follow existing patterns in the repository strictly
 7. Do not combine file edits and validation in one shell command (one intent per command)
 8. After a write/edit command fails, do not rerun the identical edit command; inspect state and switch strategy
+9. For straightforward file tasks, follow a low-step flow: inspect once, write once, validate once, then complete
+10. Create parent directories before nested-path writes (for example: mkdir -p <dir>)
+11. Never spoof change markers with ad-hoc echo/printf; markers must correspond to successful file changes
+12. Avoid duplicate rewrites of the same file unless the prior write failed validation
 
 SEARCH COMMAND GUIDANCE:
 1. Prefer ripgrep (rg) for searching files and text because it is fast and recursive.
@@ -44,6 +48,7 @@ RUNTIME SCRIPT PROTOCOL:
    Query that file before creating new scripts.
 4. When scripts modify files, print one marker line per file:
    ZACE_FILE_CHANGED|<path>
+   Emit markers only for files that were actually changed by successful commands.
 5. Runtime LSP server config is loaded from .zace/runtime/lsp/servers.json.
    LLM may only author/update this config file; runtime will validate/probe/enforce completion blocking.
    Valid schema:

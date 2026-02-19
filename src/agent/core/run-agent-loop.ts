@@ -54,6 +54,12 @@ export interface RunAgentLoopOptions {
   sessionId?: string;
 }
 
+type CompletionValidationBlockedRecord = {
+  blockLoopGuardTriggered: boolean;
+  repeatCount: number;
+  repeatLimit: number;
+};
+
 export function ensureUserFacingQuestion(message: string): string {
   const trimmed = message.trim();
   if (!trimmed) {
@@ -83,6 +89,7 @@ export async function runAgentLoop(
     : undefined;
   const runId = randomUUID();
   const sessionFilePath = sessionId ? getSessionFilePath(sessionId) : undefined;
+  const completionBlockRepeatLimit = Math.max(1, config.completionBlockRepeatLimit ?? 2);
   const memory = new Memory({
     messageSink: sessionId
       ? async (message) => {
@@ -94,6 +101,8 @@ export async function runAgentLoop(
       : undefined,
   });
   const loopState: RunLoopMutableState = {
+    completionBlockedReason: null,
+    completionBlockedReasonRepeatCount: 0,
     completionPlan: resolveCompletionPlan(task),
     consecutiveNoToolContinues: 0,
     context: createInitialContext(task, config.maxSteps),
@@ -175,12 +184,25 @@ export async function runAgentLoop(
     step: number,
     reason: string,
     extraPayload?: Record<string, unknown>
-  ): Promise<void> => {
+  ): Promise<CompletionValidationBlockedRecord> => {
+    if (loopState.completionBlockedReason === reason) {
+      loopState.completionBlockedReasonRepeatCount += 1;
+    } else {
+      loopState.completionBlockedReason = reason;
+      loopState.completionBlockedReasonRepeatCount = 1;
+    }
+
+    const repeatCount = loopState.completionBlockedReasonRepeatCount;
+    const blockLoopGuardTriggered = repeatCount >= completionBlockRepeatLimit;
+
     await appendRunEvent({
       event: "completion_validation_blocked",
       observer,
       payload: {
+        blockLoopGuardTriggered,
         reason,
+        repeatCount,
+        repeatLimit: completionBlockRepeatLimit,
         ...extraPayload,
       },
       phase: "finalizing",
@@ -188,6 +210,31 @@ export async function runAgentLoop(
       sessionId,
       step,
     });
+    if (blockLoopGuardTriggered) {
+      await appendRunEvent({
+        event: "completion_block_loop_guard_triggered",
+        observer,
+        payload: {
+          reason,
+          repeatCount,
+          repeatLimit: completionBlockRepeatLimit,
+        },
+        phase: "finalizing",
+        runId,
+        sessionId,
+        step,
+      });
+    }
+
+    return {
+      blockLoopGuardTriggered,
+      repeatCount,
+      repeatLimit: completionBlockRepeatLimit,
+    };
+  };
+  const resetCompletionBlockLoopGuard = (): void => {
+    loopState.completionBlockedReason = null;
+    loopState.completionBlockedReasonRepeatCount = 0;
   };
   const resolveCommandApproval = async (input: {
     command: string;
@@ -429,6 +476,7 @@ export async function runAgentLoop(
       if (completionOutcome.kind === "continue_loop") {
         continue;
       }
+      resetCompletionBlockLoopGuard();
 
       const executionOutcome = await handleExecutionPhase<AgentResult>({
         abortSignal,

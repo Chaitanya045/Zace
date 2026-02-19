@@ -14,6 +14,7 @@ export type AgentConfig = {
   compactionEnabled: boolean;
   compactionPreserveRecentMessages: number;
   compactionTriggerRatio: number;
+  completionBlockRepeatLimit?: number;
   completionRequireDiscoveredGates: boolean;
   completionRequireLsp?: boolean;
   completionValidationMode: CompletionValidationMode;
@@ -64,6 +65,7 @@ export function getAgentConfig(): AgentConfig {
     compactionEnabled: env.AGENT_COMPACTION_ENABLED,
     compactionPreserveRecentMessages: env.AGENT_COMPACTION_PRESERVE_RECENT_MESSAGES,
     compactionTriggerRatio: env.AGENT_COMPACTION_TRIGGER_RATIO,
+    completionBlockRepeatLimit: env.AGENT_COMPLETION_BLOCK_REPEAT_LIMIT,
     completionRequireDiscoveredGates: env.AGENT_COMPLETION_REQUIRE_DISCOVERED_GATES,
     completionRequireLsp: env.AGENT_COMPLETION_REQUIRE_LSP,
     completionValidationMode: env.AGENT_COMPLETION_VALIDATION_MODE,

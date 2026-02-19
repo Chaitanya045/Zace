@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
 const OVERWRITE_REDIRECT_TARGET_REGEX = /(?:^|[\s;|&])(?:\d*)>(?!>|&)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/gu;
@@ -106,4 +107,56 @@ export function parseChangedFilesFromMarkerLines(
   }
 
   return Array.from(changedFiles).sort((left, right) => left.localeCompare(right));
+}
+
+async function pathExists(pathValue: string): Promise<boolean> {
+  try {
+    await stat(pathValue);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function validateMarkerChangedFiles(input: {
+  gitChangedFiles: string[];
+  markerChangedFiles: string[];
+}): Promise<{
+  acceptedMarkerFiles: string[];
+  rejectedMarkerFiles: string[];
+}> {
+  const gitChangedFileSet = new Set(input.gitChangedFiles.map((filePath) => resolve(filePath)));
+  const markerCandidates = Array.from(
+    new Set(input.markerChangedFiles.map((filePath) => resolve(filePath)))
+  );
+
+  const decisions = await Promise.all(
+    markerCandidates.map(async (markerPath) => {
+      if (gitChangedFileSet.has(markerPath)) {
+        return {
+          accepted: true,
+          markerPath,
+        };
+      }
+
+      return {
+        accepted: await pathExists(markerPath),
+        markerPath,
+      };
+    })
+  );
+
+  const acceptedMarkerFiles = decisions
+    .filter((decision) => decision.accepted)
+    .map((decision) => decision.markerPath)
+    .sort((left, right) => left.localeCompare(right));
+  const rejectedMarkerFiles = decisions
+    .filter((decision) => !decision.accepted)
+    .map((decision) => decision.markerPath)
+    .sort((left, right) => left.localeCompare(right));
+
+  return {
+    acceptedMarkerFiles,
+    rejectedMarkerFiles,
+  };
 }

@@ -35,6 +35,12 @@ export type CompletionPhaseOutcome<TResult> =
   | { kind: "finalized"; result: TResult }
   | { kind: "proceed_execution" };
 
+type CompletionValidationBlockedRecord = {
+  blockLoopGuardTriggered: boolean;
+  repeatCount: number;
+  repeatLimit: number;
+};
+
 async function runCompletionGates(
   gates: CompletionGate[],
   workingDirectory: string,
@@ -92,7 +98,7 @@ export async function handleCompletionPhase<TResult>(input: {
     step: number,
     reason: string,
     extraPayload?: Record<string, unknown>
-  ) => Promise<void>;
+  ) => Promise<CompletionValidationBlockedRecord>;
   resolveCommandApproval: (input: {
     command: string;
     workingDirectory?: string;
@@ -107,6 +113,38 @@ export async function handleCompletionPhase<TResult>(input: {
   stepNumber: number;
   toolExecutionContext?: ToolExecutionContext;
 }): Promise<CompletionPhaseOutcome<TResult>> {
+  const maybeFinalizeRepeatedCompletionBlock = async (
+    failureMessage: string,
+    blockedRecord: CompletionValidationBlockedRecord
+  ): Promise<CompletionPhaseOutcome<TResult> | undefined> => {
+    if (!blockedRecord.blockLoopGuardTriggered) {
+      return undefined;
+    }
+
+    const repeatedBlockMessage = input.ensureUserFacingQuestion(
+      `I am repeatedly blocked by the same completion condition (${String(blockedRecord.repeatCount)}/${String(blockedRecord.repeatLimit)}): ${failureMessage}\nPlease resolve this blocker or tell me how you want to proceed.`
+    );
+    input.memory.addMessage("assistant", repeatedBlockMessage);
+    input.state.context = addStep(input.state.context, {
+      reasoning:
+        `Repeated completion blocking detected (${String(blockedRecord.repeatCount)}/${String(blockedRecord.repeatLimit)}). ` +
+        failureMessage,
+      state: "waiting_for_user",
+      step: input.stepNumber,
+      toolCall: null,
+      toolResult: null,
+    });
+    return {
+      kind: "finalized",
+      result: await input.finalizeResult({
+        context: input.state.context,
+        finalState: "waiting_for_user",
+        message: repeatedBlockMessage,
+        success: false,
+      }, input.stepNumber, "completion_block_loop_guard_triggered"),
+    };
+  };
+
   if (input.planResult.action === "continue") {
     return { kind: "proceed_execution" };
   }
@@ -130,11 +168,18 @@ export async function handleCompletionPhase<TResult>(input: {
       const failureMessage =
         `Completion blocked until LSP bootstrap is resolved. ${bootstrapMessage}`;
       input.state.lastCompletionGateFailure = failureMessage;
-      await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
+      const blockedRecord = await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
         lspBootstrapState: input.state.lspBootstrap.state,
         lspFailureReason: input.state.lspBootstrap.lastFailureReason,
         provisionAttempts: input.state.lspBootstrap.provisionAttempts,
       });
+      const repeatedBlockOutcome = await maybeFinalizeRepeatedCompletionBlock(
+        failureMessage,
+        blockedRecord
+      );
+      if (repeatedBlockOutcome) {
+        return repeatedBlockOutcome;
+      }
 
       if (
         !input.config.lspAutoProvision ||
@@ -234,10 +279,17 @@ export async function handleCompletionPhase<TResult>(input: {
       const failureMessage =
         "Completion blocked: `gates: none` is not allowed after file changes in strict mode. Provide validation gates and rerun.";
       input.state.lastCompletionGateFailure = failureMessage;
-      await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
+      const blockedRecord = await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
         completionValidationMode: input.config.completionValidationMode,
         lastWriteStep: input.state.lastWriteStep,
       });
+      const repeatedBlockOutcome = await maybeFinalizeRepeatedCompletionBlock(
+        failureMessage,
+        blockedRecord
+      );
+      if (repeatedBlockOutcome) {
+        return repeatedBlockOutcome;
+      }
       input.state.context = addStep(input.state.context, {
         reasoning: `Completion requested with gates:none after writes. ${failureMessage}`,
         state: "executing",
@@ -254,9 +306,16 @@ export async function handleCompletionPhase<TResult>(input: {
       const failureMessage =
         "No completion gates available. Provide `GATES: <command_1>;;<command_2>` with COMPLETE, use DONE_CRITERIA, or explicitly declare `GATES: none`.";
       input.state.lastCompletionGateFailure = failureMessage;
-      await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
+      const blockedRecord = await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
         completionValidationMode: input.config.completionValidationMode,
       });
+      const repeatedBlockOutcome = await maybeFinalizeRepeatedCompletionBlock(
+        failureMessage,
+        blockedRecord
+      );
+      if (repeatedBlockOutcome) {
+        return repeatedBlockOutcome;
+      }
       input.state.context = addStep(input.state.context, {
         reasoning: `Completion requested without gates. ${failureMessage}`,
         state: "executing",
@@ -295,10 +354,17 @@ export async function handleCompletionPhase<TResult>(input: {
         sessionId: input.sessionId,
         step: input.stepNumber,
       });
-      await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
+      const blockedRecord = await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
         gate: maskedGate.gate.label,
         reason: maskedGate.reason,
       });
+      const repeatedBlockOutcome = await maybeFinalizeRepeatedCompletionBlock(
+        failureMessage,
+        blockedRecord
+      );
+      if (repeatedBlockOutcome) {
+        return repeatedBlockOutcome;
+      }
       input.memory.addMessage("assistant", `Completion gate check result: ${failureMessage}`);
       input.state.context = addStep(input.state.context, {
         reasoning: failureMessage,
@@ -404,9 +470,16 @@ export async function handleCompletionPhase<TResult>(input: {
       if (approvalBlockedMessage) {
         const failureMessage = `Completion blocked by approval policy: ${approvalBlockedMessage}`;
         input.state.lastCompletionGateFailure = failureMessage;
-        await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
+        const blockedRecord = await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
           completionValidationMode: input.config.completionValidationMode,
         });
+        const repeatedBlockOutcome = await maybeFinalizeRepeatedCompletionBlock(
+          failureMessage,
+          blockedRecord
+        );
+        if (repeatedBlockOutcome) {
+          return repeatedBlockOutcome;
+        }
         input.memory.addMessage("assistant", failureMessage);
         input.state.context = addStep(input.state.context, {
           reasoning: failureMessage,
@@ -435,9 +508,16 @@ export async function handleCompletionPhase<TResult>(input: {
       const hasFailure = gateResults.some((gateResult) => !gateResult.result.success);
       if (hasFailure) {
         input.state.lastCompletionGateFailure = failureMessage;
-        await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
+        const blockedRecord = await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
           completionValidationMode: input.config.completionValidationMode,
         });
+        const repeatedBlockOutcome = await maybeFinalizeRepeatedCompletionBlock(
+          failureMessage,
+          blockedRecord
+        );
+        if (repeatedBlockOutcome) {
+          return repeatedBlockOutcome;
+        }
         input.state.context = addStep(input.state.context, {
           reasoning: `Completion requested but gates failed. ${failureMessage}`,
           state: "executing",
@@ -460,11 +540,18 @@ export async function handleCompletionPhase<TResult>(input: {
       const failureMessage =
         "Completion blocked: validation freshness check failed. Re-run validation gates after the latest file changes.";
       input.state.lastCompletionGateFailure = failureMessage;
-      await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
+      const blockedRecord = await input.recordCompletionValidationBlocked(input.stepNumber, failureMessage, {
         completionValidationMode: input.config.completionValidationMode,
         lastSuccessfulValidationStep: input.state.lastSuccessfulValidationStep,
         lastWriteStep: input.state.lastWriteStep,
       });
+      const repeatedBlockOutcome = await maybeFinalizeRepeatedCompletionBlock(
+        failureMessage,
+        blockedRecord
+      );
+      if (repeatedBlockOutcome) {
+        return repeatedBlockOutcome;
+      }
       input.memory.addMessage("assistant", `Completion gate check result: ${failureMessage}`);
       input.state.context = addStep(input.state.context, {
         reasoning: failureMessage,

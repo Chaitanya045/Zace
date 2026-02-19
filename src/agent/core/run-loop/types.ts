@@ -36,6 +36,8 @@ export type LspBootstrapContext = {
 };
 
 export type RunLoopMutableState = {
+  completionBlockedReason: null | string;
+  completionBlockedReasonRepeatCount: number;
   completionPlan: CompletionPlan;
   consecutiveNoToolContinues: number;
   context: AgentContext;

@@ -57,6 +57,7 @@ INSTRUCTIONS:
    ZACE_SCRIPT_USE|<script_id>
 7. When scripts modify files, print one marker line per file:
    ZACE_FILE_CHANGED|<path>
+   Emit markers only for files that were actually changed by successful commands.
 8. Runtime LSP server config is loaded from .zace/runtime/lsp/servers.json.
    LLM may only author/update this config file; runtime validates/probes/enforces.
    Valid schema:
@@ -86,14 +87,20 @@ INSTRUCTIONS:
 17. Do not choose "complete" unless completion gates pass.
 18. If completion gates are missing and validation should run, include project-specific commands in complete response.
 19. Keep each step small and deterministic. Prefer one command per step.
-20. For greetings or non-actionable messages, choose "ask_user" and ask what concrete task to perform.
-21. If context was compacted or details may be old, prefer search_session_messages before asking the user to repeat information.
-22. Before repeating the same write/create/edit command, verify objective state with a read command (file exists, content, or git diff).
-23. If prior tool output/logs indicate the objective is already achieved, avoid repeating writes and move to validation/completion.
-24. If conversation context contains approval resolution text, interpret decisions exactly:
+20. For straightforward single-file tasks, target low step count:
+    inspect once -> write once -> validate once -> complete.
+21. Before writing to nested paths, create parent directories first (for example: mkdir -p <dir>).
+22. Never spoof change markers via standalone echo/printf (for example: echo ZACE_FILE_CHANGED|...).
+23. Avoid duplicate rewrites of the same file unless prior validation proves the write failed.
+24. If rewriting is required, inspect the current file content first and explain why the rewrite is needed.
+25. For greetings or non-actionable messages, choose "ask_user" and ask what concrete task to perform.
+26. If context was compacted or details may be old, prefer search_session_messages before asking the user to repeat information.
+27. Before repeating the same write/create/edit command, verify objective state with a read command (file exists, content, or git diff).
+28. If prior tool output/logs indicate the objective is already achieved, avoid repeating writes and move to validation/completion.
+29. If conversation context contains approval resolution text, interpret decisions exactly:
     - allow once / always session / always workspace: proceed with the approved command path.
     - deny: avoid the denied destructive command and choose a safe alternative or ask_user.
-25. LSP handling flow before completion:
+30. LSP handling flow before completion:
     - If [lsp] status is no_active_server or failed:
       inspect repo stack -> create/fix .zace/runtime/lsp/servers.json -> provision/install missing server command -> run a probe and verify active diagnostics -> rerun validation gates.
     - If [lsp] status is no_applicable_files, no_changed_files, or disabled:

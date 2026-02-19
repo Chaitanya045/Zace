@@ -21,10 +21,12 @@ import {
   collectZaceMarkerLines,
   inferChangedFilesFromRedirectTargets,
   parseChangedFilesFromMarkerLines,
+  validateMarkerChangedFiles,
 } from "./changed-files";
 export {
   inferChangedFilesFromRedirectTargets,
   parseChangedFilesFromMarkerLines,
+  validateMarkerChangedFiles,
 } from "./changed-files";
 import {
   getShellLabel,
@@ -841,7 +843,7 @@ async function executeCommand(args: unknown, context?: ToolExecutionContext): Pr
     const output = execution.stdout;
     const errorOutput = execution.stderr;
     const markerLines = collectZaceMarkerLines(output, errorOutput);
-    const markerChangedFiles = parseChangedFilesFromMarkerLines(
+    const markerHintChangedFiles = parseChangedFilesFromMarkerLines(
       markerLines,
       effectiveWorkingDirectory
     );
@@ -854,13 +856,17 @@ async function executeCommand(args: unknown, context?: ToolExecutionContext): Pr
       beforeGitSnapshot?.files ?? [],
       afterGitSnapshot?.files ?? []
     );
+    const markerValidation = await validateMarkerChangedFiles({
+      gitChangedFiles,
+      markerChangedFiles: markerHintChangedFiles,
+    });
     const changedFiles = deduplicatePaths([
-      ...markerChangedFiles,
+      ...markerValidation.acceptedMarkerFiles,
       ...gitChangedFiles,
       ...inferredRedirectChangedFiles,
     ]);
     const changedFilesSource: ChangedFilesSource[] = [];
-    if (markerChangedFiles.length > 0) {
+    if (markerValidation.acceptedMarkerFiles.length > 0) {
       changedFilesSource.push("marker");
     }
     if (gitChangedFiles.length > 0) {
@@ -914,6 +920,10 @@ async function executeCommand(args: unknown, context?: ToolExecutionContext): Pr
       lspProbeSucceeded: lspFeedback.probeSucceeded,
       lspStatus: lspFeedback.status,
       lspStatusReason: lspFeedback.reason,
+      markerChangedFilesAccepted: markerValidation.acceptedMarkerFiles,
+      markerChangedFilesRejected: markerValidation.rejectedMarkerFiles,
+      markerValidationAcceptedCount: markerValidation.acceptedMarkerFiles.length,
+      markerValidationRejectedCount: markerValidation.rejectedMarkerFiles.length,
       outputLimitChars: effectiveOutputLimitChars,
       progressSignal,
       signal: execution.signal ?? undefined,
