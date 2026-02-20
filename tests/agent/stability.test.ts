@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 
 import {
   buildToolCallSignature,
@@ -29,6 +30,20 @@ describe("agent stability helpers", () => {
 
     expect(detection.repeatedCount).toBe(3);
     expect(detection.shouldBlock).toBe(true);
+  });
+
+  test("canonicalizes execute command signatures for abs/relative path and whitespace variants", () => {
+    const repositoryRoot = resolve("/tmp/zace-signature-root");
+    const signatureA = buildToolCallSignature("execute_command", {
+      command: "  ls   -la   src/  ",
+      cwd: repositoryRoot,
+    });
+    const signatureB = buildToolCallSignature("execute_command", {
+      command: `ls -la ${repositoryRoot}/src`,
+      cwd: repositoryRoot,
+    });
+
+    expect(signatureA).toBe(signatureB);
   });
 
   test("detects stagnation when recent tool calls have no progress", () => {

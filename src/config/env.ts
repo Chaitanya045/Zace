@@ -105,6 +105,7 @@ export const envSchema = z.object({
   AGENT_READONLY_STAGNATION_WINDOW: z.coerce.number().int().min(1).default(4),
   AGENT_REQUIRE_RISKY_CONFIRMATION: createEnvBooleanSchema(true),
   AGENT_RISKY_CONFIRMATION_TOKEN: z.string().min(1).default("ZACE_APPROVE_RISKY"),
+  AGENT_RUNTIME_SCRIPT_ENFORCED: createEnvBooleanSchema(true),
   AGENT_STAGNATION_WINDOW: z.coerce.number().int().min(1).default(3),
   AGENT_STREAM: createEnvBooleanSchema(false),
   AGENT_TOOL_OUTPUT_LIMIT_CHARS: z.coerce.number().int().positive(),

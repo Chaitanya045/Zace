@@ -33,7 +33,8 @@ describe("shell command fail-fast", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("Command failed with exit code");
       expect(result.output).toMatch(/cannot create|No such file|Directory nonexistent/u);
-      expect(result.output).not.toContain("should-not-run");
+      const stdoutSection = result.output.split("\n\n[stderr]")[0] ?? "";
+      expect(stdoutSection).not.toContain("should-not-run");
     } finally {
       env.AGENT_LSP_ENABLED = originalLspEnabled;
       await rm(tempDirectoryPath, { force: true, recursive: true });

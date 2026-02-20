@@ -8,7 +8,8 @@ import { shutdownLsp } from "../../src/lsp";
 import { shellTools } from "../../src/tools/shell";
 
 const FAKE_LSP_SERVER_SCRIPT = `
-let buffer = Buffer.alloc(0);
+const { resolve } = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 function sendMessage(message) {
   const payload = Buffer.from(JSON.stringify(message), "utf8");
@@ -16,106 +17,51 @@ function sendMessage(message) {
   process.stdout.write(payload);
 }
 
-function publishDiagnostics(uri) {
+function publishDiagnostics() {
+  for (const fileName of ["sample.ts", "demo.ts", "race.ts"]) {
+    sendMessage({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        diagnostics: [
+          {
+            message: "Fake type error",
+            range: {
+              end: { character: 10, line: 0 },
+              start: { character: 0, line: 0 }
+            },
+            severity: 1
+          }
+        ],
+        uri: pathToFileURL(resolve(process.cwd(), fileName)).href
+      }
+    });
+  }
+}
+
+for (let id = 0; id < 16; id += 1) {
   sendMessage({
+    id,
     jsonrpc: "2.0",
-    method: "textDocument/publishDiagnostics",
-    params: {
-      diagnostics: [
-        {
-          message: "Fake type error",
-          range: {
-            end: { character: 10, line: 0 },
-            start: { character: 0, line: 0 }
-          },
-          severity: 1
-        }
-      ],
-      uri
-    }
+    result: { capabilities: { textDocumentSync: 2 } }
   });
 }
-
-function handleMessage(message) {
-  if (message.method === "initialize") {
-    sendMessage({
-      id: message.id,
-      jsonrpc: "2.0",
-      result: { capabilities: { textDocumentSync: 2 } }
-    });
-    return;
-  }
-
-  if (message.method === "initialized") {
-    return;
-  }
-
-  if (message.method === "textDocument/didOpen") {
-    publishDiagnostics(message.params.textDocument.uri);
-    return;
-  }
-
-  if (message.method === "textDocument/didChange") {
-    publishDiagnostics(message.params.textDocument.uri);
-    return;
-  }
-
-  if (typeof message.id !== "undefined") {
-    sendMessage({
-      id: message.id,
-      jsonrpc: "2.0",
-      result: null
-    });
-  }
-}
-
-function processBuffer() {
-  while (true) {
-    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
-    if (headerEnd === -1) {
-      return;
-    }
-
-    const headerText = buffer.slice(0, headerEnd).toString("utf8");
-    const contentLengthMatch = headerText.match(/Content-Length:\\s*(\\d+)/iu);
-    if (!contentLengthMatch) {
-      buffer = buffer.slice(headerEnd + 4);
-      continue;
-    }
-
-    const contentLength = Number(contentLengthMatch[1]);
-    const messageEnd = headerEnd + 4 + contentLength;
-    if (buffer.length < messageEnd) {
-      return;
-    }
-
-    const jsonPayload = buffer.slice(headerEnd + 4, messageEnd).toString("utf8");
-    buffer = buffer.slice(messageEnd);
-
-    try {
-      const parsed = JSON.parse(jsonPayload);
-      handleMessage(parsed);
-    } catch {
-      // ignore malformed payloads in the fake server
-    }
-  }
-}
-
-process.stdin.on("data", (chunk) => {
-  buffer = Buffer.concat([buffer, chunk]);
-  processBuffer();
-});
+setTimeout(publishDiagnostics, 10);
+setInterval(publishDiagnostics, 150);
 `;
 
 const originalLspEnabled = env.AGENT_LSP_ENABLED;
 const originalLspServerConfigPath = env.AGENT_LSP_SERVER_CONFIG_PATH;
 const originalWaitMs = env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS;
+const lspServerExecutable = process.execPath;
 
 let tempDirectoryPath = "";
 
 async function writeLspConfig(tempDirectory: string): Promise<string> {
   const runtimeDirectory = join(tempDirectory, ".zace", "runtime", "lsp");
   await mkdir(runtimeDirectory, { recursive: true });
+  const rootMarker = ".lsp-root";
+  await writeFile(join(tempDirectory, rootMarker), "lsp root\n", "utf8");
 
   const serverScriptPath = join(tempDirectory, "fake-lsp-server.js");
   await writeFile(serverScriptPath, FAKE_LSP_SERVER_SCRIPT, "utf8");
@@ -127,10 +73,10 @@ async function writeLspConfig(tempDirectory: string): Promise<string> {
       {
         servers: [
           {
-            command: [process.execPath, serverScriptPath],
+            command: [lspServerExecutable, serverScriptPath],
             extensions: [".ts"],
             id: "fake-lsp",
-            rootMarkers: [],
+            rootMarkers: [rootMarker],
           },
         ],
       },

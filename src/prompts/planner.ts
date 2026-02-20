@@ -58,7 +58,9 @@ INSTRUCTIONS:
 7. When scripts modify files, print one marker line per file:
    ZACE_FILE_CHANGED|<path>
    Emit markers only for files that were actually changed by successful commands.
-8. Runtime LSP server config is loaded from .zace/runtime/lsp/servers.json.
+8. Runtime enforcement blocks mutating or complex inline shell commands (heredocs, redirection-heavy, multi-line, chained).
+   Route those through reusable scripts in .zace/runtime/scripts.
+9. Runtime LSP server config is loaded from .zace/runtime/lsp/servers.json.
    LLM may only author/update this config file; runtime validates/probes/enforces.
    Valid schema:
    {
@@ -73,34 +75,34 @@ INSTRUCTIONS:
    }
    Allowed keys per server: id, command, extensions, rootMarkers, optional env, optional initialization.
    Never use fields like filePatterns/rootIndicators and never use top-level language-name objects.
-9. For execute_command, arguments.command is mandatory and must be a non-empty string.
-10. For execute_command, you may set:
+10. For execute_command, arguments.command is mandatory and must be a non-empty string.
+11. For execute_command, you may set:
    maxRetries (bounded retry attempts), retryMaxDelayMs (max delay cap), outputLimitChars (stdout/stderr truncation limit).
-11. When older conversation context is needed, use search_session_messages before asking the user to repeat details.
-12. Use write_session_message to persist durable notes/checkpoints that may be useful after compaction.
-13. Before any write/create/edit command, inspect the repository with read-only commands to infer project language and layout.
-14. Align file extensions with inferred repo stack unless the user explicitly requests another language.
-15. If user clarification is required, choose action "ask_user" with one clear question.
+12. When older conversation context is needed, use search_session_messages before asking the user to repeat details.
+13. Use write_session_message to persist durable notes/checkpoints that may be useful after compaction.
+14. Before any write/create/edit command, inspect the repository with read-only commands to infer project language and layout.
+15. Align file extensions with inferred repo stack unless the user explicitly requests another language.
+16. If user clarification is required, choose action "ask_user" with one clear question.
     - "reasoning" is internal summary for agent memory.
     - "userMessage" is the exact text shown to the user and should be concise, direct, and human-friendly.
-16. Destructive shell commands require explicit user confirmation before execution.
-17. Do not choose "complete" unless completion gates pass.
-18. If completion gates are missing and validation should run, include project-specific commands in complete response.
-19. Keep each step small and deterministic. Prefer one command per step.
-20. For straightforward single-file tasks, target low step count:
+17. Destructive shell commands require explicit user confirmation before execution.
+18. Do not choose "complete" unless completion gates pass.
+19. If completion gates are missing and validation should run, include project-specific commands in complete response.
+20. Keep each step small and deterministic. Prefer one command per step.
+21. For straightforward single-file tasks, target low step count:
     inspect once -> write once -> validate once -> complete.
-21. Before writing to nested paths, create parent directories first (for example: mkdir -p <dir>).
-22. Never spoof change markers via standalone echo/printf (for example: echo ZACE_FILE_CHANGED|...).
-23. Avoid duplicate rewrites of the same file unless prior validation proves the write failed.
-24. If rewriting is required, inspect the current file content first and explain why the rewrite is needed.
-25. For greetings or non-actionable messages, choose "ask_user" and ask what concrete task to perform.
-26. If context was compacted or details may be old, prefer search_session_messages before asking the user to repeat information.
-27. Before repeating the same write/create/edit command, verify objective state with a read command (file exists, content, or git diff).
-28. If prior tool output/logs indicate the objective is already achieved, avoid repeating writes and move to validation/completion.
-29. If conversation context contains approval resolution text, interpret decisions exactly:
+22. Before writing to nested paths, create parent directories first (for example: mkdir -p <dir>).
+23. Never spoof change markers via standalone echo/printf (for example: echo ZACE_FILE_CHANGED|...).
+24. Avoid duplicate rewrites of the same file unless prior validation proves the write failed.
+25. If rewriting is required, inspect the current file content first and explain why the rewrite is needed.
+26. For greetings or non-actionable messages, choose "ask_user" and ask what concrete task to perform.
+27. If context was compacted or details may be old, prefer search_session_messages before asking the user to repeat information.
+28. Before repeating the same write/create/edit command, verify objective state with a read command (file exists, content, or git diff).
+29. If prior tool output/logs indicate the objective is already achieved, avoid repeating writes and move to validation/completion.
+30. If conversation context contains approval resolution text, interpret decisions exactly:
     - allow once / always session / always workspace: proceed with the approved command path.
     - deny: avoid the denied destructive command and choose a safe alternative or ask_user.
-30. LSP handling flow before completion:
+31. LSP handling flow before completion:
     - If [lsp] status is no_active_server or failed:
       inspect repo stack -> create/fix .zace/runtime/lsp/servers.json -> provision/install missing server command -> run a probe and verify active diagnostics -> rerun validation gates.
     - If [lsp] status is no_applicable_files, no_changed_files, or disabled:

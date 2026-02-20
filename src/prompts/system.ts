@@ -78,7 +78,8 @@ RUNTIME SCRIPT PROTOCOL:
    ZACE_SCRIPT_REGISTER|<script_id>|<script_path>|<purpose>
 10. When running a known script, prefer printing:
    ZACE_SCRIPT_USE|<script_id>
-11. For execute_command tool calls, arguments.command is mandatory and must be a non-empty string.
+11. Runtime blocks mutating or complex inline shell commands (heredocs, heavy redirection, multi-line, chained commands) unless executed via runtime scripts.
+12. For execute_command tool calls, arguments.command is mandatory and must be a non-empty string.
 
 SESSION MEMORY PROTOCOL:
 1. Session history is persisted in a JSONL file.

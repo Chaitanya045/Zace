@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 
 import {
   buildToolCallSignature,
@@ -19,6 +20,28 @@ describe("loop stability", () => {
       threshold: 3,
     });
 
+    expect(detection.shouldBlock).toBe(true);
+    expect(detection.repeatedCount).toBe(3);
+  });
+
+  test("pre-exec doom loop treats absolute and relative inspect commands as identical", () => {
+    const repositoryRoot = resolve("/tmp/zace-loop-root");
+    const relativeSignature = buildToolCallSignature("execute_command", {
+      command: "ls -la src/",
+      cwd: repositoryRoot,
+    });
+    const absoluteSignature = buildToolCallSignature("execute_command", {
+      command: `ls -la ${repositoryRoot}/src`,
+      cwd: repositoryRoot,
+    });
+
+    const detection = detectPreExecutionDoomLoop({
+      historySignatures: [relativeSignature, absoluteSignature],
+      nextSignature: relativeSignature,
+      threshold: 3,
+    });
+
+    expect(relativeSignature).toBe(absoluteSignature);
     expect(detection.shouldBlock).toBe(true);
     expect(detection.repeatedCount).toBe(3);
   });

@@ -12,7 +12,8 @@ import { shutdownLsp } from "../../src/lsp";
 import { getSessionFilePath, readSessionEntries } from "../../src/tools/session";
 
 const FAKE_LSP_SERVER_SCRIPT = `
-let buffer = Buffer.alloc(0);
+const { resolve } = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 function sendMessage(message) {
   const payload = Buffer.from(JSON.stringify(message), "utf8");
@@ -20,82 +21,34 @@ function sendMessage(message) {
   process.stdout.write(payload);
 }
 
-function publishDiagnostics(uri) {
+function publishDiagnostics() {
+  for (const fileName of ["demo.ts", "sample.ts", "race.ts"]) {
+    sendMessage({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        diagnostics: [],
+        uri: pathToFileURL(resolve(process.cwd(), fileName)).href
+      }
+    });
+  }
+}
+
+for (let id = 0; id < 16; id += 1) {
   sendMessage({
+    id,
     jsonrpc: "2.0",
-    method: "textDocument/publishDiagnostics",
-    params: {
-      diagnostics: [],
-      uri
-    }
+    result: { capabilities: { textDocumentSync: 2 } }
   });
 }
-
-function handleMessage(message) {
-  if (message.method === "initialize") {
-    sendMessage({
-      id: message.id,
-      jsonrpc: "2.0",
-      result: { capabilities: { textDocumentSync: 2 } }
-    });
-    return;
-  }
-
-  if (message.method === "textDocument/didOpen") {
-    publishDiagnostics(message.params.textDocument.uri);
-    return;
-  }
-
-  if (message.method === "textDocument/didChange") {
-    publishDiagnostics(message.params.textDocument.uri);
-    return;
-  }
-
-  if (typeof message.id !== "undefined") {
-    sendMessage({
-      id: message.id,
-      jsonrpc: "2.0",
-      result: null
-    });
-  }
-}
-
-function processBuffer() {
-  while (true) {
-    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
-    if (headerEnd === -1) return;
-
-    const headerText = buffer.slice(0, headerEnd).toString("utf8");
-    const contentLengthMatch = headerText.match(/Content-Length:\\s*(\\d+)/iu);
-    if (!contentLengthMatch) {
-      buffer = buffer.slice(headerEnd + 4);
-      continue;
-    }
-
-    const contentLength = Number(contentLengthMatch[1]);
-    const messageEnd = headerEnd + 4 + contentLength;
-    if (buffer.length < messageEnd) return;
-
-    const jsonPayload = buffer.slice(headerEnd + 4, messageEnd).toString("utf8");
-    buffer = buffer.slice(messageEnd);
-
-    try {
-      handleMessage(JSON.parse(jsonPayload));
-    } catch {
-      // ignore malformed payloads in fake server
-    }
-  }
-}
-
-process.stdin.on("data", (chunk) => {
-  buffer = Buffer.concat([buffer, chunk]);
-  processBuffer();
-});
+setTimeout(publishDiagnostics, 10);
+setInterval(publishDiagnostics, 150);
 `;
 
 const originalLspEnabled = env.AGENT_LSP_ENABLED;
 const originalLspServerConfigPath = env.AGENT_LSP_SERVER_CONFIG_PATH;
 const originalLspWaitMs = env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS;
+const lspServerExecutable = process.execPath;
 
 let sessionPath = "";
 let tempDirectoryPath = "";
@@ -166,6 +119,7 @@ describe("lsp bootstrap probe on config change", () => {
 
     const fakeServerPath = join(tempDirectoryPath, "fake-lsp-server.js");
     await writeFile(fakeServerPath, FAKE_LSP_SERVER_SCRIPT, "utf8");
+    await writeFile(join(tempDirectoryPath, ".lsp-root"), "lsp root\n", "utf8");
 
     env.AGENT_LSP_ENABLED = true;
     env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = 500;
@@ -206,9 +160,9 @@ describe("lsp bootstrap probe on config change", () => {
               '  "servers": [',
               "    {",
               '      "id": "fake-ts",',
-              `      "command": [${JSON.stringify(process.execPath)}, ${JSON.stringify(fakeServerPath)}],`,
+              `      "command": [${JSON.stringify(lspServerExecutable)}, ${JSON.stringify(fakeServerPath)}],`,
               '      "extensions": [".ts"],',
-              '      "rootMarkers": []',
+              '      "rootMarkers": [".lsp-root"]',
               "    }",
               "  ]",
               "}",

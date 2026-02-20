@@ -41,6 +41,7 @@ export type RunLoopMutableState = {
   completionPlan: CompletionPlan;
   consecutiveNoToolContinues: number;
   context: AgentContext;
+  inspectionLoopRecoverySignatures: Set<string>;
   lastCompletionGateFailure: null | string;
   lastExecutionWorkingDirectory: string;
   lastSuccessfulValidationStep: number | undefined;

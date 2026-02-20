@@ -5,8 +5,41 @@ import type { LlmClient } from "../../../llm/client";
 import type { AgentConfig } from "../../../types/config";
 
 import { assessCommandSafety } from "../../safety";
+import { SCRIPT_DIRECTORY_PATH } from "../../scripts";
 
 const OVERWRITE_REDIRECT_TARGET_REGEX = /(?:^|[\s;|&])(?:\d*)>(?!>|&)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/gu;
+const GIT_READONLY_SUBCOMMANDS = new Set([
+  "branch",
+  "diff",
+  "log",
+  "ls-files",
+  "rev-parse",
+  "show",
+  "status",
+]);
+const READ_ONLY_COMMANDS = new Set([
+  "cat",
+  "find",
+  "grep",
+  "head",
+  "ls",
+  "pwd",
+  "realpath",
+  "rg",
+  "stat",
+  "tail",
+  "tree",
+  "wc",
+]);
+const RUNTIME_SCRIPT_MARKER_REGEX = /\bZACE_SCRIPT_(?:REGISTER|USE)\|/u;
+const RUNTIME_SCRIPT_PROTOCOL_BYPASS_REGEX = /(?:^|[\s"'=])\.zace\/runtime\/scripts(?:[/\s"'=]|$)/u;
+const SHELL_REDIRECTION_REGEX = /(?:^|[\s;|&])(?:\d*)>(?!>|&)|>>|<<|(?:^|[\s;|&])</u;
+const MUTATING_COMMAND_REGEX =
+  /\b(?:bun\s+add|chmod|chown|cp|git\s+(?:add|checkout|clean|commit|mv|reset|rm)|mkdir|mv|npm\s+(?:install|uninstall)|perl\s+-i|pnpm\s+(?:add|install|remove)|rm|sed\s+-i|touch|truncate|yarn\s+(?:add|install|remove))\b/iu;
+const VALIDATION_COMMAND_PATTERNS = [
+  /^(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?(?:build|check|lint|test|typecheck)\b/iu,
+  /^(?:cargo\s+(?:check|clippy|test)|eslint|go\s+test|jest|pytest|ruff|tsc|vitest)\b/iu,
+];
 
 export function getExecuteCommandText(argumentsObject: Record<string, unknown>): string | undefined {
   const commandValue = argumentsObject.command;
@@ -47,6 +80,143 @@ function stripWrappingQuotes(value: string): string {
   }
 
   return value;
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
+
+function isPathWithinRoot(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`) || path.startsWith(`${root}\\`);
+}
+
+function extractCommandSegments(command: string): string[] {
+  return command
+    .split("|")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+}
+
+function parseRootCommand(segment: string): {
+  firstToken: string;
+  secondToken: string;
+} {
+  const normalized = normalizeWhitespace(segment);
+  const tokens = normalized.split(" ").filter((token) => token.length > 0);
+  const firstToken = tokens[0]?.toLowerCase() ?? "";
+  const secondToken = tokens[1]?.toLowerCase() ?? "";
+
+  return {
+    firstToken,
+    secondToken,
+  };
+}
+
+function isValidationCommand(command: string): boolean {
+  const normalized = normalizeWhitespace(command);
+  if (!normalized) {
+    return false;
+  }
+  if (/[\r\n]|&&|\|\||;/u.test(normalized)) {
+    return false;
+  }
+
+  return VALIDATION_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function normalizeTokenForPathCandidate(token: string): string {
+  const unquoted = stripWrappingQuotes(token.trim())
+    .replace(/^[();]+/u, "")
+    .replace(/[();]+$/u, "");
+  const assignmentSeparatorIndex = unquoted.indexOf("=");
+  if (assignmentSeparatorIndex <= 0) {
+    return unquoted;
+  }
+
+  return unquoted.slice(assignmentSeparatorIndex + 1);
+}
+
+export function isRuntimeScriptInvocation(command: string, workingDirectory: string): boolean {
+  const normalized = normalizeWhitespace(command);
+  if (!normalized) {
+    return false;
+  }
+
+  const scriptDirectoryAbsolutePath = resolve(workingDirectory, SCRIPT_DIRECTORY_PATH);
+  const tokens = normalized.split(" ").filter((token) => token.length > 0);
+  for (const token of tokens) {
+    const pathCandidate = normalizeTokenForPathCandidate(token);
+    if (!pathCandidate || pathCandidate.startsWith("-")) {
+      continue;
+    }
+    if (/[*?${}`]/u.test(pathCandidate)) {
+      continue;
+    }
+
+    const resolvedCandidate = resolve(workingDirectory, pathCandidate);
+    if (isPathWithinRoot(resolvedCandidate, scriptDirectoryAbsolutePath)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function isReadOnlyInspectionCommand(command: string): boolean {
+  const normalized = normalizeWhitespace(command);
+  if (!normalized) {
+    return false;
+  }
+  if (/[\r\n]|&&|\|\||;/u.test(normalized)) {
+    return false;
+  }
+  if (SHELL_REDIRECTION_REGEX.test(normalized)) {
+    return false;
+  }
+
+  const segments = extractCommandSegments(normalized);
+  if (segments.length === 0) {
+    return false;
+  }
+
+  return segments.every((segment) => {
+    const { firstToken, secondToken } = parseRootCommand(segment);
+    if (!firstToken) {
+      return false;
+    }
+    if (firstToken === "git") {
+      return GIT_READONLY_SUBCOMMANDS.has(secondToken);
+    }
+
+    return READ_ONLY_COMMANDS.has(firstToken);
+  });
+}
+
+export function requiresRuntimeScript(command: string): boolean {
+  const normalized = normalizeWhitespace(command);
+  if (!normalized) {
+    return false;
+  }
+  if (isReadOnlyInspectionCommand(normalized) || isValidationCommand(normalized)) {
+    return false;
+  }
+  if (RUNTIME_SCRIPT_PROTOCOL_BYPASS_REGEX.test(normalized)) {
+    return false;
+  }
+  if (RUNTIME_SCRIPT_MARKER_REGEX.test(normalized)) {
+    return false;
+  }
+  if (MUTATING_COMMAND_REGEX.test(normalized)) {
+    return true;
+  }
+  if (SHELL_REDIRECTION_REGEX.test(normalized)) {
+    return true;
+  }
+  if (/[\r\n]|&&|\|\||;|<<|>>/u.test(normalized)) {
+    return true;
+  }
+
+  return false;
 }
 
 export function extractOverwriteRedirectTargets(command: string): string[] {

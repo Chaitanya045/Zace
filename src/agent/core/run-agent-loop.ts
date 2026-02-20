@@ -106,6 +106,7 @@ export async function runAgentLoop(
     completionPlan: resolveCompletionPlan(task),
     consecutiveNoToolContinues: 0,
     context: createInitialContext(task, config.maxSteps),
+    inspectionLoopRecoverySignatures: new Set<string>(),
     lastCompletionGateFailure: null,
     lastExecutionWorkingDirectory: process.cwd(),
     lastSuccessfulValidationStep: undefined,

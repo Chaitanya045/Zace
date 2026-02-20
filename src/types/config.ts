@@ -46,6 +46,7 @@ export type AgentConfig = {
   plannerSchemaStrict?: boolean;
   readonlyStagnationWindow: number;
   requireRiskyConfirmation: boolean;
+  runtimeScriptEnforced?: boolean;
   riskyConfirmationToken: string;
   stagnationWindow: number;
   stream: boolean;
@@ -99,6 +100,7 @@ export function getAgentConfig(): AgentConfig {
     readonlyStagnationWindow: env.AGENT_READONLY_STAGNATION_WINDOW,
     requireRiskyConfirmation: env.AGENT_REQUIRE_RISKY_CONFIRMATION,
     riskyConfirmationToken: env.AGENT_RISKY_CONFIRMATION_TOKEN,
+    runtimeScriptEnforced: env.AGENT_RUNTIME_SCRIPT_ENFORCED,
     stagnationWindow: env.AGENT_STAGNATION_WINDOW,
     stream: env.AGENT_STREAM,
     transientRetryMaxAttempts: env.AGENT_TRANSIENT_RETRY_MAX_ATTEMPTS,

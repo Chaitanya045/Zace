@@ -24,6 +24,9 @@ import { addStep, transitionState, updateScriptCatalog } from "../../state";
 import {
   getExecuteCommandText,
   getExecuteCommandWorkingDirectory,
+  isReadOnlyInspectionCommand,
+  isRuntimeScriptInvocation,
+  requiresRuntimeScript,
 } from "./command-safety";
 import { handleLspBootstrapAfterToolExecution } from "./lsp-bootstrap-runtime";
 import { getRetryConfiguration, getRetryDelayMs, sleep } from "./retry";
@@ -31,6 +34,7 @@ import { appendRunEvent } from "./run-events";
 import { syncScriptRegistry } from "./startup";
 
 const MAX_CONSECUTIVE_NO_TOOL_CONTINUES = 2;
+const SCRIPT_PROTOCOL_BLOCK_ERROR = "Command blocked by runtime script protocol";
 
 export type ExecutionPhaseOutcome<TResult> =
   | { kind: "continue_loop" }
@@ -53,6 +57,28 @@ function emitDiagnosticsObserverEvent(
     files,
     step,
   });
+}
+
+function hasPriorSuccessfulNoChangeResult(
+  state: RunLoopMutableState,
+  plannedSignature: string
+): boolean {
+  for (let index = state.context.steps.length - 1; index >= 0; index -= 1) {
+    const step = state.context.steps[index];
+    if (!step.toolCall || !step.toolResult) {
+      continue;
+    }
+
+    const signature = buildToolCallSignature(step.toolCall.name, step.toolCall.arguments);
+    if (signature !== plannedSignature) {
+      continue;
+    }
+
+    const changedFiles = step.toolResult.artifacts?.changedFiles ?? [];
+    return step.toolResult.success && changedFiles.length === 0;
+  }
+
+  return false;
 }
 
 export async function handleExecutionPhase<TResult>(input: {
@@ -126,9 +152,20 @@ export async function handleExecutionPhase<TResult>(input: {
     return { kind: "continue_loop" };
   }
   input.state.consecutiveNoToolContinues = 0;
+  const plannedExecuteCommand =
+    input.planResult.toolCall.name === "execute_command"
+      ? getExecuteCommandText(input.planResult.toolCall.arguments)
+      : undefined;
+  const plannedExecuteWorkingDirectory =
+    input.planResult.toolCall.name === "execute_command"
+      ? resolve(getExecuteCommandWorkingDirectory(input.planResult.toolCall.arguments) ?? process.cwd())
+      : undefined;
   const plannedToolCallSignature = buildToolCallSignature(
     input.planResult.toolCall.name,
-    input.planResult.toolCall.arguments
+    input.planResult.toolCall.arguments,
+    {
+      workingDirectory: plannedExecuteWorkingDirectory,
+    }
   );
   const preExecutionLoopDetection = detectPreExecutionDoomLoop({
     historySignatures: input.state.toolCallSignatureHistory,
@@ -136,6 +173,46 @@ export async function handleExecutionPhase<TResult>(input: {
     threshold: input.config.doomLoopThreshold,
   });
   if (preExecutionLoopDetection.shouldBlock) {
+    const recoverableInspectionLoop =
+      input.planResult.toolCall.name === "execute_command" &&
+      typeof plannedExecuteCommand === "string" &&
+      isReadOnlyInspectionCommand(plannedExecuteCommand) &&
+      hasPriorSuccessfulNoChangeResult(input.state, plannedToolCallSignature) &&
+      !input.state.inspectionLoopRecoverySignatures.has(plannedToolCallSignature);
+    if (recoverableInspectionLoop) {
+      input.state.inspectionLoopRecoverySignatures.add(plannedToolCallSignature);
+      const recoveryMessage =
+        "[inspection_loop_recovery] Repeated inspection command detected before execution. " +
+        "Reuse the previous successful output, switch to a targeted inspect command, or proceed to write/validation instead of repeating the same inspect call.";
+      input.memory.addMessage("assistant", recoveryMessage);
+      await appendRunEvent({
+        event: "inspection_loop_recovery_triggered",
+        observer: input.observer,
+        payload: {
+          command: plannedExecuteCommand,
+          repeatCount: preExecutionLoopDetection.repeatedCount,
+          signature: plannedToolCallSignature,
+        },
+        phase: "executing",
+        runId: input.runId,
+        sessionId: input.sessionId,
+        step: input.stepNumber,
+      });
+      input.state.context = addStep(input.state.context, {
+        reasoning:
+          `Recovered from repeated inspection loop (${String(preExecutionLoopDetection.repeatedCount)} repeats) before execution. ` +
+          "Prompted planner to reuse prior output and change strategy.",
+        state: "executing",
+        step: input.stepNumber,
+        toolCall: {
+          arguments: input.planResult.toolCall.arguments,
+          name: input.planResult.toolCall.name,
+        },
+        toolResult: null,
+      });
+      return { kind: "continue_loop" };
+    }
+
     const loopGuardReason =
       `Detected a repeated tool-call loop before execution (same call repeated ${String(preExecutionLoopDetection.repeatedCount)} times).`;
     const loopGuardMessage =
@@ -182,19 +259,55 @@ export async function handleExecutionPhase<TResult>(input: {
     };
   }
 
-  const plannedExecuteCommand =
-    input.planResult.toolCall.name === "execute_command"
-      ? getExecuteCommandText(input.planResult.toolCall.arguments)
-      : undefined;
-  const plannedExecuteWorkingDirectory =
-    input.planResult.toolCall.name === "execute_command"
-      ? resolve(getExecuteCommandWorkingDirectory(input.planResult.toolCall.arguments) ?? process.cwd())
-      : undefined;
-
   if (input.planResult.toolCall.name === "execute_command") {
     const command = plannedExecuteCommand;
     const commandWorkingDirectory = plannedExecuteWorkingDirectory;
     if (command) {
+      const runtimeScriptEnforced = input.config.runtimeScriptEnforced ?? false;
+      if (
+        runtimeScriptEnforced &&
+        commandWorkingDirectory &&
+        requiresRuntimeScript(command) &&
+        !isRuntimeScriptInvocation(command, commandWorkingDirectory)
+      ) {
+        const protocolMessage =
+          "Runtime blocked this command: mutating or complex commands must run through reusable scripts.\n" +
+          "Next steps:\n" +
+          "1. Create or update a script under .zace/runtime/scripts.\n" +
+          "2. Emit ZACE_SCRIPT_REGISTER|<script_id>|<script_path>|<purpose> when authoring/updating the script.\n" +
+          "3. Execute the script and emit ZACE_SCRIPT_USE|<script_id>.";
+        input.memory.addMessage("assistant", protocolMessage);
+        await appendRunEvent({
+          event: "script_protocol_blocked",
+          observer: input.observer,
+          payload: {
+            command,
+            signature: plannedToolCallSignature,
+          },
+          phase: "executing",
+          runId: input.runId,
+          sessionId: input.sessionId,
+          step: input.stepNumber,
+        });
+        input.state.context = addStep(input.state.context, {
+          reasoning:
+            "Blocked direct mutating/complex shell command because runtime script protocol is enforced.",
+          state: "executing",
+          step: input.stepNumber,
+          toolCall: {
+            arguments: input.planResult.toolCall.arguments,
+            name: input.planResult.toolCall.name,
+          },
+          toolResult: {
+            error: SCRIPT_PROTOCOL_BLOCK_ERROR,
+            output: protocolMessage,
+            success: false,
+          },
+        });
+        input.state.toolCallSignatureHistory.push(plannedToolCallSignature);
+        return { kind: "continue_loop" };
+      }
+
       const commandApproval = await input.resolveCommandApproval({
         command,
         workingDirectory: commandWorkingDirectory,
@@ -611,7 +724,7 @@ export async function handleExecutionPhase<TResult>(input: {
           return false;
         }
         const commandText = getExecuteCommandText(step.toolCall.arguments) ?? "";
-        return /\b(?:cat|ls|wc|head|tail|rg|grep|git\s+diff|git\s+status|stat)\b/iu.test(commandText);
+        return isReadOnlyInspectionCommand(commandText);
       });
       const validationSinceWrite =
         typeof input.state.lastSuccessfulValidationStep === "number"

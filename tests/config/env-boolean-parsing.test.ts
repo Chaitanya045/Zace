@@ -6,6 +6,7 @@ function createBaseEnvironment(): Record<string, string | undefined> {
   return {
     AGENT_COMMAND_ARTIFACTS_DIR: ".zace/runtime/artifacts",
     AGENT_TOOL_OUTPUT_LIMIT_CHARS: "8000",
+    LLM_PROVIDER: "openrouter",
     OPENROUTER_API_KEY: "test-key",
     OPENROUTER_MODEL: "test-model",
   };
