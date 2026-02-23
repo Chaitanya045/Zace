@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 
 import type { LlmClient } from "../../../llm/client";
 import type { AgentConfig } from "../../../types/config";
@@ -33,9 +33,13 @@ const READ_ONLY_COMMANDS = new Set([
 ]);
 const RUNTIME_SCRIPT_MARKER_REGEX = /\bZACE_SCRIPT_(?:REGISTER|USE)\|/u;
 const RUNTIME_SCRIPT_PROTOCOL_BYPASS_REGEX = /(?:^|[\s"'=])\.zace\/runtime\/scripts(?:[/\s"'=]|$)/u;
+const SH_RUNTIME_SCRIPT_INVOCATION_REGEX = /^sh\s+((?:"[^"]+"|'[^']+'|\S+))(.*)$/u;
 const SHELL_REDIRECTION_REGEX = /(?:^|[\s;|&])(?:\d*)>(?!>|&)|>>|<<|(?:^|[\s;|&])</u;
 const MUTATING_COMMAND_REGEX =
   /\b(?:bun\s+add|chmod|chown|cp|git\s+(?:add|checkout|clean|commit|mv|reset|rm)|mkdir|mv|npm\s+(?:install|uninstall)|perl\s+-i|pnpm\s+(?:add|install|remove)|rm|sed\s+-i|touch|truncate|yarn\s+(?:add|install|remove))\b/iu;
+const HIGH_RISK_DESTRUCTIVE_COMMAND_REGEX =
+  /\b(?:rm\b|rmdir\b|unlink\b|git\s+reset\s+--hard\b|git\s+clean\b[^\n]*\s-f\b|git\s+push\b[^\n]*\s--force(?:-with-lease)?\b|mkfs\b|dd\b|shutdown\b|reboot\b|poweroff\b)\b/iu;
+const RUNTIME_MAINTENANCE_ALLOWED_FILES = new Set([".zace/runtime/lsp/servers.json"]);
 const VALIDATION_COMMAND_PATTERNS = [
   /^(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?(?:build|check|lint|test|typecheck)\b/iu,
   /^(?:cargo\s+(?:check|clippy|test)|eslint|go\s+test|jest|pytest|ruff|tsc|vitest)\b/iu,
@@ -134,6 +138,100 @@ function normalizeTokenForPathCandidate(token: string): string {
   }
 
   return unquoted.slice(assignmentSeparatorIndex + 1);
+}
+
+function resolveRuntimeMaintenanceAllowedRoots(workingDirectory: string): string[] {
+  const roots = [resolve(workingDirectory, SCRIPT_DIRECTORY_PATH)];
+  for (const relativePath of RUNTIME_MAINTENANCE_ALLOWED_FILES) {
+    roots.push(resolve(workingDirectory, relativePath));
+  }
+  return roots;
+}
+
+function isWithinAnyRoot(pathValue: string, roots: string[]): boolean {
+  return roots.some((root) => isPathWithinRoot(pathValue, root));
+}
+
+function isRuntimeMaintenanceRedirectWrite(command: string, workingDirectory: string): boolean {
+  const targets = extractOverwriteRedirectTargets(command);
+  if (targets.length === 0) {
+    return false;
+  }
+
+  const roots = resolveRuntimeMaintenanceAllowedRoots(workingDirectory);
+  return targets.every((target) => {
+    if (!target) {
+      return false;
+    }
+
+    const normalized = stripWrappingQuotes(target.trim());
+    if (!normalized || normalized.startsWith("~") || isDynamicShellPath(normalized)) {
+      return false;
+    }
+
+    const resolvedTarget = resolve(workingDirectory, normalized);
+    return isWithinAnyRoot(resolvedTarget, roots);
+  });
+}
+
+function isHighRiskDestructiveCommand(command: string): boolean {
+  return HIGH_RISK_DESTRUCTIVE_COMMAND_REGEX.test(command);
+}
+
+export function normalizeRuntimeScriptInvocation(input: {
+  command: string;
+  workingDirectory: string;
+}): {
+  changed: boolean;
+  command: string;
+  reason?: string;
+} {
+  const normalized = normalizeWhitespace(input.command);
+  if (!normalized) {
+    return {
+      changed: false,
+      command: normalized,
+    };
+  }
+
+  const match = normalized.match(SH_RUNTIME_SCRIPT_INVOCATION_REGEX);
+  if (!match) {
+    return {
+      changed: false,
+      command: normalized,
+    };
+  }
+
+  const scriptToken = match[1];
+  if (!scriptToken) {
+    return {
+      changed: false,
+      command: normalized,
+    };
+  }
+  const remaining = match[2] ?? "";
+  const scriptPath = stripWrappingQuotes(scriptToken);
+  if (!scriptPath || extname(scriptPath).toLowerCase() !== ".sh") {
+    return {
+      changed: false,
+      command: normalized,
+    };
+  }
+
+  const scriptDirectoryAbsolutePath = resolve(input.workingDirectory, SCRIPT_DIRECTORY_PATH);
+  const resolvedScriptPath = resolve(input.workingDirectory, scriptPath);
+  if (!isPathWithinRoot(resolvedScriptPath, scriptDirectoryAbsolutePath)) {
+    return {
+      changed: false,
+      command: normalized,
+    };
+  }
+
+  return {
+    changed: true,
+    command: `bash ${scriptToken}${remaining}`.trim(),
+    reason: "runtime_script_shell_normalization",
+  };
 }
 
 export function isRuntimeScriptInvocation(command: string, workingDirectory: string): boolean {
@@ -308,6 +406,13 @@ export async function getDestructiveCommandReason(
   }
 
   const workingDirectory = resolve(options?.workingDirectory ?? process.cwd());
+  if (
+    isRuntimeMaintenanceRedirectWrite(command, workingDirectory) &&
+    !isHighRiskDestructiveCommand(command)
+  ) {
+    return null;
+  }
+
   const safetyAssessment = await assessCommandSafety(
     client,
     command,

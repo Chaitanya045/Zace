@@ -65,6 +65,8 @@ const NON_DIAGNOSTIC_SOURCE_EXTENSIONS = new Set([
   ".log",
   ".md",
   ".png",
+  ".ps1",
+  ".sh",
   ".svg",
   ".toml",
   ".txt",

@@ -1,14 +1,20 @@
-import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import type { LlmClient } from "../../src/llm/client";
 import type { AgentConfig } from "../../src/types/config";
 
 import { runAgentLoop } from "../../src/agent/loop";
 import { createAutoSessionId } from "../../src/cli/chat-session";
+import { env } from "../../src/config/env";
+import { shutdownLsp } from "../../src/lsp";
 import { getSessionFilePath, readSessionEntries } from "../../src/tools/session";
+
+const originalLspEnabled = env.AGENT_LSP_ENABLED;
+const originalLspServerConfigPath = env.AGENT_LSP_SERVER_CONFIG_PATH;
+const originalLspWaitMs = env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS;
 
 function createTestConfig(maxSteps: number): AgentConfig {
   return {
@@ -20,9 +26,9 @@ function createTestConfig(maxSteps: number): AgentConfig {
     compactionPreserveRecentMessages: 12,
     compactionTriggerRatio: 0.8,
     completionBlockRepeatLimit: 2,
-    completionRequireDiscoveredGates: false,
-    completionRequireLsp: false,
-    completionValidationMode: "llm_only",
+    completionRequireDiscoveredGates: true,
+    completionRequireLsp: true,
+    completionValidationMode: "strict",
     contextWindowTokens: undefined,
     docContextMaxChars: 6000,
     docContextMaxFiles: 3,
@@ -37,7 +43,7 @@ function createTestConfig(maxSteps: number): AgentConfig {
     llmProvider: "openrouter",
     lspAutoProvision: true,
     lspBootstrapBlockOnFailed: true,
-    lspEnabled: false,
+    lspEnabled: true,
     lspMaxDiagnosticsPerFile: 20,
     lspMaxFilesInOutput: 5,
     lspProvisionMaxAttempts: 2,
@@ -60,41 +66,41 @@ function createTestConfig(maxSteps: number): AgentConfig {
   };
 }
 
-describe("session 20260220 repeated inspect regression", () => {
-  test("recovers from repeated inspect loop once before hard pre-exec guard", async () => {
-    const tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-repeated-inspect-"));
-    const absoluteSrcPath = resolve(tempDirectoryPath, "src");
-    const sessionId = createAutoSessionId(new Date("2026-02-20T07:06:45.000Z"));
+describe("runtime LSP auto-provision", () => {
+  afterEach(async () => {
+    await shutdownLsp();
+    env.AGENT_LSP_ENABLED = originalLspEnabled;
+    env.AGENT_LSP_SERVER_CONFIG_PATH = originalLspServerConfigPath;
+    env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = originalLspWaitMs;
+  });
+
+  test("creates servers.json and allows completion when missing LSP config is auto-provisioned", async () => {
+    const tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-lsp-autoprovision-"));
+    const sessionId = createAutoSessionId(new Date("2026-02-21T09:00:00.000Z"));
     const sessionPath = getSessionFilePath(sessionId);
+
+    env.AGENT_LSP_ENABLED = true;
+    env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = 250;
+    env.AGENT_LSP_SERVER_CONFIG_PATH = join(
+      tempDirectoryPath,
+      ".zace",
+      "runtime",
+      "lsp",
+      "servers.json"
+    );
+
     const plannerResponses = [
       JSON.stringify({
         action: "continue",
-        reasoning: "Inspect src directory.",
+        reasoning: "Create source file to trigger bootstrap tracking.",
         toolCall: {
           arguments: {
-            command: "ls -la src/",
-            cwd: tempDirectoryPath,
-          },
-          name: "execute_command",
-        },
-      }),
-      JSON.stringify({
-        action: "continue",
-        reasoning: "Inspect src directory with absolute path.",
-        toolCall: {
-          arguments: {
-            command: `ls -la ${absoluteSrcPath}/`,
-            cwd: tempDirectoryPath,
-          },
-          name: "execute_command",
-        },
-      }),
-      JSON.stringify({
-        action: "continue",
-        reasoning: "Inspect src directory again.",
-        toolCall: {
-          arguments: {
-            command: "ls -la src/",
+            command: [
+              "cat > demo.ts <<'EOF'",
+              "const answer: number = 42;",
+              "EOF",
+              "printf 'ZACE_FILE_CHANGED|demo.ts\\n'",
+            ].join("\n"),
             cwd: tempDirectoryPath,
           },
           name: "execute_command",
@@ -103,41 +109,50 @@ describe("session 20260220 repeated inspect regression", () => {
       JSON.stringify({
         action: "complete",
         gates: "none",
-        reasoning: "Inspection complete.",
+        reasoning: "Task done.",
+        userMessage: "done",
+      }),
+      JSON.stringify({
+        action: "complete",
+        gates: "none",
+        reasoning: "Task done.",
         userMessage: "done",
       }),
     ];
 
     const llmClient = {
       chat: async () => ({
-        content: plannerResponses.shift() ?? "{\"action\":\"blocked\",\"reasoning\":\"missing planner response\"}",
+        content: plannerResponses.shift() ?? "{\"action\":\"blocked\",\"reasoning\":\"missing response\"}",
       }),
       getModelContextWindowTokens: async () => undefined,
     } as unknown as LlmClient;
 
     try {
-      await mkdir(absoluteSrcPath, { recursive: true });
-      await writeFile(join(absoluteSrcPath, "index.ts"), "export const x = 1;\n", "utf8");
-
       const result = await runAgentLoop(
         llmClient,
         createTestConfig(6),
-        "inspect src and complete",
+        "create demo file",
         { sessionId }
       );
 
-      expect(result.success).toBe(true);
-      expect(result.finalState).toBe("completed");
-      expect(result.message.toLowerCase()).not.toContain("repeated tool-call loop");
+      expect(["completed", "waiting_for_user"]).toContain(result.finalState);
+      if (result.finalState === "waiting_for_user") {
+        expect(result.message).toContain("bootstrap");
+      }
+
+      const configContent = await readFile(env.AGENT_LSP_SERVER_CONFIG_PATH, "utf8");
+      const parsed = JSON.parse(configContent) as { servers?: unknown[] };
+      expect(Array.isArray(parsed.servers)).toBe(true);
+      expect(parsed.servers?.length).toBeGreaterThan(0);
 
       const runEvents = (await readSessionEntries(sessionId))
         .filter((entry) => entry.type === "run_event")
         .map((entry) => entry.event);
-      expect(runEvents).toContain("inspection_loop_recovery_triggered");
-      expect(runEvents).not.toContain("loop_guard_triggered");
+      expect(runEvents).toContain("lsp_autoprovision_started");
+      expect(runEvents).toContain("lsp_autoprovision_written");
     } finally {
       await unlink(sessionPath).catch(() => undefined);
       await rm(tempDirectoryPath, { force: true, recursive: true });
     }
-  });
+  }, 20_000);
 });

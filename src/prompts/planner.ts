@@ -3,7 +3,13 @@ import type { AgentContext } from "../types/agent";
 import { SCRIPT_REGISTRY_PATH } from "../agent/scripts";
 import { getToolDescriptions } from "../tools";
 
-export function buildPlannerPrompt(context: AgentContext, completionCriteria?: string[]): string {
+export function buildPlannerPrompt(
+  context: AgentContext,
+  completionCriteria?: string[],
+  options?: {
+    completionRequireLsp?: boolean;
+  }
+): string {
   const { currentStep, fileSummaries, maxSteps, steps, task } = context;
   const criteria = completionCriteria && completionCriteria.length > 0
     ? completionCriteria
@@ -25,6 +31,10 @@ export function buildPlannerPrompt(context: AgentContext, completionCriteria?: s
         .map(([path, summary]) => `- ${path}: ${summary.slice(0, 200)}`)
         .join("\n")}`
     : "";
+
+  const lspCompletionInstruction = options?.completionRequireLsp === false
+    ? "31. LSP handling flow before completion:\n    - If [lsp] status is no_active_server or failed: treat as informational unless user explicitly requested LSP setup or diagnostics-driven repair.\n    - If [lsp] status is no_applicable_files, no_changed_files, or disabled: treat as neutral."
+    : "31. LSP handling flow before completion:\n    - If [lsp] status is no_active_server or failed:\n      inspect repo stack -> create/fix .zace/runtime/lsp/servers.json -> provision/install missing server command -> run a probe and verify active diagnostics -> rerun validation gates.\n    - If [lsp] status is no_applicable_files, no_changed_files, or disabled:\n      treat as neutral (do not reopen bootstrap requirement).";
 
   return `You are the PLANNER. Your job is to understand the task and decide WHAT to do next.
 
@@ -102,11 +112,7 @@ INSTRUCTIONS:
 30. If conversation context contains approval resolution text, interpret decisions exactly:
     - allow once / always session / always workspace: proceed with the approved command path.
     - deny: avoid the denied destructive command and choose a safe alternative or ask_user.
-31. LSP handling flow before completion:
-    - If [lsp] status is no_active_server or failed:
-      inspect repo stack -> create/fix .zace/runtime/lsp/servers.json -> provision/install missing server command -> run a probe and verify active diagnostics -> rerun validation gates.
-    - If [lsp] status is no_applicable_files, no_changed_files, or disabled:
-      treat as neutral (do not reopen bootstrap requirement).
+${lspCompletionInstruction}
 
 ADDITIONAL SAFETY:
 - Do not combine file edits and validation in a single execute_command (separate write step and validate step).

@@ -26,6 +26,7 @@ import {
   getExecuteCommandWorkingDirectory,
   isReadOnlyInspectionCommand,
   isRuntimeScriptInvocation,
+  normalizeRuntimeScriptInvocation,
   requiresRuntimeScript,
 } from "./command-safety";
 import { handleLspBootstrapAfterToolExecution } from "./lsp-bootstrap-runtime";
@@ -65,11 +66,25 @@ function hasPriorSuccessfulNoChangeResult(
 ): boolean {
   for (let index = state.context.steps.length - 1; index >= 0; index -= 1) {
     const step = state.context.steps[index];
+    if (!step) {
+      continue;
+    }
     if (!step.toolCall || !step.toolResult) {
       continue;
     }
 
-    const signature = buildToolCallSignature(step.toolCall.name, step.toolCall.arguments);
+    const signature = step.toolCall.name === "execute_command"
+      ? buildToolCallSignature(
+          step.toolCall.name,
+          {
+            command: getExecuteCommandText(step.toolCall.arguments) ?? "",
+            cwd: getExecuteCommandWorkingDirectory(step.toolCall.arguments) ?? process.cwd(),
+          },
+          {
+            workingDirectory: getExecuteCommandWorkingDirectory(step.toolCall.arguments),
+          }
+        )
+      : buildToolCallSignature(step.toolCall.name, step.toolCall.arguments);
     if (signature !== plannedSignature) {
       continue;
     }
@@ -152,17 +167,53 @@ export async function handleExecutionPhase<TResult>(input: {
     return { kind: "continue_loop" };
   }
   input.state.consecutiveNoToolContinues = 0;
-  const plannedExecuteCommand =
-    input.planResult.toolCall.name === "execute_command"
-      ? getExecuteCommandText(input.planResult.toolCall.arguments)
+  const plannedToolCallName = input.planResult.toolCall.name;
+  let plannedToolCallArguments = input.planResult.toolCall.arguments;
+  let plannedExecuteCommand =
+    plannedToolCallName === "execute_command"
+      ? getExecuteCommandText(plannedToolCallArguments)
       : undefined;
   const plannedExecuteWorkingDirectory =
-    input.planResult.toolCall.name === "execute_command"
-      ? resolve(getExecuteCommandWorkingDirectory(input.planResult.toolCall.arguments) ?? process.cwd())
+    plannedToolCallName === "execute_command"
+      ? resolve(getExecuteCommandWorkingDirectory(plannedToolCallArguments) ?? process.cwd())
       : undefined;
+  if (plannedExecuteCommand && plannedExecuteWorkingDirectory) {
+    const runtimeScriptNormalization = normalizeRuntimeScriptInvocation({
+      command: plannedExecuteCommand,
+      workingDirectory: plannedExecuteWorkingDirectory,
+    });
+    if (runtimeScriptNormalization.changed) {
+      plannedExecuteCommand = runtimeScriptNormalization.command;
+      plannedToolCallArguments = {
+        ...plannedToolCallArguments,
+        command: plannedExecuteCommand,
+      };
+      input.memory.addMessage(
+        "assistant",
+        `[runtime_script_invocation_normalized] Rewrote script invocation to ensure shell compatibility: ${plannedExecuteCommand}`
+      );
+      await appendRunEvent({
+        event: "runtime_script_invocation_normalized",
+        observer: input.observer,
+        payload: {
+          normalizedCommand: plannedExecuteCommand,
+          reason: runtimeScriptNormalization.reason ?? "runtime_script_shell_normalization",
+        },
+        phase: "executing",
+        runId: input.runId,
+        sessionId: input.sessionId,
+        step: input.stepNumber,
+      });
+    }
+  }
   const plannedToolCallSignature = buildToolCallSignature(
-    input.planResult.toolCall.name,
-    input.planResult.toolCall.arguments,
+    plannedToolCallName,
+    plannedToolCallName === "execute_command"
+      ? {
+          command: plannedExecuteCommand ?? "",
+          cwd: plannedExecuteWorkingDirectory ?? process.cwd(),
+        }
+      : plannedToolCallArguments,
     {
       workingDirectory: plannedExecuteWorkingDirectory,
     }
@@ -174,7 +225,7 @@ export async function handleExecutionPhase<TResult>(input: {
   });
   if (preExecutionLoopDetection.shouldBlock) {
     const recoverableInspectionLoop =
-      input.planResult.toolCall.name === "execute_command" &&
+      plannedToolCallName === "execute_command" &&
       typeof plannedExecuteCommand === "string" &&
       isReadOnlyInspectionCommand(plannedExecuteCommand) &&
       hasPriorSuccessfulNoChangeResult(input.state, plannedToolCallSignature) &&
@@ -205,8 +256,8 @@ export async function handleExecutionPhase<TResult>(input: {
         state: "executing",
         step: input.stepNumber,
         toolCall: {
-          arguments: input.planResult.toolCall.arguments,
-          name: input.planResult.toolCall.name,
+          arguments: plannedToolCallArguments,
+          name: plannedToolCallName,
         },
         toolResult: null,
       });
@@ -243,8 +294,8 @@ export async function handleExecutionPhase<TResult>(input: {
       state: "waiting_for_user",
       step: input.stepNumber,
       toolCall: {
-        arguments: input.planResult.toolCall.arguments,
-        name: input.planResult.toolCall.name,
+        arguments: plannedToolCallArguments,
+        name: plannedToolCallName,
       },
       toolResult: null,
     });
@@ -259,7 +310,7 @@ export async function handleExecutionPhase<TResult>(input: {
     };
   }
 
-  if (input.planResult.toolCall.name === "execute_command") {
+  if (plannedToolCallName === "execute_command") {
     const command = plannedExecuteCommand;
     const commandWorkingDirectory = plannedExecuteWorkingDirectory;
     if (command) {
@@ -295,8 +346,8 @@ export async function handleExecutionPhase<TResult>(input: {
           state: "executing",
           step: input.stepNumber,
           toolCall: {
-            arguments: input.planResult.toolCall.arguments,
-            name: input.planResult.toolCall.name,
+            arguments: plannedToolCallArguments,
+            name: plannedToolCallName,
           },
           toolResult: {
             error: SCRIPT_PROTOCOL_BLOCK_ERROR,
@@ -357,8 +408,8 @@ export async function handleExecutionPhase<TResult>(input: {
           state: "executing",
           step: input.stepNumber,
           toolCall: {
-            arguments: input.planResult.toolCall.arguments,
-            name: input.planResult.toolCall.name,
+            arguments: plannedToolCallArguments,
+            name: plannedToolCallName,
           },
           toolResult: {
             error: "Command denied by approval policy",
@@ -380,8 +431,8 @@ export async function handleExecutionPhase<TResult>(input: {
           state: "waiting_for_user",
           step: input.stepNumber,
           toolCall: {
-            arguments: input.planResult.toolCall.arguments,
-            name: input.planResult.toolCall.name,
+            arguments: plannedToolCallArguments,
+            name: plannedToolCallName,
           },
           toolResult: null,
         });
@@ -415,8 +466,8 @@ export async function handleExecutionPhase<TResult>(input: {
 
   try {
     const toolCall = {
-      arguments: input.planResult.toolCall.arguments,
-      name: input.planResult.toolCall.name,
+      arguments: plannedToolCallArguments,
+      name: plannedToolCallName,
     };
 
     const retryConfiguration = getRetryConfiguration(toolCall, {
@@ -589,7 +640,7 @@ export async function handleExecutionPhase<TResult>(input: {
 
       input.memory.addMessage("tool", buildToolMemoryDigest({
         attempt,
-        toolName: input.planResult.toolCall.name,
+        toolName: plannedToolCallName,
         toolResult,
       }));
 
@@ -684,11 +735,11 @@ export async function handleExecutionPhase<TResult>(input: {
       );
       input.memory.addMessage(
         "assistant",
-        `Retrying tool ${input.planResult.toolCall.name} after ${String(retryDelayMs)}ms (attempt ${String(attempt + 1)} of ${String(retryConfiguration.maxRetries + 1)}).`
+        `Retrying tool ${plannedToolCallName} after ${String(retryDelayMs)}ms (attempt ${String(attempt + 1)} of ${String(retryConfiguration.maxRetries + 1)}).`
       );
       logStep(
         input.stepNumber,
-        `Retry scheduled for tool ${input.planResult.toolCall.name}: delay=${String(retryDelayMs)}ms, attempt=${String(attempt + 1)}`
+        `Retry scheduled for tool ${plannedToolCallName}: delay=${String(retryDelayMs)}ms, attempt=${String(attempt + 1)}`
       );
       await sleep(retryDelayMs);
     }
@@ -699,8 +750,8 @@ export async function handleExecutionPhase<TResult>(input: {
       state: "executing",
       step: input.stepNumber,
       toolCall: {
-        arguments: input.planResult.toolCall.arguments,
-        name: input.planResult.toolCall.name,
+        arguments: plannedToolCallArguments,
+        name: plannedToolCallName,
       },
       toolResult,
     });
@@ -759,10 +810,10 @@ export async function handleExecutionPhase<TResult>(input: {
     }
 
     const loopSignature = buildToolLoopSignature({
-      argumentsObject: input.planResult.toolCall.arguments,
+      argumentsObject: plannedToolCallArguments,
       output: toolResult.output,
       success: toolResult.success,
-      toolName: input.planResult.toolCall.name,
+      toolName: plannedToolCallName,
     });
     if (loopSignature === input.state.lastToolLoopSignature) {
       input.state.lastToolLoopSignatureCount += 1;
@@ -830,12 +881,10 @@ export async function handleExecutionPhase<TResult>(input: {
       reasoning: input.planResult.reasoning,
       state: isValidationError ? "executing" : "error",
       step: input.stepNumber,
-      toolCall: input.planResult.toolCall
-        ? {
-            arguments: input.planResult.toolCall.arguments,
-            name: input.planResult.toolCall.name,
-          }
-        : null,
+      toolCall: {
+        arguments: plannedToolCallArguments,
+        name: plannedToolCallName,
+      },
       toolResult: {
         error: errorMessage,
         output: errorMessage,
@@ -844,7 +893,7 @@ export async function handleExecutionPhase<TResult>(input: {
     });
 
     if (isValidationError) {
-      const invalidToolName = input.planResult.toolCall?.name ?? "unknown_tool";
+      const invalidToolName = plannedToolCallName || "unknown_tool";
       const validationNote =
         `[tool_call_validation_failed] tool=${invalidToolName} reason=${errorMessage}`;
       input.memory.addMessage("assistant", validationNote);

@@ -34,11 +34,12 @@ function createTestConfig(): AgentConfig {
     doomLoopThreshold: 3,
     executorAnalysis: "on_failure",
     gateDisallowMasking: true,
+    interruptedRunRecoveryEnabled: true,
     llmApiKey: "test",
     llmCompatNormalizeToolRole: true,
     llmModel: "test-model",
     llmProvider: "openrouter",
-    lspAutoProvision: true,
+    lspAutoProvision: false,
     lspBootstrapBlockOnFailed: true,
     lspEnabled: true,
     lspMaxDiagnosticsPerFile: 20,
@@ -50,11 +51,15 @@ function createTestConfig(): AgentConfig {
     pendingActionMaxAgeMs: 3_600_000,
     plannerParseMaxRepairs: 2,
     plannerParseRetryOnFailure: true,
+    readonlyStagnationWindow: 4,
     requireRiskyConfirmation: false,
     riskyConfirmationToken: "ZACE_APPROVE_RISKY",
     stagnationWindow: 3,
     stream: false,
+    transientRetryMaxAttempts: 1,
+    transientRetryMaxDelayMs: 1000,
     verbose: false,
+    writeRegressionErrorSpike: 40,
   };
 }
 
@@ -71,7 +76,7 @@ describe("lsp bootstrap failed status handling", () => {
     }
   });
 
-  test("blocks completion when LSP status is failed due to invalid config", async () => {
+  test("returns waiting_for_user when LSP status is failed due to invalid config", async () => {
     tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-loop-lsp-failed-"));
     const configPath = join(tempDirectoryPath, ".zace", "runtime", "lsp", "servers.json");
     await mkdir(join(tempDirectoryPath, ".zace", "runtime", "lsp"), { recursive: true });
@@ -129,7 +134,7 @@ describe("lsp bootstrap failed status handling", () => {
 
     const result = await runAgentLoop(llmClient, createTestConfig(), "create a demo file");
 
-    expect(result.finalState).toBe("blocked");
+    expect(result.finalState).toBe("waiting_for_user");
     expect(result.message).toContain("LSP bootstrap");
     expect(result.message).toContain("Invalid input");
   });

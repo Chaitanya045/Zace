@@ -1,6 +1,7 @@
 export interface SystemPromptContext {
   commandAllowPatterns?: string[];
   commandDenyPatterns?: string[];
+  completionRequireLsp?: boolean;
   availableTools?: string[];
   completionCriteria?: string[];
   currentDirectory?: string;
@@ -92,6 +93,13 @@ You are not a chatbot. You are an autonomous coding agent operating in a local c
 
 export function buildSystemPrompt(context?: SystemPromptContext): string {
   let prompt = BASE_SYSTEM_PROMPT;
+
+  if (context?.completionRequireLsp === false) {
+    prompt = prompt.replace(
+      "If tool output reports status \"no_active_server\" or \"failed\", treat it as a required follow-up before completion.",
+      "If tool output reports status \"no_active_server\" or \"failed\", treat it as informational unless LSP completion blocking is explicitly enabled."
+    );
+  }
 
   if (context?.availableTools && context.availableTools.length > 0) {
     prompt += `\n\nAVAILABLE TOOLS:\n${context.availableTools.map((tool) => `- ${tool}`).join("\n")}`;

@@ -40,6 +40,7 @@ export interface PlanResult {
 
 type PlanOptions = {
   completionCriteria?: string[];
+  completionRequireLsp?: boolean;
   onStreamEnd?: () => void;
   onStreamStart?: () => void;
   onStreamToken?: (token: string) => void;
@@ -75,7 +76,9 @@ export async function plan(
 ): Promise<PlanResult> {
   logStep(context.currentStep + 1, "Planning next action");
 
-  const prompt = buildPlannerPrompt(context, options?.completionCriteria);
+  const prompt = buildPlannerPrompt(context, options?.completionCriteria, {
+    completionRequireLsp: options?.completionRequireLsp,
+  });
   const baseMessages = [
     ...memory.getMessages(),
     { content: prompt, role: "user" as const },

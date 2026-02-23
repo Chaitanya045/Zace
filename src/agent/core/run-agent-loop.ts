@@ -314,6 +314,7 @@ export async function runAgentLoop(
     commandAllowPatterns: config.commandAllowPatterns,
     commandDenyPatterns: config.commandDenyPatterns,
     completionCriteria: getCompletionCriteria(),
+    completionRequireLsp: config.completionRequireLsp,
     currentDirectory: process.cwd(),
     maxSteps: config.maxSteps,
     platform: process.platform,
@@ -406,6 +407,7 @@ export async function runAgentLoop(
       });
       const planResult = await plan(client, loopState.context, memory, {
         completionCriteria: getCompletionCriteria(),
+        completionRequireLsp: config.completionRequireLsp,
         onStreamEnd: () => {
           observer?.onPlannerStreamEnd?.();
         },

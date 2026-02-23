@@ -28,6 +28,7 @@ function createTestConfig(): AgentConfig {
     doomLoopThreshold: 3,
     executorAnalysis: "on_failure",
     gateDisallowMasking: true,
+    interruptedRunRecoveryEnabled: true,
     llmApiKey: "test",
     llmCompatNormalizeToolRole: true,
     llmModel: "test-model",
@@ -44,11 +45,15 @@ function createTestConfig(): AgentConfig {
     pendingActionMaxAgeMs: 3_600_000,
     plannerParseMaxRepairs: 2,
     plannerParseRetryOnFailure: true,
+    readonlyStagnationWindow: 4,
     requireRiskyConfirmation: false,
     riskyConfirmationToken: "ZACE_APPROVE_RISKY",
     stagnationWindow: 3,
     stream: false,
+    transientRetryMaxAttempts: 1,
+    transientRetryMaxDelayMs: 1000,
     verbose: false,
+    writeRegressionErrorSpike: 40,
   };
 }
 

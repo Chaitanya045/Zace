@@ -23,6 +23,7 @@ import {
   shouldBlockForFreshness,
   shouldBlockForMaskedGates,
 } from "../../completion/gate-evaluation";
+import { attemptRuntimeLspAutoprovision } from "../../lsp-bootstrap/autoprovision";
 import {
   buildLspBootstrapRequirementMessage,
   shouldBlockForBootstrap,
@@ -160,6 +161,44 @@ export async function handleCompletionPhase<TResult>(input: {
       lspState: input.state.lspBootstrap.state,
     });
     if (lspBootstrapBlocking) {
+      const canAutoprovision =
+        input.config.lspAutoProvision &&
+        input.state.lspBootstrap.provisionAttempts < input.config.lspProvisionMaxAttempts;
+      if (canAutoprovision) {
+        const autoprovisionOutcome = await attemptRuntimeLspAutoprovision({
+          appendRunEvent: async ({ event, payload, phase, step }) => {
+            await appendRunEvent({
+              event,
+              observer: input.observer,
+              payload,
+              phase,
+              runId: input.runId,
+              sessionId: input.sessionId,
+              step,
+            });
+          },
+          config: input.config,
+          lspBootstrap: input.state.lspBootstrap,
+          runToolCall: input.runToolCall,
+          stepNumber: input.stepNumber,
+          toolExecutionContext: input.toolExecutionContext,
+          workingDirectory: validationWorkingDirectory,
+        });
+        input.memory.addMessage("assistant", autoprovisionOutcome.message);
+        if (autoprovisionOutcome.status === "resolved") {
+          input.state.lastCompletionGateFailure = null;
+          input.state.context = addStep(input.state.context, {
+            reasoning:
+              "Resolved LSP bootstrap during completion phase via deterministic runtime autoprovision and probe.",
+            state: "executing",
+            step: input.stepNumber,
+            toolCall: null,
+            toolResult: null,
+          });
+          return { kind: "continue_loop" };
+        }
+      }
+
       const bootstrapMessage = buildLspBootstrapRequirementMessage(
         input.config.lspServerConfigPath,
         Array.from(input.state.lspBootstrap.pendingChangedFiles),

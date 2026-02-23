@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 
 import type { AgentConfig } from "../../../types/config";
 import type { ToolResult } from "../../../types/tool";
@@ -13,6 +13,45 @@ import {
   shouldTrackPendingLspFiles,
 } from "../../lsp-bootstrap/state-machine";
 import { appendRunEvent } from "./run-events";
+
+const NON_DIAGNOSTIC_SOURCE_EXTENSIONS = new Set([
+  ".bmp",
+  ".conf",
+  ".css",
+  ".csv",
+  ".env",
+  ".gif",
+  ".html",
+  ".ini",
+  ".jpeg",
+  ".jpg",
+  ".json",
+  ".jsonl",
+  ".lock",
+  ".log",
+  ".md",
+  ".png",
+  ".svg",
+  ".toml",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml",
+]);
+
+function isTrackableLspPendingFile(filePath: string): boolean {
+  const normalized = resolve(filePath).replaceAll("\\", "/");
+  if (normalized.includes("/.zace/runtime/")) {
+    return false;
+  }
+
+  const extension = extname(normalized).toLowerCase();
+  if (!extension) {
+    return false;
+  }
+
+  return !NON_DIAGNOSTIC_SOURCE_EXTENSIONS.has(extension);
+}
 
 export async function handleLspBootstrapAfterToolExecution(input: {
   changedFiles: string[];
@@ -48,7 +87,8 @@ export async function handleLspBootstrapAfterToolExecution(input: {
   const lspStatusReason = input.toolResult.artifacts?.lspStatusReason;
   const nonConfigChangedFiles = input.changedFiles
     .map((filePath) => resolve(filePath))
-    .filter((filePath) => filePath !== input.lspServerConfigAbsolutePath);
+    .filter((filePath) => filePath !== input.lspServerConfigAbsolutePath)
+    .filter((filePath) => isTrackableLspPendingFile(filePath));
   if (shouldTrackPendingLspFiles(lspBootstrapSignal)) {
     for (const filePath of nonConfigChangedFiles) {
       input.lspBootstrap.pendingChangedFiles.add(filePath);
