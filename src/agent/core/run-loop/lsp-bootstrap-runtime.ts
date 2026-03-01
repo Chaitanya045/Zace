@@ -1,11 +1,37 @@
 import { extname, resolve } from "node:path";
 
 import type { AgentConfig } from "../../../types/config";
-import type { ToolResult } from "../../../types/tool";
+import type { ToolExecutionContext, ToolResult } from "../../../types/tool";
 import type { AgentObserver } from "../../observer";
 import type { LspBootstrapContext } from "./types";
 
+type CommandApprovalResult =
+  | {
+      commandSignature: string;
+      message: string;
+      reason: string;
+      status: "request_user";
+    }
+  | {
+      message: string;
+      scope: "session" | "workspace";
+      status: "deny";
+    }
+  | {
+      requiredApproval: boolean;
+      scope: "once" | "session" | "workspace";
+      status: "allow";
+    };
+
+function isNoServersConfiguredSignal(toolResult: ToolResult): boolean {
+  return (
+    toolResult.artifacts?.lspStatus === "no_active_server" &&
+    toolResult.artifacts?.lspStatusReason === "no_servers_configured"
+  );
+}
+
 import { probeFiles as probeLspFiles } from "../../../lsp";
+import { attemptRuntimeLspAutoprovision } from "../../lsp-bootstrap/autoprovision";
 import {
   advanceLspBootstrapState,
   buildLspBootstrapRequirementMessage,
@@ -63,12 +89,23 @@ export async function handleLspBootstrapAfterToolExecution(input: {
   };
   observer?: AgentObserver;
   plannedExecuteCommand?: string;
+  resolveCommandApproval?: (input: {
+    command: string;
+    workingDirectory?: string;
+  }) => Promise<CommandApprovalResult>;
   runId: string;
   sessionId?: string;
   stepNumber: number;
   toolResult: ToolResult;
+  toolExecutionContext?: ToolExecutionContext;
+  runToolCall?: (
+    toolCall: { arguments: Record<string, unknown>; name: string },
+    context?: ToolExecutionContext
+  ) => Promise<ToolResult>;
+  workingDirectory?: string;
 }): Promise<void> {
   const lspStatus = input.toolResult.artifacts?.lspStatus;
+  const lspStatusReason = input.toolResult.artifacts?.lspStatusReason;
   if (lspStatus) {
     await appendRunEvent({
       event: "lsp_status_observed",
@@ -84,7 +121,6 @@ export async function handleLspBootstrapAfterToolExecution(input: {
     });
   }
   const lspBootstrapSignal = deriveLspBootstrapSignal(input.toolResult);
-  const lspStatusReason = input.toolResult.artifacts?.lspStatusReason;
   const nonConfigChangedFiles = input.changedFiles
     .map((filePath) => resolve(filePath))
     .filter((filePath) => filePath !== input.lspServerConfigAbsolutePath)
@@ -118,6 +154,46 @@ export async function handleLspBootstrapAfterToolExecution(input: {
       sessionId: input.sessionId,
       step: input.stepNumber,
     });
+  }
+
+  const shouldEarlyAutoprovision =
+    input.config.lspAutoProvision &&
+    input.lspBootstrap.provisionAttempts < input.config.lspProvisionMaxAttempts &&
+    isNoServersConfiguredSignal(input.toolResult);
+  if (
+    shouldEarlyAutoprovision &&
+    input.runToolCall &&
+    input.resolveCommandApproval &&
+    input.workingDirectory
+  ) {
+    const autoprovisionOutcome = await attemptRuntimeLspAutoprovision({
+      appendRunEvent: async ({ event, payload, phase, step }) => {
+        await appendRunEvent({
+          event,
+          observer: input.observer,
+          payload,
+          phase,
+          runId: input.runId,
+          sessionId: input.sessionId,
+          step,
+        });
+      },
+      config: input.config,
+      lspBootstrap: input.lspBootstrap,
+      resolveCommandApproval: input.resolveCommandApproval,
+      runToolCall: input.runToolCall,
+      stepNumber: input.stepNumber,
+      toolExecutionContext: input.toolExecutionContext,
+      workingDirectory: input.workingDirectory,
+    });
+    input.memory.addMessage("assistant", autoprovisionOutcome.message);
+
+    if (autoprovisionOutcome.status === "needs_user") {
+      input.memory.addMessage(
+        "assistant",
+        "[lsp_autoprovision_requires_approval] Waiting for user approval before running LSP auto-provision."
+      );
+    }
   }
 
   const touchedLspConfig =

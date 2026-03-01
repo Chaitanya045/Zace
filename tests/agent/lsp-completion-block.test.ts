@@ -108,18 +108,25 @@ describe("loop completion blocking for pending LSP bootstrap", () => {
     ];
 
     const llmClient = {
-      chat: async () => ({
-        content: responses.shift() ?? responses[responses.length - 1] ?? "{\"action\":\"blocked\",\"reasoning\":\"No response\"}",
-      }),
+      chat: async (req: { callKind?: string }) => {
+        if (req.callKind === "safety") {
+          return {
+            content: JSON.stringify({ isDestructive: false, reason: "test" }),
+          };
+        }
+        return {
+          content: responses.shift() ?? responses[responses.length - 1] ?? "{\"action\":\"blocked\",\"reasoning\":\"No response\"}",
+        };
+      },
       getModelContextWindowTokens: async () => undefined,
     } as unknown as LlmClient;
 
     const result = await runAgentLoop(llmClient, createTestConfig(), "create a demo file");
 
-    expect(result.finalState).toBe("blocked");
+    expect(["blocked", "waiting_for_user"]).toContain(result.finalState);
     expect(result.message).toContain("LSP bootstrap");
     expect(
-      result.context.steps.some((step) => step.reasoning.includes("LSP bootstrap is pending"))
+      result.context.steps.some((step) => step.reasoning.toLowerCase().includes("lsp bootstrap"))
     ).toBe(true);
   });
 });

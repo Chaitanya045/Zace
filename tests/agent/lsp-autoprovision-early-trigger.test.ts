@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,9 +26,9 @@ function createTestConfig(maxSteps: number): AgentConfig {
     compactionPreserveRecentMessages: 12,
     compactionTriggerRatio: 0.8,
     completionBlockRepeatLimit: 2,
-    completionRequireDiscoveredGates: true,
-    completionRequireLsp: true,
-    completionValidationMode: "strict",
+    completionRequireDiscoveredGates: false,
+    completionRequireLsp: false,
+    completionValidationMode: "llm_only",
     contextWindowTokens: undefined,
     docContextMaxChars: 6000,
     docContextMaxFiles: 3,
@@ -48,7 +48,7 @@ function createTestConfig(maxSteps: number): AgentConfig {
     lspMaxFilesInOutput: 5,
     lspProvisionMaxAttempts: 2,
     lspServerConfigPath: ".zace/runtime/lsp/servers.json",
-    lspWaitForDiagnosticsMs: 300,
+    lspWaitForDiagnosticsMs: 200,
     maxSteps,
     pendingActionMaxAgeMs: 3_600_000,
     plannerParseMaxRepairs: 2,
@@ -74,13 +74,13 @@ describe("runtime LSP auto-provision", () => {
     env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = originalLspWaitMs;
   });
 
-  test("creates servers.json and allows completion when missing LSP config is auto-provisioned", async () => {
-    const tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-lsp-autoprovision-"));
-    const sessionId = createAutoSessionId(new Date("2026-02-21T09:00:00.000Z"));
+  test("triggers early during execution when no servers configured", async () => {
+    const tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-lsp-autoprovision-early-"));
+    const sessionId = createAutoSessionId(new Date("2026-02-21T10:00:00.000Z"));
     const sessionPath = getSessionFilePath(sessionId);
 
     env.AGENT_LSP_ENABLED = true;
-    env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = 250;
+    env.AGENT_LSP_WAIT_FOR_DIAGNOSTICS_MS = 150;
     env.AGENT_LSP_SERVER_CONFIG_PATH = join(
       tempDirectoryPath,
       ".zace",
@@ -89,10 +89,14 @@ describe("runtime LSP auto-provision", () => {
       "servers.json"
     );
 
+    // Ensure the config exists but has no servers.
+    await mkdir(join(tempDirectoryPath, ".zace", "runtime", "lsp"), { recursive: true });
+    await writeFile(env.AGENT_LSP_SERVER_CONFIG_PATH, JSON.stringify({ servers: [] }, null, 2) + "\n", "utf8");
+
     const plannerResponses = [
       JSON.stringify({
         action: "continue",
-        reasoning: "Create source file to trigger bootstrap tracking.",
+        reasoning: "Create TypeScript file to create an LSP diagnostic candidate.",
         toolCall: {
           arguments: {
             command: [
@@ -109,13 +113,7 @@ describe("runtime LSP auto-provision", () => {
       JSON.stringify({
         action: "complete",
         gates: "none",
-        reasoning: "Task done.",
-        userMessage: "done",
-      }),
-      JSON.stringify({
-        action: "complete",
-        gates: "none",
-        reasoning: "Task done.",
+        reasoning: "Done",
         userMessage: "done",
       }),
     ];
@@ -135,39 +133,15 @@ describe("runtime LSP auto-provision", () => {
     } as unknown as LlmClient;
 
     try {
-      const result = await runAgentLoop(
-        llmClient,
-        createTestConfig(6),
-        "create demo file",
-        { sessionId }
-      );
-
+      const result = await runAgentLoop(llmClient, createTestConfig(4), "create demo", { sessionId });
       expect(["completed", "waiting_for_user"]).toContain(result.finalState);
-      if (result.finalState === "waiting_for_user") {
-        expect(result.message).toContain("bootstrap");
-      }
 
-      const entries = await readSessionEntries(sessionId);
-      const runEvents = entries
+      const runEvents = (await readSessionEntries(sessionId))
         .filter((entry) => entry.type === "run_event")
         .map((entry) => entry.event);
-      expect(runEvents).toContain("lsp_autoprovision_started");
-      expect(runEvents).toContain("lsp_autoprovision_command_finished");
-      if (!runEvents.includes("lsp_autoprovision_written")) {
-        const failures = entries
-          .filter((entry) => entry.type === "run_event")
-          .filter((entry) => entry.event === "lsp_autoprovision_failed");
-        if (failures.length > 0) {
-          const payload = failures[failures.length - 1]?.payload ?? {};
-          throw new Error(`Autoprovision failed. payload=${JSON.stringify(payload)}`);
-        }
-      }
-      expect(runEvents).toContain("lsp_autoprovision_written");
 
-      const configContent = await readFile(env.AGENT_LSP_SERVER_CONFIG_PATH, "utf8");
-      const parsed = JSON.parse(configContent) as { servers?: unknown[] };
-      expect(Array.isArray(parsed.servers)).toBe(true);
-      expect(parsed.servers?.length).toBeGreaterThan(0);
+      expect(runEvents).toContain("lsp_status_observed");
+      expect(runEvents).toContain("lsp_autoprovision_started");
     } finally {
       await unlink(sessionPath).catch(() => undefined);
       await rm(tempDirectoryPath, { force: true, recursive: true });

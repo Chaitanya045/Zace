@@ -51,6 +51,16 @@ describe("env boolean parsing", () => {
     expect(parsed.data.AGENT_VERBOSE).toBe(true);
   });
 
+  test("defaults runtime script enforcement to false", () => {
+    const parsed = parseEnvironment(createBaseEnvironment());
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) {
+      return;
+    }
+    expect(parsed.data.AGENT_RUNTIME_SCRIPT_ENFORCED).toBe(false);
+  });
+
   test("rejects invalid boolean strings", () => {
     const parsed = parseEnvironment({
       ...createBaseEnvironment(),

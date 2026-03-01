@@ -152,4 +152,62 @@ describe("runtime script protocol enforcement", () => {
       await rm(tempDirectoryPath, { force: true, recursive: true });
     }
   });
+
+  test("allows inline redirect writes when runtime enforcement disabled", async () => {
+    const tempDirectoryPath = await mkdtemp(join(tmpdir(), "zace-script-enforcement-off-"));
+    const sessionId = createAutoSessionId(new Date("2026-02-20T10:00:00.000Z"));
+    const sessionPath = getSessionFilePath(sessionId);
+    const plannerResponses = [
+      JSON.stringify({
+        action: "continue",
+        reasoning: "Write note directly.",
+        toolCall: {
+          arguments: {
+            command: "echo hello > note.txt",
+            cwd: tempDirectoryPath,
+          },
+          name: "execute_command",
+        },
+      }),
+      JSON.stringify({
+        action: "complete",
+        gates: "none",
+        reasoning: "Done",
+        userMessage: "done",
+      }),
+    ];
+
+    const llmClient = {
+      chat: async () => ({
+        content: plannerResponses.shift() ?? "{\"action\":\"blocked\",\"reasoning\":\"missing planner response\"}",
+      }),
+      getModelContextWindowTokens: async () => undefined,
+    } as unknown as LlmClient;
+
+    try {
+      const result = await runAgentLoop(
+        llmClient,
+        {
+          ...createTestConfig(4),
+          runtimeScriptEnforced: false,
+        },
+        "write note",
+        { sessionId }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.finalState).toBe("completed");
+
+      const noteContent = await readFile(join(tempDirectoryPath, "note.txt"), "utf8");
+      expect(noteContent.trim()).toBe("hello");
+
+      const runEvents = (await readSessionEntries(sessionId))
+        .filter((entry) => entry.type === "run_event")
+        .map((entry) => entry.event);
+      expect(runEvents).not.toContain("script_protocol_blocked");
+    } finally {
+      await unlink(sessionPath).catch(() => undefined);
+      await rm(tempDirectoryPath, { force: true, recursive: true });
+    }
+  });
 });

@@ -631,10 +631,14 @@ export async function handleExecutionPhase<TResult>(input: {
           },
           observer: input.observer,
           plannedExecuteCommand,
+          resolveCommandApproval: input.resolveCommandApproval,
           runId: input.runId,
+          runToolCall: input.runToolCall,
           sessionId: input.sessionId,
           stepNumber: input.stepNumber,
+          toolExecutionContext: input.toolExecutionContext,
           toolResult,
+          workingDirectory: plannedExecuteWorkingDirectory,
         });
       }
 

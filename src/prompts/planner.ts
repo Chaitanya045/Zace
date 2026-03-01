@@ -70,8 +70,8 @@ INSTRUCTIONS:
 7. When scripts modify files, print one marker line per file:
    ZACE_FILE_CHANGED|<path>
    Emit markers only for files that were actually changed by successful commands.
-8. Runtime enforcement blocks mutating or complex inline shell commands (heredocs, redirection-heavy, multi-line, chained).
-   Route those through reusable scripts in .zace/runtime/scripts.
+ 8. When runtime script protocol enforcement is enabled, it blocks mutating or complex inline shell commands (heredocs, redirection-heavy, multi-line, chained).
+    Route those through reusable scripts in .zace/runtime/scripts.
 9. Runtime LSP server config is loaded from .zace/runtime/lsp/servers.json.
    LLM may only author/update this config file; runtime validates/probes/enforces.
    Valid schema:

@@ -9,6 +9,24 @@ import {
   type LspBootstrapState,
 } from "./state-machine";
 
+type CommandApprovalResult =
+  | {
+      commandSignature: string;
+      message: string;
+      reason: string;
+      status: "request_user";
+    }
+  | {
+      message: string;
+      scope: "session" | "workspace";
+      status: "deny";
+    }
+  | {
+      requiredApproval: boolean;
+      scope: "once" | "session" | "workspace";
+      status: "allow";
+    };
+
 type LspAutoprovisionState = {
   attemptedCommands: string[];
   lastFailureReason: null | string;
@@ -24,18 +42,16 @@ type ToolCallLike = {
 
 export type LspAutoprovisionOutcome = {
   message: string;
-  status: "failed" | "resolved" | "skipped";
+  status: "failed" | "needs_user" | "resolved" | "skipped";
 };
 
-const APPLICABLE_EXTENSIONS = new Set([
-  ".cjs",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".ts",
-  ".tsx",
-]);
-const TEMPLATE_SERVER_ID = "typescript";
+const EXTENSIONS_TS_JS = new Set([".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"]);
+const EXTENSIONS_PY = new Set([".py"]);
+
+const TEMPLATE_SERVER_IDS = {
+  python: "python",
+  typescript: "typescript",
+} as const;
 
 function toAbsoluteConfigPath(configPath: string, workingDirectory: string): string {
   return isAbsolute(configPath) ? resolve(configPath) : resolve(workingDirectory, configPath);
@@ -57,20 +73,10 @@ function buildBunEvalCommand(source: string): string {
   return `bun -e '${loader}' '${sourceBase64}'`;
 }
 
-function buildAutoprovisionCommand(configPath: string): string {
-  const template = {
-    servers: [
-      {
-        command: ["bunx", "typescript-language-server", "--stdio"],
-        extensions: [".ts", ".tsx", ".js", ".jsx"],
-        id: TEMPLATE_SERVER_ID,
-        rootMarkers: ["tsconfig.json", "package.json"],
-      },
-    ],
-  };
+function buildAutoprovisionCommand(configPath: string, template: unknown): string {
   const source = `
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+ import { dirname } from "node:path";
 
 const configPath = ${JSON.stringify(configPath)};
  const markerWritten = "ZACE_LSP_AUTOPROVISION_WRITTEN|" + configPath;
@@ -96,18 +102,65 @@ if (hasExistingServers) {
   console.log(markerSkipped);
 } else {
   mkdirSync(dirname(configPath), { recursive: true });
-  const payload = ${JSON.stringify(JSON.stringify(template, null, 2) + "\n")};
-  writeFileSync(configPath, payload, "utf8");
-  console.log("ZACE_FILE_CHANGED|" + configPath);
-  console.log(markerWritten);
-}
- `.trim();
+   const payload = ${JSON.stringify(JSON.stringify(template, null, 2) + "\n")};
+   writeFileSync(configPath, payload, "utf8");
+   console.log("ZACE_FILE_CHANGED|" + configPath);
+   console.log(markerWritten);
+ }
+  `.trim();
 
   return buildBunEvalCommand(source);
 }
 
 function pendingFilesSupportProvisioning(pendingFiles: string[]): boolean {
-  return pendingFiles.some((filePath) => APPLICABLE_EXTENSIONS.has(extname(filePath).toLowerCase()));
+  return pendingFiles.some((filePath) => {
+    const extension = extname(filePath).toLowerCase();
+    return EXTENSIONS_TS_JS.has(extension) || EXTENSIONS_PY.has(extension);
+  });
+}
+
+function buildTemplateForPendingFiles(pendingFiles: string[]): {
+  servers: Array<{
+    command: string[];
+    extensions: string[];
+    id: string;
+    rootMarkers: string[];
+  }>;
+  templateIds: string[];
+} {
+  const extensions = new Set(pendingFiles.map((filePath) => extname(filePath).toLowerCase()));
+  const servers: Array<{
+    command: string[];
+    extensions: string[];
+    id: string;
+    rootMarkers: string[];
+  }> = [];
+  const templateIds: string[] = [];
+
+  if (Array.from(extensions).some((ext) => EXTENSIONS_TS_JS.has(ext))) {
+    servers.push({
+      command: ["bunx", "typescript-language-server", "--stdio"],
+      extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
+      id: TEMPLATE_SERVER_IDS.typescript,
+      rootMarkers: ["tsconfig.json", "package.json"],
+    });
+    templateIds.push(TEMPLATE_SERVER_IDS.typescript);
+  }
+
+  if (extensions.has(".py")) {
+    servers.push({
+      command: ["bunx", "pyright-langserver", "--stdio"],
+      extensions: [".py"],
+      id: TEMPLATE_SERVER_IDS.python,
+      rootMarkers: ["pyproject.toml", "requirements.txt", "setup.py"],
+    });
+    templateIds.push(TEMPLATE_SERVER_IDS.python);
+  }
+
+  return {
+    servers,
+    templateIds,
+  };
 }
 
 function pushAttemptedCommand(state: LspAutoprovisionState, command: string): void {
@@ -128,6 +181,10 @@ export async function attemptRuntimeLspAutoprovision(input: {
   }) => Promise<void>;
   config: AgentConfig;
   lspBootstrap: LspAutoprovisionState;
+  resolveCommandApproval: (input: {
+    command: string;
+    workingDirectory?: string;
+  }) => Promise<CommandApprovalResult>;
   runToolCall: (toolCall: ToolCallLike, context?: ToolExecutionContext) => Promise<ToolResult>;
   stepNumber: number;
   toolExecutionContext?: ToolExecutionContext;
@@ -155,7 +212,7 @@ export async function attemptRuntimeLspAutoprovision(input: {
 
   if (!pendingFilesSupportProvisioning(pendingFiles)) {
     const message =
-      "LSP auto-provision skipped: pending files are not applicable to the built-in TypeScript/JavaScript template.";
+      "LSP auto-provision skipped: pending files are not applicable to the built-in TypeScript/JavaScript/Python templates.";
     await input.appendRunEvent({
       event: "lsp_autoprovision_skipped",
       payload: {
@@ -175,15 +232,76 @@ export async function attemptRuntimeLspAutoprovision(input: {
     input.config.lspServerConfigPath,
     input.workingDirectory
   );
-  const provisionCommand = buildAutoprovisionCommand(absoluteConfigPath);
+
+  const template = buildTemplateForPendingFiles(pendingFiles);
+  if (template.servers.length === 0) {
+    const message =
+      "LSP auto-provision skipped: no supported language servers matched pending changed files.";
+    await input.appendRunEvent({
+      event: "lsp_autoprovision_skipped",
+      payload: {
+        pendingFiles: pendingFiles.slice(0, 20),
+        reason: "no_supported_templates",
+      },
+      phase: "executing",
+      step: input.stepNumber,
+    });
+    return {
+      message,
+      status: "skipped",
+    };
+  }
+
+  const provisionCommand = buildAutoprovisionCommand(absoluteConfigPath, { servers: template.servers });
   pushAttemptedCommand(input.lspBootstrap, provisionCommand);
+
+  const approval = await input.resolveCommandApproval({
+    command: provisionCommand,
+    workingDirectory: input.workingDirectory,
+  });
+  if (approval.status === "deny") {
+    input.lspBootstrap.provisionAttempts += 1;
+    const message = `LSP auto-provision blocked by approval policy: ${approval.message}`;
+    input.lspBootstrap.lastFailureReason = "approval_denied";
+    input.lspBootstrap.state = "failed";
+    await input.appendRunEvent({
+      event: "lsp_autoprovision_failed",
+      payload: {
+        configPath: absoluteConfigPath,
+        reason: "approval_denied",
+      },
+      phase: "approval",
+      step: input.stepNumber,
+    });
+    return {
+      message,
+      status: "failed",
+    };
+  }
+  if (approval.status === "request_user") {
+    await input.appendRunEvent({
+      event: "approval_requested",
+      payload: {
+        command: provisionCommand,
+        commandSignature: approval.commandSignature,
+        reason: approval.reason,
+        source: "lsp_autoprovision",
+      },
+      phase: "approval",
+      step: input.stepNumber,
+    });
+    return {
+      message: approval.message,
+      status: "needs_user",
+    };
+  }
 
   await input.appendRunEvent({
     event: "lsp_autoprovision_started",
     payload: {
       configPath: absoluteConfigPath,
       pendingFiles: pendingFiles.slice(0, 20),
-      template: TEMPLATE_SERVER_ID,
+      templates: template.templateIds,
     },
     phase: "executing",
     step: input.stepNumber,

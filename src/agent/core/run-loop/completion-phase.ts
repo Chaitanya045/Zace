@@ -179,12 +179,31 @@ export async function handleCompletionPhase<TResult>(input: {
           },
           config: input.config,
           lspBootstrap: input.state.lspBootstrap,
+          resolveCommandApproval: input.resolveCommandApproval,
           runToolCall: input.runToolCall,
           stepNumber: input.stepNumber,
           toolExecutionContext: input.toolExecutionContext,
           workingDirectory: validationWorkingDirectory,
         });
         input.memory.addMessage("assistant", autoprovisionOutcome.message);
+        if (autoprovisionOutcome.status === "needs_user") {
+          input.state.context = addStep(input.state.context, {
+            reasoning: "Waiting for approval before running LSP auto-provision command.",
+            state: "waiting_for_user",
+            step: input.stepNumber,
+            toolCall: null,
+            toolResult: null,
+          });
+          return {
+            kind: "finalized",
+            result: await input.finalizeResult({
+              context: input.state.context,
+              finalState: "waiting_for_user",
+              message: autoprovisionOutcome.message,
+              success: false,
+            }, input.stepNumber, "lsp_autoprovision_requires_approval"),
+          };
+        }
         if (autoprovisionOutcome.status === "resolved") {
           input.state.lastCompletionGateFailure = null;
           input.state.context = addStep(input.state.context, {
