@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { z } from "zod";
 
 export const lspServerConfigSchema = z.object({
@@ -54,8 +54,11 @@ async function resolveRootWithMarkers(filePath: string, markers: string[]): Prom
     return process.cwd();
   }
 
+  const startDirectory = resolve(dirname(filePath));
   const stopDirectory = resolve(process.cwd());
-  let currentDirectory = resolve(dirname(filePath));
+  const stopAtCwd =
+    startDirectory === stopDirectory || startDirectory.startsWith(stopDirectory + sep);
+  let currentDirectory = startDirectory;
 
   while (true) {
     for (const marker of markers) {
@@ -68,13 +71,13 @@ async function resolveRootWithMarkers(filePath: string, markers: string[]): Prom
       }
     }
 
-    if (currentDirectory === stopDirectory) {
+    if (stopAtCwd && currentDirectory === stopDirectory) {
       return stopDirectory;
     }
 
     const parent = dirname(currentDirectory);
     if (parent === currentDirectory) {
-      return stopDirectory;
+      return stopAtCwd ? stopDirectory : startDirectory;
     }
     currentDirectory = parent;
   }

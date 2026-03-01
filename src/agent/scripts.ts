@@ -151,7 +151,7 @@ const scriptDirectoryPath = ${JSON.stringify(SCRIPT_DIRECTORY_PATH)};
 mkdirSync(scriptDirectoryPath, { recursive: true });
 
 for (const entry of readdirSync(scriptDirectoryPath)) {
-  if (!entry.endsWith(".ps1") && !entry.endsWith(".sh")) {
+  if (!entry.endsWith(".ps1") && !entry.endsWith(".sh") && !entry.endsWith(".ts")) {
     continue;
   }
 
@@ -160,7 +160,7 @@ for (const entry of readdirSync(scriptDirectoryPath)) {
     continue;
   }
 
-  const id = entry.replace(/\\.(ps1|sh)$/iu, "");
+  const id = entry.replace(/\\.(ps1|sh|ts)$/iu, "");
   let content = "";
   let purpose = "Existing runtime script";
   try {
@@ -170,11 +170,14 @@ for (const entry of readdirSync(scriptDirectoryPath)) {
   }
 
   for (const line of content.split(/\\r?\\n/u)) {
-    if (!line.startsWith("# zace-purpose:")) {
+    if (!line.startsWith("# zace-purpose:") && !line.startsWith("// zace-purpose:")) {
       continue;
     }
 
-    const parsedPurpose = line.replace("# zace-purpose:", "").trim();
+    const parsedPurpose = line
+      .replace("# zace-purpose:", "")
+      .replace("// zace-purpose:", "")
+      .trim();
     if (parsedPurpose.length > 0) {
       purpose = parsedPurpose;
     }

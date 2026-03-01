@@ -42,7 +42,7 @@ type DiagnosticsWaiter = {
   timeoutHandle: ReturnType<typeof setTimeout>;
 };
 
-const DIAGNOSTICS_DEBOUNCE_MS = 150;
+const DIAGNOSTICS_DEBOUNCE_MS = 0;
 const INITIALIZE_TIMEOUT_MS = 15_000;
 
 async function withTimeout<T>(
@@ -82,6 +82,25 @@ function normalizeAbsolutePath(pathValue: string): string {
   }
 
   return resolve(process.cwd(), pathValue);
+}
+
+function normalizeLspPath(pathValue: string): string {
+  const absolutePath = normalizeAbsolutePath(pathValue);
+  if (process.platform !== "darwin") {
+    return absolutePath;
+  }
+
+  // macOS: /var is a symlink to /private/var, and many processes report
+  // getcwd() as the physical (/private/var/...) path. Normalize to /var
+  // so changed-file paths and published diagnostics match consistently.
+  if (absolutePath === "/private/var") {
+    return "/var";
+  }
+  if (absolutePath.startsWith("/private/var/")) {
+    return `/var/${absolutePath.slice("/private/var/".length)}`;
+  }
+
+  return absolutePath;
 }
 
 export class LspClient {
@@ -197,7 +216,7 @@ export class LspClient {
   }
 
   diagnosticsVersion(pathValue: string): number {
-    const absolutePath = normalizeAbsolutePath(pathValue);
+    const absolutePath = normalizeLspPath(pathValue);
     return this.diagnosticsVersionByFile.get(absolutePath) ?? 0;
   }
 
@@ -210,7 +229,7 @@ export class LspClient {
   }
 
   async notifyOpen(pathValue: string): Promise<void> {
-    const absolutePath = normalizeAbsolutePath(pathValue);
+    const absolutePath = normalizeLspPath(pathValue);
     const uri = pathToFileURL(absolutePath).href;
     const text = await readFile(absolutePath, "utf8");
     const nextVersion = (this.openedFileVersions.get(absolutePath) ?? 0) + 1;
@@ -251,7 +270,7 @@ export class LspClient {
   }
 
   async waitForDiagnostics(pathValue: string, baselineVersion: number = 0): Promise<void> {
-    const absolutePath = normalizeAbsolutePath(pathValue);
+    const absolutePath = normalizeLspPath(pathValue);
     const currentVersion = this.diagnosticsVersionByFile.get(absolutePath) ?? 0;
     if (currentVersion > baselineVersion) {
       return;
@@ -316,7 +335,7 @@ export class LspClient {
         return;
       }
 
-      const filePath = normalizeAbsolutePath(fileURLToPath(uri));
+      const filePath = normalizeLspPath(fileURLToPath(uri));
       this.diagnosticsByFile.set(filePath, parsedPayload.diagnostics ?? []);
       const nextVersion = (this.diagnosticsVersionByFile.get(filePath) ?? 0) + 1;
       this.diagnosticsVersionByFile.set(filePath, nextVersion);

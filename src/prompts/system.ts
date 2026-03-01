@@ -67,10 +67,13 @@ RUNTIME SCRIPT PROTOCOL:
    After writing servers.json, run a probe command and confirm active LSP before completing.
    If tool output reports status "no_active_server" or "failed", treat it as a required follow-up before completion.
    Treat "no_applicable_files", "no_changed_files", and "disabled" as neutral statuses.
-6. On Unix-like platforms, use .sh scripts with:
+6. On Unix-like platforms, prefer .sh scripts with:
    #!/usr/bin/env bash
    set -euo pipefail
    # zace-purpose: <one line purpose>
+   If a TypeScript runtime script is needed, store it as .ts and include:
+   // zace-purpose: <one line purpose>
+   Execute with bun/node and emit the same ZACE_* markers.
 7. On Windows platforms, prefer .ps1 scripts with:
    $ErrorActionPreference = "Stop"
    # zace-purpose: <one line purpose>

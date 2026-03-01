@@ -355,6 +355,44 @@ function filterErrorDiagnostics(diagnostics: LspDiagnostic[]): LspDiagnostic[] {
   return diagnostics.filter((diagnostic) => diagnostic.severity === 1 || diagnostic.severity === undefined);
 }
 
+function getDarwinVarSymlinkAlternate(pathValue: string): null | string {
+  if (process.platform !== "darwin") {
+    return null;
+  }
+
+  const normalized = resolve(pathValue);
+  if (normalized.startsWith("/private/var/")) {
+    return `/var/${normalized.slice("/private/var/".length)}`;
+  }
+
+  if (normalized.startsWith("/var/")) {
+    return `/private/var/${normalized.slice("/var/".length)}`;
+  }
+
+  return null;
+}
+
+function lookupDiagnosticsForChangedFile(input: {
+  changedFile: string;
+  diagnosticsByFile: Record<string, LspDiagnostic[]>;
+}): LspDiagnostic[] {
+  const normalizedChangedFile = resolve(input.changedFile);
+  const candidates = [normalizedChangedFile];
+  const alternate = getDarwinVarSymlinkAlternate(normalizedChangedFile);
+  if (alternate) {
+    candidates.push(alternate);
+  }
+
+  for (const candidate of candidates) {
+    const diagnostics = input.diagnosticsByFile[candidate] ?? [];
+    if (diagnostics.length > 0) {
+      return diagnostics;
+    }
+  }
+
+  return [];
+}
+
 function formatLspStatusSection(input: {
   configPath: string;
   details?: string[];
@@ -437,7 +475,10 @@ export function buildLspDiagnosticsOutput(input: {
   let errorCount = 0;
 
   for (const changedFile of normalizedChangedFiles) {
-    const diagnostics = input.diagnosticsByFile[changedFile] ?? [];
+    const diagnostics = lookupDiagnosticsForChangedFile({
+      changedFile,
+      diagnosticsByFile: input.diagnosticsByFile,
+    });
     const errors = filterErrorDiagnostics(diagnostics);
     if (errors.length === 0) {
       continue;
@@ -463,7 +504,12 @@ export function buildLspDiagnosticsOutput(input: {
   );
 
   for (const filePath of limitedFiles) {
-    const errors = filterErrorDiagnostics(input.diagnosticsByFile[filePath] ?? []);
+    const errors = filterErrorDiagnostics(
+      lookupDiagnosticsForChangedFile({
+        changedFile: filePath,
+        diagnosticsByFile: input.diagnosticsByFile,
+      })
+    );
     const limitedErrors = errors.slice(0, input.maxDiagnosticsPerFile);
     const lines = limitedErrors.map((diagnostic) => formatDiagnostic(diagnostic));
     if (errors.length > input.maxDiagnosticsPerFile) {

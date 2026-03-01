@@ -43,8 +43,17 @@ function toAbsoluteConfigPath(configPath: string, workingDirectory: string): str
 
 function buildBunEvalCommand(source: string): string {
   const sourceBase64 = Buffer.from(source, "utf8").toString("base64");
-  const loader =
-    "const source = Buffer.from(process.argv[1], \"base64\").toString(\"utf8\");const moduleBase64 = Buffer.from(source).toString(\"base64\");await import(\"data:text/javascript;base64,\" + moduleBase64);";
+  // Load via temp file to avoid very long data: URLs (NameTooLong) and avoid
+  // eval parsing issues with ESM `import` in the decoded source.
+  const loader = [
+    "import { rmSync, writeFileSync } from \"node:fs\";",
+    "import { join } from \"node:path\";",
+    "import { pathToFileURL } from \"node:url\";",
+    "const source = Buffer.from(process.argv[1], \"base64\").toString(\"utf8\");",
+    "const tmpPath = join(process.cwd(), \".zace-autoprovision-\" + String(Date.now()) + \".mjs\");",
+    "writeFileSync(tmpPath, source, \"utf8\");",
+    "try { await import(pathToFileURL(tmpPath).href); } finally { rmSync(tmpPath, { force: true }); }",
+  ].join("\n");
   return `bun -e '${loader}' '${sourceBase64}'`;
 }
 
@@ -61,11 +70,11 @@ function buildAutoprovisionCommand(configPath: string): string {
   };
   const source = `
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 
-const configPath = resolve(process.cwd(), ${JSON.stringify(configPath)});
-const markerWritten = "ZACE_LSP_AUTOPROVISION_WRITTEN|" + configPath;
-const markerSkipped = "ZACE_LSP_AUTOPROVISION_SKIP|existing_servers";
+const configPath = ${JSON.stringify(configPath)};
+ const markerWritten = "ZACE_LSP_AUTOPROVISION_WRITTEN|" + configPath;
+ const markerSkipped = "ZACE_LSP_AUTOPROVISION_SKIP|existing_servers";
 
 let hasExistingServers = false;
 try {
@@ -92,7 +101,7 @@ if (hasExistingServers) {
   console.log("ZACE_FILE_CHANGED|" + configPath);
   console.log(markerWritten);
 }
-`.trim();
+ `.trim();
 
   return buildBunEvalCommand(source);
 }
@@ -166,7 +175,7 @@ export async function attemptRuntimeLspAutoprovision(input: {
     input.config.lspServerConfigPath,
     input.workingDirectory
   );
-  const provisionCommand = buildAutoprovisionCommand(input.config.lspServerConfigPath);
+  const provisionCommand = buildAutoprovisionCommand(absoluteConfigPath);
   pushAttemptedCommand(input.lspBootstrap, provisionCommand);
 
   await input.appendRunEvent({
@@ -189,6 +198,16 @@ export async function attemptRuntimeLspAutoprovision(input: {
     name: "execute_command",
   }, input.toolExecutionContext);
 
+  await input.appendRunEvent({
+    event: "lsp_autoprovision_command_finished",
+    payload: {
+      configPath: absoluteConfigPath,
+      success: provisionResult.success,
+    },
+    phase: "executing",
+    step: input.stepNumber,
+  });
+
   if (!provisionResult.success) {
     input.lspBootstrap.provisionAttempts += 1;
     const reason = provisionResult.error ?? "lsp_autoprovision_command_failed";
@@ -197,6 +216,7 @@ export async function attemptRuntimeLspAutoprovision(input: {
     await input.appendRunEvent({
       event: "lsp_autoprovision_failed",
       payload: {
+        commandOutput: provisionResult.output,
         configPath: absoluteConfigPath,
         reason,
       },

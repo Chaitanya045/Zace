@@ -60,7 +60,9 @@ INSTRUCTIONS:
 2. Reuse existing runtime scripts whenever possible instead of rewriting long shell commands.
 3. Search the registry file before creating a new script.
 4. If a required capability is missing, create or update a script under .zace/runtime/scripts.
-   New scripts must include a purpose header comment: # zace-purpose: <one line purpose>
+   New scripts must include a purpose header comment:
+   - Shell (.sh/.ps1): # zace-purpose: <one line purpose>
+   - TypeScript (.ts): // zace-purpose: <one line purpose>
 5. For every script creation or update, ensure command output includes:
    ZACE_SCRIPT_REGISTER|<script_id>|<script_path>|<purpose>
 6. For script runs, prefer including:

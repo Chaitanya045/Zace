@@ -140,16 +140,27 @@ describe("runtime LSP auto-provision", () => {
         expect(result.message).toContain("bootstrap");
       }
 
+      const entries = await readSessionEntries(sessionId);
+      const runEvents = entries
+        .filter((entry) => entry.type === "run_event")
+        .map((entry) => entry.event);
+      expect(runEvents).toContain("lsp_autoprovision_started");
+      expect(runEvents).toContain("lsp_autoprovision_command_finished");
+      if (!runEvents.includes("lsp_autoprovision_written")) {
+        const failures = entries
+          .filter((entry) => entry.type === "run_event")
+          .filter((entry) => entry.event === "lsp_autoprovision_failed");
+        if (failures.length > 0) {
+          const payload = failures[failures.length - 1]?.payload ?? {};
+          throw new Error(`Autoprovision failed. payload=${JSON.stringify(payload)}`);
+        }
+      }
+      expect(runEvents).toContain("lsp_autoprovision_written");
+
       const configContent = await readFile(env.AGENT_LSP_SERVER_CONFIG_PATH, "utf8");
       const parsed = JSON.parse(configContent) as { servers?: unknown[] };
       expect(Array.isArray(parsed.servers)).toBe(true);
       expect(parsed.servers?.length).toBeGreaterThan(0);
-
-      const runEvents = (await readSessionEntries(sessionId))
-        .filter((entry) => entry.type === "run_event")
-        .map((entry) => entry.event);
-      expect(runEvents).toContain("lsp_autoprovision_started");
-      expect(runEvents).toContain("lsp_autoprovision_written");
     } finally {
       await unlink(sessionPath).catch(() => undefined);
       await rm(tempDirectoryPath, { force: true, recursive: true });

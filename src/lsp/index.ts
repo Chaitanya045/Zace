@@ -291,9 +291,7 @@ export async function status(): Promise<LspStatus[]> {
 }
 
 export async function probeFiles(filePaths: string[]): Promise<LspProbeResult> {
-  const normalized = Array.from(
-    new Set(filePaths.map((filePath) => normalizeAbsolutePath(filePath)))
-  );
+  const normalized = Array.from(new Set(filePaths.map((filePath) => normalizeAbsolutePath(filePath))));
   if (normalized.length === 0) {
     return {
       diagnosticsFiles: [],
