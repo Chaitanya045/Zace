@@ -94,3 +94,32 @@ export interface Tool {
   name: string;
   parameters: z.ZodSchema<unknown>;
 }
+
+export type ToolDefinition<TParameters extends z.ZodTypeAny> = {
+  description: string;
+  execute: (
+    _args: z.infer<TParameters>,
+    _context?: ToolExecutionContext
+  ) => Promise<ToolResult>;
+  name: string;
+  parameters: TParameters;
+};
+
+export type DefinedTool<TParameters extends z.ZodTypeAny> = Omit<Tool, "execute" | "parameters"> & {
+  execute: (
+    _args: z.infer<TParameters>,
+    _context?: ToolExecutionContext
+  ) => Promise<ToolResult>;
+  parameters: TParameters;
+};
+
+export function defineTool<TParameters extends z.ZodTypeAny>(
+  definition: ToolDefinition<TParameters>
+): DefinedTool<TParameters> {
+  return {
+    description: definition.description,
+    execute: definition.execute,
+    name: definition.name,
+    parameters: definition.parameters,
+  };
+}

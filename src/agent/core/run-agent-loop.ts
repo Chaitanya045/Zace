@@ -11,7 +11,7 @@ import type { CommandApprovalResult, RunLoopMutableState, ToolCallLike } from ".
 import { createPermissionMemory } from "../../permission/memory";
 import { loadPermissionRuleset } from "../../permission/store";
 import { buildSystemPrompt } from "../../prompts/system";
-import { allTools } from "../../tools";
+import { toolRegistry } from "../../tools";
 import { appendSessionMessage, getSessionFilePath } from "../../tools/session";
 import { log, logError, logStep } from "../../utils/logger";
 import {
@@ -322,7 +322,7 @@ export async function runAgentLoop(
   };
 
   const systemPrompt = buildSystemPrompt({
-    availableTools: allTools.map((tool) => tool.name),
+    availableTools: toolRegistry.list().map((tool) => tool.name),
     commandAllowPatterns: config.commandAllowPatterns,
     commandDenyPatterns: config.commandDenyPatterns,
     completionCriteria: getCompletionCriteria(),

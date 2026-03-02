@@ -1,24 +1,18 @@
-import { z } from "zod";
-
 import type { Tool } from "../types/tool";
 
+import { ToolRegistry } from "./registry";
 import { sessionHistoryTools } from "./session-history";
 import { shellTools } from "./shell";
 
-export const allTools: Tool[] = [...shellTools, ...sessionHistoryTools];
+export const toolRegistry = new ToolRegistry();
+toolRegistry.registerAll([...shellTools, ...sessionHistoryTools]);
+
+export const allTools: Tool[] = toolRegistry.list();
 
 export function getToolByName(name: string): Tool | undefined {
-  return allTools.find((tool) => tool.name === name);
+  return toolRegistry.get(name);
 }
 
 export function getToolDescriptions(): string {
-  return allTools
-    .map((tool) => {
-      const paramsInfo =
-        tool.parameters instanceof z.ZodObject
-          ? JSON.stringify(tool.parameters.shape, null, 2)
-          : "Schema definition";
-      return `- ${tool.name}: ${tool.description}\n  Parameters: ${paramsInfo}`;
-    })
-    .join("\n");
+  return toolRegistry.getDescriptions();
 }

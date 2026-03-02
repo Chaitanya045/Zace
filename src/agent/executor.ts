@@ -5,7 +5,7 @@ import type { ToolCall, ToolExecutionContext, ToolResult } from "../types/tool";
 
 import { buildExecutorPrompt, type ExecutorRetryContext } from "../prompts/executor";
 import { buildSystemPrompt } from "../prompts/system";
-import { getToolByName } from "../tools";
+import { toolRegistry } from "../tools";
 import { ToolExecutionError, ValidationError } from "../utils/errors";
 import { log, logStep, logToolCall, logToolResult } from "../utils/logger";
 
@@ -41,7 +41,7 @@ export async function executeToolCall(
 ): Promise<ToolResult> {
   logStep(0, `Executing tool: ${toolCall.name}`);
 
-  const tool = getToolByName(toolCall.name);
+  const tool = toolRegistry.get(toolCall.name);
   if (!tool) {
     throw new ValidationError(`Unknown tool: ${toolCall.name}`);
   }
