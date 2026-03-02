@@ -59,10 +59,6 @@ export function getExecuteCommandText(argumentsObject: Record<string, unknown>):
   return command;
 }
 
-export function getShellCommandText(argumentsObject: Record<string, unknown>): string | undefined {
-  return getExecuteCommandText(argumentsObject);
-}
-
 export function getExecuteCommandWorkingDirectory(
   argumentsObject: Record<string, unknown>
 ): string | undefined {
@@ -77,12 +73,6 @@ export function getExecuteCommandWorkingDirectory(
   }
 
   return cwd;
-}
-
-export function getShellCommandWorkingDirectory(
-  argumentsObject: Record<string, unknown>
-): string | undefined {
-  return getExecuteCommandWorkingDirectory(argumentsObject);
 }
 
 function stripWrappingQuotes(value: string): string {
