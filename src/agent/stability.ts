@@ -140,7 +140,8 @@ export function buildToolCallSignature(
     workingDirectory?: string;
   }
 ): string {
-  if (toolName !== "execute_command") {
+  const canonicalToolName = toolName === "bash" ? "execute_command" : toolName;
+  if (canonicalToolName !== "execute_command") {
     return `${toolName}|${stableStringify(argumentsObject)}`;
   }
 

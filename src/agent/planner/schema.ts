@@ -1,43 +1,30 @@
 import { z } from "zod";
 
-const sessionMessageRoleSchema = z.enum(["assistant", "system", "tool", "user"]);
+import { searchSessionMessagesSchema, writeSessionMessageSchema } from "../../tools/session-history";
+import { executeCommandSchema } from "../../tools/shell";
+
+const bashPlannerToolCallSchema = z.object({
+  arguments: executeCommandSchema,
+  name: z.literal("bash"),
+}).strict();
 
 const executeCommandPlannerToolCallSchema = z.object({
-  arguments: z.object({
-    command: z.string().min(1),
-    cwd: z.string().optional(),
-    env: z.record(z.string(), z.string()).optional(),
-    maxRetries: z.number().int().nonnegative().optional(),
-    outputLimitChars: z.number().int().positive().optional(),
-    retryMaxDelayMs: z.number().int().nonnegative().optional(),
-    timeout: z.number().int().positive().optional(),
-  }).strict(),
+  arguments: executeCommandSchema,
   name: z.literal("execute_command"),
 }).strict();
 
 const searchSessionMessagesPlannerToolCallSchema = z.object({
-  arguments: z.object({
-    caseSensitive: z.boolean().optional(),
-    limit: z.number().int().positive().max(200).optional(),
-    query: z.string().optional(),
-    regex: z.boolean().optional(),
-    role: sessionMessageRoleSchema.optional(),
-    sessionId: z.string().min(1),
-  }).strict(),
+  arguments: searchSessionMessagesSchema,
   name: z.literal("search_session_messages"),
 }).strict();
 
 const writeSessionMessagePlannerToolCallSchema = z.object({
-  arguments: z.object({
-    content: z.string().min(1),
-    role: sessionMessageRoleSchema.optional(),
-    sessionId: z.string().min(1),
-    timestamp: z.string().optional(),
-  }).strict(),
+  arguments: writeSessionMessageSchema,
   name: z.literal("write_session_message"),
 }).strict();
 
 export const plannerToolCallSchema = z.discriminatedUnion("name", [
+  bashPlannerToolCallSchema,
   executeCommandPlannerToolCallSchema,
   searchSessionMessagesPlannerToolCallSchema,
   writeSessionMessagePlannerToolCallSchema,

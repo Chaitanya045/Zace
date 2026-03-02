@@ -9,7 +9,7 @@ import {
   sessionMessageRoleSchema,
 } from "./session";
 
-const searchSessionMessagesSchema = z.object({
+export const searchSessionMessagesSchema = z.object({
   caseSensitive: z.boolean().optional(),
   limit: z.number().int().positive().max(200).optional(),
   query: z.string().optional(),
@@ -18,7 +18,7 @@ const searchSessionMessagesSchema = z.object({
   sessionId: z.string().min(1),
 });
 
-const writeSessionMessageSchema = z.object({
+export const writeSessionMessageSchema = z.object({
   content: z.string().min(1),
   role: sessionMessageRoleSchema.default("assistant"),
   sessionId: z.string().min(1),

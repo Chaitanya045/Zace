@@ -38,7 +38,7 @@ export async function syncScriptRegistry(
       command: buildRegistrySyncCommand(catalog),
       timeout: 30_000,
     },
-    name: "execute_command",
+    name: "bash",
   });
 }
 
@@ -109,7 +109,7 @@ export async function runStartupPhase<TResult>(input: {
       command: DISCOVER_SCRIPTS_COMMAND,
       timeout: 30_000,
     },
-    name: "execute_command",
+    name: "bash",
   }, input.toolExecutionContext);
   if (discoveredScripts.artifacts?.lifecycleEvent === "abort" || discoveredScripts.artifacts?.aborted) {
     return {
@@ -122,7 +122,7 @@ export async function runStartupPhase<TResult>(input: {
             command: DISCOVER_SCRIPTS_COMMAND,
             timeout: 30_000,
           },
-          name: "execute_command",
+          name: "bash",
         },
         toolResult: discoveredScripts,
       }),
@@ -155,7 +155,7 @@ export async function runStartupPhase<TResult>(input: {
         outputLimitChars: PROJECT_DOC_OUTPUT_LIMIT_CHARS,
         timeout: PROJECT_DOC_TIMEOUT_MS,
       },
-      name: "execute_command",
+      name: "bash",
     }, input.toolExecutionContext);
     discoveredDocCandidates = discoverDocsResult.success
       ? parseDiscoveredProjectDocCandidates(discoverDocsResult.output, PROJECT_DOC_DISCOVERY_MAX_FILES)
@@ -217,7 +217,7 @@ export async function runStartupPhase<TResult>(input: {
           outputLimitChars: PROJECT_DOC_OUTPUT_LIMIT_CHARS,
           timeout: PROJECT_DOC_TIMEOUT_MS,
         },
-        name: "execute_command",
+        name: "bash",
       }, input.toolExecutionContext);
       if (!readDocResult.success) {
         continue;

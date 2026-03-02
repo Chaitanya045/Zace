@@ -77,7 +77,7 @@ function hasPriorSuccessfulNoChangeResult(
       continue;
     }
 
-    const signature = step.toolCall.name === "execute_command"
+    const signature = (step.toolCall.name === "execute_command" || step.toolCall.name === "bash")
       ? buildToolCallSignature(
           step.toolCall.name,
           {
@@ -176,12 +176,13 @@ export async function handleExecutionPhase<TResult>(input: {
   input.state.consecutiveNoToolContinues = 0;
   const plannedToolCallName = input.planResult.toolCall.name;
   let plannedToolCallArguments = input.planResult.toolCall.arguments;
+  const isShellToolCall = plannedToolCallName === "execute_command" || plannedToolCallName === "bash";
   let plannedExecuteCommand =
-    plannedToolCallName === "execute_command"
+    isShellToolCall
       ? getExecuteCommandText(plannedToolCallArguments)
       : undefined;
   const plannedExecuteWorkingDirectory =
-    plannedToolCallName === "execute_command"
+    isShellToolCall
       ? resolve(getExecuteCommandWorkingDirectory(plannedToolCallArguments) ?? process.cwd())
       : undefined;
   if (plannedExecuteCommand && plannedExecuteWorkingDirectory) {
@@ -215,7 +216,7 @@ export async function handleExecutionPhase<TResult>(input: {
   }
   const plannedToolCallSignature = buildToolCallSignature(
     plannedToolCallName,
-    plannedToolCallName === "execute_command"
+    isShellToolCall
       ? {
           command: plannedExecuteCommand ?? "",
           cwd: plannedExecuteWorkingDirectory ?? process.cwd(),
@@ -232,7 +233,7 @@ export async function handleExecutionPhase<TResult>(input: {
   });
   if (preExecutionLoopDetection.shouldBlock) {
     const recoverableInspectionLoop =
-      plannedToolCallName === "execute_command" &&
+      isShellToolCall &&
       typeof plannedExecuteCommand === "string" &&
       isReadOnlyInspectionCommand(plannedExecuteCommand) &&
       hasPriorSuccessfulNoChangeResult(input.state, plannedToolCallSignature) &&
@@ -317,7 +318,7 @@ export async function handleExecutionPhase<TResult>(input: {
     };
   }
 
-  if (plannedToolCallName === "execute_command") {
+  if (isShellToolCall) {
     const command = plannedExecuteCommand;
     const commandWorkingDirectory = plannedExecuteWorkingDirectory;
     if (command) {
@@ -469,7 +470,7 @@ export async function handleExecutionPhase<TResult>(input: {
     }
   }
 
-  if (plannedToolCallName !== "execute_command") {
+  if (!isShellToolCall) {
     try {
       const { requirePermission } = await import("../../../permission/guard");
       await requirePermission({
@@ -748,7 +749,7 @@ export async function handleExecutionPhase<TResult>(input: {
         }
       }
       if (
-        toolCall.name === "execute_command" &&
+        isShellToolCall &&
         toolResult.success &&
         typeof plannedExecuteCommand === "string" &&
         /\b(?:bun|npm|pnpm|yarn|cargo|go|python|pytest|ruff|eslint|tsc|vitest|jest)\b/iu.test(
@@ -917,7 +918,7 @@ export async function handleExecutionPhase<TResult>(input: {
         .slice(-recentWindow);
       const hasEnough = recentSinceWrite.length >= recentWindow;
       const allReadonlyInspection = recentSinceWrite.every((step) => {
-        if (step.toolCall?.name !== "execute_command") {
+        if (step.toolCall?.name !== "execute_command" && step.toolCall?.name !== "bash") {
           return false;
         }
         const changed = step.toolResult?.artifacts?.changedFiles ?? [];

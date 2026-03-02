@@ -12,6 +12,15 @@ describe("planner tool-call schema consistency", () => {
   test("rejects invalid per-tool payloads in strict parser", () => {
     expectStrictPlannerRejects({
       action: "continue",
+      reasoning: "Run bash command",
+      toolCall: {
+        arguments: {},
+        name: "bash",
+      },
+    });
+
+    expectStrictPlannerRejects({
+      action: "continue",
       reasoning: "Run shell command",
       toolCall: {
         arguments: {},
@@ -49,7 +58,7 @@ describe("planner tool-call schema consistency", () => {
     const toolCallSchema = properties?.toolCall as { oneOf?: Array<Record<string, unknown>> };
     const variants = toolCallSchema?.oneOf ?? [];
 
-    expect(variants.length).toBe(3);
+    expect(variants.length).toBe(4);
 
     const variantByName = new Map<string, Record<string, unknown>>();
     for (const variant of variants) {
@@ -59,6 +68,12 @@ describe("planner tool-call schema consistency", () => {
         variantByName.set(nameProperty.const, variant);
       }
     }
+
+    const bashVariant = variantByName.get("bash");
+    const bashArguments = (bashVariant?.properties as Record<string, unknown>)?.arguments as {
+      required?: string[];
+    };
+    expect(bashArguments.required).toContain("command");
 
     const executeVariant = variantByName.get("execute_command");
     const executeArguments = (executeVariant?.properties as Record<string, unknown>)?.arguments as {

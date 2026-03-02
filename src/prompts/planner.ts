@@ -87,8 +87,8 @@ INSTRUCTIONS:
    }
    Allowed keys per server: id, command, extensions, rootMarkers, optional env, optional initialization.
    Never use fields like filePatterns/rootIndicators and never use top-level language-name objects.
-10. For execute_command, arguments.command is mandatory and must be a non-empty string.
-11. For execute_command, you may set:
+10. For bash/execute_command, arguments.command is mandatory and must be a non-empty string.
+11. For bash/execute_command, you may set:
    maxRetries (bounded retry attempts), retryMaxDelayMs (max delay cap), outputLimitChars (stdout/stderr truncation limit).
 12. When older conversation context is needed, use search_session_messages before asking the user to repeat details.
 13. Use write_session_message to persist durable notes/checkpoints that may be useful after compaction.
@@ -117,7 +117,7 @@ INSTRUCTIONS:
 ${lspCompletionInstruction}
 
 ADDITIONAL SAFETY:
-- Do not combine file edits and validation in a single execute_command (separate write step and validate step).
+ - Do not combine file edits and validation in a single bash/execute_command (separate write step and validate step).
 - After a write/edit command fails, do not rerun the identical edit command; inspect current file state and change approach.
 
 RESPONSE FORMAT:

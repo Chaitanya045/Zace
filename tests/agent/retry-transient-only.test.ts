@@ -71,7 +71,7 @@ describe("transient-only retry policy", () => {
       toolCall: { arguments: Record<string, unknown>; name: string },
       _context?: ToolExecutionContext
     ): Promise<ToolResult> => {
-      expect(toolCall.name).toBe("execute_command");
+      expect(["bash", "execute_command"]).toContain(toolCall.name);
       const command = typeof toolCall.arguments.command === "string" ? toolCall.arguments.command : "";
       if (!command.includes("sed -e")) {
         return {
@@ -229,4 +229,3 @@ describe("transient-only retry policy", () => {
     }
   });
 });
-

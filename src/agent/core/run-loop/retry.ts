@@ -23,7 +23,7 @@ export function getRetryConfiguration(
   maxRetries: number;
   retryMaxDelayMs?: number;
 } {
-  if (toolCall.name !== "execute_command") {
+  if (toolCall.name !== "execute_command" && toolCall.name !== "bash") {
     return {
       maxRetries: defaults.maxRetries,
       retryMaxDelayMs: defaults.retryMaxDelayMs,

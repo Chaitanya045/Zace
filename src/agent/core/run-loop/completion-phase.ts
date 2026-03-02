@@ -58,7 +58,7 @@ async function runCompletionGates(
           command: gate.command,
           cwd: workingDirectory,
         },
-        name: "execute_command",
+        name: "bash",
       }, toolExecutionContext);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown gate execution error";

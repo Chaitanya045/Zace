@@ -36,7 +36,7 @@ import {
 } from "./process-lifecycle";
 export { runSpawnedShellCommand, type SpawnedCommandResult } from "./process-lifecycle";
 
-const executeCommandSchema = z.object({
+export const executeCommandSchema = z.object({
   command: z.string().min(1),
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
@@ -865,7 +865,10 @@ function buildRenderedOutput(
   };
 }
 
-async function executeCommand(args: unknown, context?: ToolExecutionContext): Promise<ToolResult> {
+export async function executeCommand(
+  args: unknown,
+  context?: ToolExecutionContext
+): Promise<ToolResult> {
   try {
     const { command, cwd, env: commandEnv, outputLimitChars, timeout } = executeCommandSchema.parse(args);
     const effectiveOutputLimitChars = outputLimitChars ?? env.AGENT_TOOL_OUTPUT_LIMIT_CHARS;

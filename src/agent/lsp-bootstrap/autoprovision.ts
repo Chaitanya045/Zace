@@ -313,7 +313,7 @@ export async function attemptRuntimeLspAutoprovision(input: {
       cwd: input.workingDirectory,
       timeout: 30_000,
     },
-    name: "execute_command",
+    name: "bash",
   }, input.toolExecutionContext);
 
   await input.appendRunEvent({

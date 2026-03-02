@@ -50,7 +50,7 @@ export function classifyRetry(toolCall: ToolCall, toolResult: ToolResult): Retry
   const outputMessage = normalizeMessage(toolResult.output);
   const combined = `${errorMessage}\n${outputMessage}`.trim();
 
-  if (toolCall.name === "execute_command") {
+  if (toolCall.name === "execute_command" || toolCall.name === "bash") {
     if (/\btimed out\b/iu.test(combined)) {
       return {
         category: "transient",
@@ -83,4 +83,3 @@ export function classifyRetry(toolCall: ToolCall, toolResult: ToolResult): Retry
     reason: "unclassified_failure",
   };
 }
-

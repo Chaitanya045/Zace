@@ -10,11 +10,9 @@ import type {
   TimelineEntryTone,
 } from "../types";
 
-import { runAgentLoop } from "../../agent/loop";
 import {
   buildChatTaskWithFollowUp,
   loadSessionState,
-  persistSessionTurn,
   resolvePendingApprovalFromUserMessage,
   type ChatTurn,
 } from "../../cli/chat-session";
@@ -22,6 +20,7 @@ import {
   findOpenPendingPermission,
   resolvePendingPermissionFromUserMessage,
 } from "../../permission/resolve";
+import { SessionProcessor } from "../../session/processor/session-processor";
 import { STREAM_BUFFER_INTERVAL_MS } from "../buffer";
 import { buildToolCallTimelineEntry, buildToolResultTimelineEntry } from "../event-model";
 import { chatUiReducer, createInitialChatUiState } from "../state";
@@ -551,28 +550,22 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
       },
     };
 
-    const startedAt = new Date();
     const abortController = new globalThis.AbortController();
     activeAbortControllerRef.current = abortController;
     interruptRequestedRef.current = false;
     try {
-      const result = await runAgentLoop(input.client, input.config, task, {
+      const turn = await SessionProcessor.runTurn({
         abortSignal: abortController.signal,
         approvedCommandSignaturesOnce,
         approvedPermissionsOnce,
+        client: input.client,
+        config: input.config,
         observer,
         sessionId: input.sessionId,
-      });
-      const endedAt = new Date();
-
-      await persistSessionTurn(
-        input.sessionId,
-        message,
         task,
-        result,
-        startedAt,
-        endedAt
-      );
+        userMessage: message,
+      });
+      const result = turn.result;
 
       createTimelineEntry({
         body: result.message,

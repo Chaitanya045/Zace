@@ -1,11 +1,12 @@
 import type { Tool } from "../types/tool";
 
+import { bashTool } from "./bash";
 import { ToolRegistry } from "./registry";
 import { sessionHistoryTools } from "./session-history";
 import { shellTools } from "./shell";
 
 export const toolRegistry = new ToolRegistry();
-toolRegistry.registerAll([...shellTools, ...sessionHistoryTools]);
+toolRegistry.registerAll([bashTool, ...shellTools, ...sessionHistoryTools]);
 
 export const allTools: Tool[] = toolRegistry.list();
 
