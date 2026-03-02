@@ -10,7 +10,7 @@ import type { AgentConfig } from "../../src/types/config";
 
 import { handleExecutionPhase } from "../../src/agent/core/run-loop/execution-phase";
 import { createPermissionMemory } from "../../src/permission/memory";
-import { getSessionFilePath } from "../../src/tools/session";
+import { getSessionFilePath, readSessionEntries } from "../../src/tools/session";
 
 function createTestConfig(): AgentConfig {
   return {
@@ -69,7 +69,7 @@ function makeBaseInput(sessionId: string) {
     success: boolean;
   };
 
-  const planResult = {
+  const planResult: PlanResult = {
     action: "continue",
     parseAttempts: 1,
     parseMode: "schema_transport",
@@ -85,7 +85,7 @@ function makeBaseInput(sessionId: string) {
     transportStructured: true,
     usage: undefined,
     userMessage: undefined,
-  } satisfies PlanResult;
+  };
 
   const completionPlan = { gates: [], source: "none" } satisfies CompletionPlan;
 
@@ -175,7 +175,7 @@ describe("tool permission gating", () => {
     }
   });
 
-  test("allows non-execute_command tool call after once approval is consumed", async () => {
+  test("allows non-execute_command tool call after once approval and consumes it", async () => {
     const suffix = Math.random().toString(36).slice(2, 10);
     const sessionId = `test-permission-flow-${suffix}`;
     const sessionPath = getSessionFilePath(sessionId);
@@ -184,8 +184,65 @@ describe("tool permission gating", () => {
       const input = makeBaseInput(sessionId);
       input.permissionMemory.allowOnce("write_session_message", "write_session_message");
 
+      let toolCalls = 0;
+      input.runToolCall = async () => {
+        toolCalls += 1;
+        return { output: "ok", success: true };
+      };
+
+      const firstOutcome = await handleExecutionPhase(input);
+      expect(firstOutcome.kind).toBe("continue_loop");
+      expect(toolCalls).toBe(1);
+
+      const secondOutcome = await handleExecutionPhase({
+        ...input,
+        stepNumber: 2,
+      });
+      expect(secondOutcome.kind).toBe("finalized");
+      if (secondOutcome.kind !== "finalized") {
+        throw new Error("Expected finalized outcome");
+      }
+      expect(secondOutcome.result.finalState).toBe("waiting_for_user");
+      expect(secondOutcome.result.message).toContain("Permission required");
+      expect(toolCalls).toBe(1);
+    } finally {
+      await unlink(sessionPath).catch(() => undefined);
+    }
+  });
+
+  test("does not require PermissionNext for execute_command tool calls", async () => {
+    const suffix = Math.random().toString(36).slice(2, 10);
+    const sessionId = `test-permission-flow-${suffix}`;
+    const sessionPath = getSessionFilePath(sessionId);
+
+    try {
+      const input = makeBaseInput(sessionId);
+      input.planResult = {
+        ...input.planResult,
+        toolCall: {
+          arguments: {
+            command: "echo hi",
+            cwd: process.cwd(),
+          },
+          name: "execute_command",
+        },
+      };
+
+      let toolCalls = 0;
+      input.runToolCall = async () => {
+        toolCalls += 1;
+        return { output: "[stdout]\nhi\n\n[stderr]\n(empty)", success: true };
+      };
+
       const outcome = await handleExecutionPhase(input);
       expect(outcome.kind).toBe("continue_loop");
+      expect(toolCalls).toBe(1);
+
+      const entries = await readSessionEntries(sessionId);
+      const hasPermissionPendingAction = entries.some((entry) =>
+        entry.type === "pending_action" && entry.kind === "permission"
+      );
+      expect(hasPermissionPendingAction).toBe(false);
     } finally {
       await unlink(sessionPath).catch(() => undefined);
     }
