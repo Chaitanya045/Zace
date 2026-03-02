@@ -2,17 +2,20 @@ import { resolve } from "node:path";
 
 import type { LlmClient } from "../../../llm/client";
 import type { PermissionMemory } from "../../../permission/memory";
+import type { SessionStoreWrite } from "../../../session/store";
 import type { AgentContext, AgentState } from "../../../types/agent";
 import type { AgentConfig } from "../../../types/config";
 import type { AbortSignalLike, ToolExecutionContext, ToolResult } from "../../../types/tool";
 import type { AgentObserver } from "../../observer";
 import type { PlanResult } from "../../planner/plan";
+import type { AgentProcessorEvent } from "../../stream-events";
 import type {
   CommandApprovalResult,
   RunLoopMutableState,
   ToolCallLike,
 } from "./types";
 
+import { createLlmStreamCallbacks } from "../../../llm/stream-adapter";
 import { AgentError } from "../../../utils/errors";
 import { logError, logStep } from "../../../utils/logger";
 import { classifyRetry } from "../../execution/retry-classifier";
@@ -124,6 +127,7 @@ export async function handleExecutionPhase<TResult>(input: {
       content: string
     ) => void;
   };
+  onProcessorEvent?: (event: AgentProcessorEvent) => void;
   observer?: AgentObserver;
   planResult: PlanResult;
   permissionMemory: PermissionMemory;
@@ -137,6 +141,7 @@ export async function handleExecutionPhase<TResult>(input: {
     context?: ToolExecutionContext
   ) => Promise<ToolResult>;
   sessionId?: string;
+  sessionStore?: SessionStoreWrite;
   state: RunLoopMutableState;
   stepNumber: number;
   toolExecutionContext?: ToolExecutionContext;
@@ -809,22 +814,31 @@ export async function handleExecutionPhase<TResult>(input: {
 
       analysis = shouldAnalyze
         ? await analyzeToolResult(input.client, toolCall, toolResult, {
-            onStreamEnd: () => {
-              input.observer?.onExecutorStreamEnd?.({
-                toolName: toolCall.name,
-              });
-            },
-            onStreamStart: () => {
-              input.observer?.onExecutorStreamStart?.({
-                toolName: toolCall.name,
-              });
-            },
-            onStreamToken: (token) => {
-              input.observer?.onExecutorStreamToken?.({
-                token,
-                toolName: toolCall.name,
-              });
-            },
+            ...createLlmStreamCallbacks({
+              callKind: "executor",
+              emit: input.onProcessorEvent,
+              onStreamEnd: () => {
+                input.observer?.onExecutorStreamEnd?.({
+                  toolName: toolCall.name,
+                });
+              },
+              onStreamStart: () => {
+                input.observer?.onExecutorStreamStart?.({
+                  toolName: toolCall.name,
+                });
+              },
+              onStreamToken: (token) => {
+                input.observer?.onExecutorStreamToken?.({
+                  token,
+                  toolName: toolCall.name,
+                });
+              },
+              phase: "executing",
+              runId: input.runId,
+              sessionStore: input.sessionStore,
+              step: input.stepNumber,
+              toolName: toolCall.name,
+            }),
             retryContext: {
               attempt,
               maxRetries: retryConfiguration.maxRetries,

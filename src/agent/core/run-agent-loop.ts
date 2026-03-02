@@ -6,11 +6,14 @@ import type { AgentContext, AgentState } from "../../types/agent";
 import type { AgentConfig } from "../../types/config";
 import type { AbortSignalLike, ToolExecutionContext, ToolResult } from "../../types/tool";
 import type { AgentObserver } from "../observer";
+import type { AgentProcessorEvent } from "../stream-events";
 import type { CommandApprovalResult, RunLoopMutableState, ToolCallLike } from "./run-loop/types";
 
+import { createLlmStreamCallbacks } from "../../llm/stream-adapter";
 import { createPermissionMemory } from "../../permission/memory";
 import { loadPermissionRuleset } from "../../permission/store";
 import { buildSystemPrompt } from "../../prompts/system";
+import { createJsonlSessionStore } from "../../session/store-jsonl";
 import { toolRegistry } from "../../tools";
 import { appendSessionMessage, getSessionFilePath } from "../../tools/session";
 import { log, logError, logStep } from "../../utils/logger";
@@ -54,6 +57,7 @@ export interface RunAgentLoopOptions {
     context?: ToolExecutionContext
   ) => Promise<ToolResult>;
   observer?: AgentObserver;
+  onProcessorEvent?: (event: AgentProcessorEvent) => void;
   sessionId?: string;
 }
 
@@ -103,6 +107,7 @@ export async function runAgentLoop(
         }
       : undefined,
   });
+  const sessionStore = sessionId ? createJsonlSessionStore(sessionId) : undefined;
   const loopState: RunLoopMutableState = {
     completionBlockedReason: null,
     completionBlockedReasonRepeatCount: 0,
@@ -420,15 +425,23 @@ export async function runAgentLoop(
       const planResult = await plan(client, loopState.context, memory, {
         completionCriteria: getCompletionCriteria(),
         completionRequireLsp: config.completionRequireLsp,
-        onStreamEnd: () => {
-          observer?.onPlannerStreamEnd?.();
-        },
-        onStreamStart: () => {
-          observer?.onPlannerStreamStart?.();
-        },
-        onStreamToken: (token) => {
-          observer?.onPlannerStreamToken?.(token);
-        },
+        ...createLlmStreamCallbacks({
+          callKind: "planner",
+          emit: options?.onProcessorEvent,
+          onStreamEnd: () => {
+            observer?.onPlannerStreamEnd?.();
+          },
+          onStreamStart: () => {
+            observer?.onPlannerStreamStart?.();
+          },
+          onStreamToken: (token) => {
+            observer?.onPlannerStreamToken?.(token);
+          },
+          phase: "planning",
+          runId,
+          sessionStore,
+          step: stepNumber,
+        }),
         plannerMaxInvalidArtifactChars: config.plannerMaxInvalidArtifactChars,
         plannerOutputMode: config.plannerOutputMode,
         plannerParseMaxRepairs: config.plannerParseMaxRepairs,
@@ -502,12 +515,14 @@ export async function runAgentLoop(
         lspServerConfigAbsolutePath,
         memory,
         observer,
+        onProcessorEvent: options?.onProcessorEvent,
         permissionMemory,
         planResult,
         resolveCommandApproval,
         runId,
         runToolCall,
         sessionId,
+        sessionStore,
         state: loopState,
         stepNumber,
         toolExecutionContext,
