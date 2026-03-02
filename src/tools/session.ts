@@ -2,6 +2,8 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
+import { messageV2Schema } from "../session/message-v2";
+
 const SESSION_ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
 const SESSIONS_DIRECTORY_PATH = ".zace/sessions";
 
@@ -20,6 +22,20 @@ const sessionSummaryEntrySchema = z.object({
   summary: z.string(),
   timestamp: z.string(),
   type: z.literal("summary"),
+});
+
+const sessionMessageV2EntrySchema = z.object({
+  message: messageV2Schema,
+  timestamp: z.string(),
+  type: z.literal("message_v2"),
+});
+
+const sessionMessagePartDeltaEntrySchema = z.object({
+  delta: z.unknown(),
+  messageId: z.string().min(1),
+  partId: z.string().min(1),
+  timestamp: z.string(),
+  type: z.literal("message_part_delta"),
 });
 
 const sessionRunEntrySchema = z.object({
@@ -77,6 +93,8 @@ const sessionApprovalRuleEntrySchema = z.object({
 export const sessionEntrySchema = z.discriminatedUnion("type", [
   sessionApprovalRuleEntrySchema,
   sessionMessageEntrySchema,
+  sessionMessagePartDeltaEntrySchema,
+  sessionMessageV2EntrySchema,
   sessionPendingActionEntrySchema,
   sessionRunEventEntrySchema,
   sessionSummaryEntrySchema,
@@ -88,6 +106,8 @@ export type SessionApprovalRuleDecision = z.infer<typeof sessionApprovalRuleDeci
 export type SessionApprovalRuleEntry = Extract<SessionEntry, { type: "approval_rule" }>;
 export type SessionApprovalRuleScope = z.infer<typeof sessionApprovalRuleScopeSchema>;
 export type SessionMessageEntry = Extract<SessionEntry, { type: "message" }>;
+export type SessionMessagePartDeltaEntry = Extract<SessionEntry, { type: "message_part_delta" }>;
+export type SessionMessageV2Entry = Extract<SessionEntry, { type: "message_v2" }>;
 export type SessionMessageRole = z.infer<typeof sessionMessageRoleSchema>;
 export type SessionPendingActionEntry = Extract<SessionEntry, { type: "pending_action" }>;
 export type SessionPendingActionKind = z.infer<typeof sessionPendingActionKindSchema>;
@@ -97,6 +117,18 @@ export type SessionRunEventPhase = z.infer<typeof sessionRunEventPhaseSchema>;
 export type SessionMessageWrite = {
   content: string;
   role: SessionMessageRole;
+  timestamp?: string;
+};
+
+export type SessionMessageV2Write = {
+  message: z.infer<typeof messageV2Schema>;
+  timestamp?: string;
+};
+
+export type SessionMessagePartDeltaWrite = {
+  delta: unknown;
+  messageId: string;
+  partId: string;
   timestamp?: string;
 };
 export type SessionApprovalRuleWrite = {
@@ -210,6 +242,36 @@ export async function appendSessionMessage(
       role: message.role,
       timestamp,
       type: "message",
+    },
+  ]);
+}
+
+export async function appendSessionMessageV2(
+  sessionId: string,
+  message: SessionMessageV2Write
+): Promise<void> {
+  const timestamp = message.timestamp ?? new Date().toISOString();
+  await appendSessionEntries(sessionId, [
+    {
+      message: message.message,
+      timestamp,
+      type: "message_v2",
+    },
+  ]);
+}
+
+export async function appendSessionMessagePartDelta(
+  sessionId: string,
+  delta: SessionMessagePartDeltaWrite
+): Promise<void> {
+  const timestamp = delta.timestamp ?? new Date().toISOString();
+  await appendSessionEntries(sessionId, [
+    {
+      delta: delta.delta,
+      messageId: delta.messageId,
+      partId: delta.partId,
+      timestamp,
+      type: "message_part_delta",
     },
   ]);
 }
