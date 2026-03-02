@@ -318,6 +318,7 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
     const followUpQuestionForTask = pendingFollowUpQuestionRef.current;
     let approvalResolutionNote: string | undefined;
     let approvedCommandSignaturesOnce: string[] | undefined;
+    let approvedPermissionsOnce: Array<{ pattern: string; permission: string }> | undefined;
     if (pendingApprovalRef.current) {
       const approvalResolution = await resolvePendingApprovalFromUserMessage({
         client: input.client,
@@ -406,6 +407,9 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
         approvalResolutionNote = approvalResolutionNote
           ? `${approvalResolutionNote}\n\n${resolution.contextNote}`
           : resolution.contextNote;
+        if (resolution.allowOnce && resolution.allowOnce.length > 0) {
+          approvedPermissionsOnce = resolution.allowOnce;
+        }
         pendingPermissionRef.current = null;
         dispatch({
           type: "set_pending_permission",
@@ -555,6 +559,7 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
       const result = await runAgentLoop(input.client, input.config, task, {
         abortSignal: abortController.signal,
         approvedCommandSignaturesOnce,
+        approvedPermissionsOnce,
         observer,
         sessionId: input.sessionId,
       });

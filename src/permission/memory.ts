@@ -37,3 +37,34 @@ export function createPermissionMemory(initial?: PermissionNext.Ruleset): Permis
     },
   };
 }
+
+export function createPermissionMemoryFromPendingReply(input: {
+  initial?: PermissionNext.Ruleset;
+  reply?: PermissionNext.Reply;
+  permission: string;
+  patterns: string[];
+}): PermissionMemory {
+  const memory = createPermissionMemory(input.initial);
+  if (!input.reply) {
+    return memory;
+  }
+
+  if (input.reply === "once") {
+    for (const pattern of input.patterns) {
+      memory.allowOnce(input.permission, pattern);
+    }
+    return memory;
+  }
+
+  if (input.reply === "always") {
+    memory.rememberAlways(
+      input.patterns.map((pattern) => ({
+        action: "allow" as const,
+        pattern,
+        permission: input.permission,
+      }))
+    );
+  }
+
+  return memory;
+}

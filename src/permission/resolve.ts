@@ -7,6 +7,7 @@ import { storePermissionRule } from "./store";
 
 export type PermissionReplyResolution =
   | {
+      allowOnce?: Array<{ pattern: string; permission: string }>;
       contextNote: string;
       message: string;
       reply: PermissionNext.Reply;
@@ -55,6 +56,14 @@ export async function resolvePendingPermissionFromUserMessage(input: {
     sessionId: input.sessionId,
   });
 
+  let allowOnce: Array<{ pattern: string; permission: string }> | undefined;
+  if (reply === "once") {
+    allowOnce = input.pending.context.patterns.map((pattern) => ({
+      pattern,
+      permission: input.pending.context.permission,
+    }));
+  }
+
   if (reply === "always") {
     // Save allow rules for each always pattern.
     const config = input.config;
@@ -78,6 +87,7 @@ export async function resolvePendingPermissionFromUserMessage(input: {
     `Patterns: ${input.pending.context.patterns.join(", ")}`;
   const message = `Permission resolved: ${reply}.`;
   return {
+    allowOnce,
     contextNote,
     message,
     reply,

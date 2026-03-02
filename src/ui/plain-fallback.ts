@@ -166,6 +166,7 @@ export async function runPlainChatMode(
       const followUpQuestionForTask = pendingFollowUpQuestion;
       let approvalResolutionNote: string | undefined;
       let approvedCommandSignaturesOnce: string[] | undefined;
+      let approvedPermissionsOnce: Array<{ pattern: string; permission: string }> | undefined;
       if (pendingApproval) {
         const approvalResolution = await resolvePendingApprovalFromUserMessage({
           client,
@@ -206,6 +207,9 @@ export async function runPlainChatMode(
           approvalResolutionNote = approvalResolutionNote
             ? `${approvalResolutionNote}\n\n${resolution.contextNote}`
             : resolution.contextNote;
+          if (resolution.allowOnce && resolution.allowOnce.length > 0) {
+            approvedPermissionsOnce = resolution.allowOnce;
+          }
           pendingPermission = null;
           pendingFollowUpQuestion = undefined;
           console.log(`\n🧭 ${resolution.message}\n`);
@@ -226,6 +230,7 @@ export async function runPlainChatMode(
       const result = await runAgentLoop(client, config, task, {
         abortSignal: activeAbortController.signal,
         approvedCommandSignaturesOnce,
+        approvedPermissionsOnce,
         observer: streamObserver,
         sessionId,
       });

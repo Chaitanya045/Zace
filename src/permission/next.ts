@@ -42,6 +42,16 @@ export namespace PermissionNext {
     }
   }
 
+  export class AskedError extends Error {
+    public readonly prompt: string;
+
+    constructor(prompt: string) {
+      super("Permission required. Waiting for user reply.");
+      this.name = "PermissionAskedError";
+      this.prompt = prompt;
+    }
+  }
+
   export class CorrectedError extends Error {
     public readonly userMessage?: string;
 

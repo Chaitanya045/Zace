@@ -57,7 +57,7 @@ export async function requirePermission(input: {
     }
 
     if (!input.sessionId) {
-      // Non-interactive session: default to deny-by-ask (block) to be safe.
+      // Non-interactive session: default to block.
       throw new PermissionNext.RejectedError();
     }
 
@@ -84,6 +84,6 @@ export async function requirePermission(input: {
     });
 
     // Asking means we must stop and wait for user.
-    throw new PermissionNext.RejectedError();
+    throw new PermissionNext.AskedError(prompt);
   }
 }

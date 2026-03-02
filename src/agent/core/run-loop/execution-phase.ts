@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 import type { LlmClient } from "../../../llm/client";
+import type { PermissionMemory } from "../../../permission/memory";
 import type { AgentContext, AgentState } from "../../../types/agent";
 import type { AgentConfig } from "../../../types/config";
 import type { AbortSignalLike, ToolExecutionContext, ToolResult } from "../../../types/tool";
@@ -125,6 +126,7 @@ export async function handleExecutionPhase<TResult>(input: {
   };
   observer?: AgentObserver;
   planResult: PlanResult;
+  permissionMemory: PermissionMemory;
   resolveCommandApproval: (input: {
     command: string;
     workingDirectory?: string;
@@ -459,6 +461,139 @@ export async function handleExecutionPhase<TResult>(input: {
           }, input.stepNumber, "destructive_command_confirmation"),
         };
       }
+    }
+  }
+
+  if (plannedToolCallName !== "execute_command") {
+    try {
+      const { requirePermission } = await import("../../../permission/guard");
+      await requirePermission({
+        config: input.config,
+        memory: input.permissionMemory,
+        patterns: [plannedToolCallName],
+        permission: plannedToolCallName,
+        runId: input.runId,
+        sessionId: input.sessionId,
+      });
+    } catch (error) {
+      const { PermissionNext } = await import("../../../permission/next");
+      if (error instanceof PermissionNext.AskedError) {
+        input.memory.addMessage("assistant", error.prompt);
+        input.state.context = addStep(input.state.context, {
+          reasoning: `Waiting for permission to call tool: ${plannedToolCallName}`,
+          state: "waiting_for_user",
+          step: input.stepNumber,
+          toolCall: {
+            arguments: plannedToolCallArguments,
+            name: plannedToolCallName,
+          },
+          toolResult: null,
+        });
+        await appendRunEvent({
+          event: "permission_requested",
+          observer: input.observer,
+          payload: {
+            patterns: [plannedToolCallName],
+            permission: plannedToolCallName,
+            toolName: plannedToolCallName,
+          },
+          phase: "approval",
+          runId: input.runId,
+          sessionId: input.sessionId,
+          step: input.stepNumber,
+        });
+        return {
+          kind: "finalized",
+          result: await input.finalizeResult({
+            context: input.state.context,
+            finalState: "waiting_for_user",
+            message: error.prompt,
+            success: false,
+          }, input.stepNumber, "permission_requested"),
+        };
+      }
+
+      if (error instanceof PermissionNext.DeniedError) {
+        const message = `Tool call denied by configured permission rules: ${error.message}`;
+        input.memory.addMessage("assistant", message);
+        input.state.context = addStep(input.state.context, {
+          reasoning: `Permission rules denied tool: ${plannedToolCallName}`,
+          state: "waiting_for_user",
+          step: input.stepNumber,
+          toolCall: {
+            arguments: plannedToolCallArguments,
+            name: plannedToolCallName,
+          },
+          toolResult: {
+            error: "Tool denied by permission policy",
+            output: message,
+            success: false,
+          },
+        });
+        await appendRunEvent({
+          event: "permission_denied",
+          observer: input.observer,
+          payload: {
+            permission: plannedToolCallName,
+            toolName: plannedToolCallName,
+          },
+          phase: "approval",
+          runId: input.runId,
+          sessionId: input.sessionId,
+          step: input.stepNumber,
+        });
+        return {
+          kind: "finalized",
+          result: await input.finalizeResult({
+            context: input.state.context,
+            finalState: "waiting_for_user",
+            message,
+            success: false,
+          }, input.stepNumber, "permission_denied"),
+        };
+      }
+
+      if (error instanceof PermissionNext.RejectedError) {
+        const message = `Permission rejected for tool: ${plannedToolCallName}.`;
+        input.memory.addMessage("assistant", message);
+        input.state.context = addStep(input.state.context, {
+          reasoning: `Permission rejected for tool: ${plannedToolCallName}`,
+          state: "waiting_for_user",
+          step: input.stepNumber,
+          toolCall: {
+            arguments: plannedToolCallArguments,
+            name: plannedToolCallName,
+          },
+          toolResult: {
+            error: "Permission rejected",
+            output: message,
+            success: false,
+          },
+        });
+        await appendRunEvent({
+          event: "permission_rejected",
+          observer: input.observer,
+          payload: {
+            permission: plannedToolCallName,
+            toolName: plannedToolCallName,
+          },
+          phase: "approval",
+          runId: input.runId,
+          sessionId: input.sessionId,
+          step: input.stepNumber,
+        });
+        return {
+          kind: "finalized",
+          result: await input.finalizeResult({
+            context: input.state.context,
+            finalState: "waiting_for_user",
+            message,
+            success: false,
+          }, input.stepNumber, "permission_rejected"),
+        };
+      }
+
+      throw error;
     }
   }
 

@@ -8,6 +8,8 @@ import type { AbortSignalLike, ToolExecutionContext, ToolResult } from "../../ty
 import type { AgentObserver } from "../observer";
 import type { CommandApprovalResult, RunLoopMutableState, ToolCallLike } from "./run-loop/types";
 
+import { createPermissionMemory } from "../../permission/memory";
+import { loadPermissionRuleset } from "../../permission/store";
 import { buildSystemPrompt } from "../../prompts/system";
 import { allTools } from "../../tools";
 import { appendSessionMessage, getSessionFilePath } from "../../tools/session";
@@ -43,6 +45,7 @@ export interface AgentResult {
 export interface RunAgentLoopOptions {
   abortSignal?: AbortSignalLike;
   approvedCommandSignaturesOnce?: string[];
+  approvedPermissionsOnce?: Array<{ pattern: string; permission: string }>;
   executeToolCall?: (
     toolCall: {
       arguments: Record<string, unknown>;
@@ -126,6 +129,15 @@ export async function runAgentLoop(
   };
   const lspServerConfigAbsolutePath = resolve(config.lspServerConfigPath);
   const onceApprovedSignatures = new Set(options?.approvedCommandSignaturesOnce ?? []);
+  const permissionRuleset = await loadPermissionRuleset({
+    config,
+    sessionId,
+    workspaceRoot: process.cwd(),
+  });
+  const permissionMemory = createPermissionMemory(permissionRuleset);
+  for (const entry of options?.approvedPermissionsOnce ?? []) {
+    permissionMemory.allowOnce(entry.permission, entry.pattern);
+  }
   const runToolCall = options?.executeToolCall ?? executeToolCall;
   const getCompletionCriteria = (): string[] => describeCompletionPlan(loopState.completionPlan);
   const finalizeResult = async (
@@ -237,10 +249,10 @@ export async function runAgentLoop(
     loopState.completionBlockedReason = null;
     loopState.completionBlockedReasonRepeatCount = 0;
   };
-  const resolveCommandApproval = async (input: {
-    command: string;
-    workingDirectory?: string;
-  }): Promise<CommandApprovalResult> => {
+    const resolveCommandApproval = async (input: {
+      command: string;
+      workingDirectory?: string;
+    }): Promise<CommandApprovalResult> => {
     const destructiveReason = await getDestructiveCommandReason(client, config, input.command, {
       workingDirectory: input.workingDirectory,
     });
@@ -490,6 +502,7 @@ export async function runAgentLoop(
         lspServerConfigAbsolutePath,
         memory,
         observer,
+        permissionMemory,
         planResult,
         resolveCommandApproval,
         runId,
