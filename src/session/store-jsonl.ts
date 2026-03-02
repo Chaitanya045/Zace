@@ -1,4 +1,5 @@
 import type { SessionEntry } from "../tools/session";
+import type { MessageV2 } from "./message-v2";
 
 import {
   appendSessionMessagePartDelta,
@@ -6,7 +7,6 @@ import {
   readSessionEntries,
 } from "../tools/session";
 import { applyPartDelta, type SessionStore } from "./store";
-import type { MessageV2 } from "./message-v2";
 
 function coerceMessageEntries(entries: SessionEntry[]): MessageV2[] {
   const messages = new Map<string, MessageV2>();

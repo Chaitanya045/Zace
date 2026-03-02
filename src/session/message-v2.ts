@@ -19,25 +19,25 @@ export const reasoningPartSchema = basePartSchema.extend({
 });
 
 export const toolCallPartSchema = basePartSchema.extend({
+  arguments: z.unknown(),
   kind: z.literal("tool_call"),
   name: z.string().min(1),
   toolCallId: z.string().min(1),
-  arguments: z.unknown(),
 });
 
 export const toolResultPartSchema = basePartSchema.extend({
-  kind: z.literal("tool_result"),
-  name: z.string().min(1),
-  toolCallId: z.string().min(1),
   artifacts: z.unknown().optional(),
   error: z.string().optional(),
+  kind: z.literal("tool_result"),
+  name: z.string().min(1),
   output: z.string(),
   success: z.boolean(),
+  toolCallId: z.string().min(1),
 });
 
 export const patchPartSchema = basePartSchema.extend({
-  kind: z.literal("patch"),
   files: z.array(z.string().min(1)),
+  kind: z.literal("patch"),
 });
 
 export const stepStartPartSchema = basePartSchema.extend({
@@ -49,9 +49,9 @@ export const stepStartPartSchema = basePartSchema.extend({
 
 export const stepFinishPartSchema = basePartSchema.extend({
   kind: z.literal("step_finish"),
+  status: z.enum(["cancelled", "error", "success"]),
   step: z.number().int().nonnegative(),
   stepId: z.string().min(1),
-  status: z.enum(["cancelled", "error", "success"]),
 });
 
 export const messagePartV2Schema = z.discriminatedUnion("kind", [

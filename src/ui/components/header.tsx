@@ -5,6 +5,7 @@ import { colorTokens } from "../theme/tokens";
 
 type HeaderProps = {
   hasPendingApproval: boolean;
+  hasPendingPermission: boolean;
   isBusy: boolean;
   runState: string;
   sessionFilePath: string;
@@ -17,6 +18,10 @@ export function Header(props: HeaderProps) {
   const statusTone = props.isBusy ? "accent" : "muted";
   const pendingApprovalLabel = props.hasPendingApproval ? "approval:pending" : "approval:none";
   const pendingApprovalTone = props.hasPendingApproval ? "danger" : "muted";
+  const pendingPermissionLabel = props.hasPendingPermission
+    ? "permission:pending"
+    : "permission:none";
+  const pendingPermissionTone = props.hasPendingPermission ? "danger" : "muted";
 
   return (
     <Panel title="Session">
@@ -31,6 +36,7 @@ export function Header(props: HeaderProps) {
           { tone: "default", value: props.runState },
           { tone: "muted", value: props.stepLabel ?? "step:n/a" },
           { tone: pendingApprovalTone, value: pendingApprovalLabel },
+          { tone: pendingPermissionTone, value: pendingPermissionLabel },
         ]}
       />
     </Panel>

@@ -1,5 +1,4 @@
 import type { LlmMessage } from "../llm/types";
-
 import type { MessagePartV2, MessageV2 } from "./message-v2";
 
 function stringifyPart(part: MessagePartV2): string {

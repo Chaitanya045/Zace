@@ -74,6 +74,7 @@ export function ChatApp(props: ChatAppProps) {
     <Box flexDirection="column">
       <Header
         hasPendingApproval={controller.state.hasPendingApproval}
+        hasPendingPermission={controller.state.hasPendingPermission}
         isBusy={controller.state.isBusy}
         runState={controller.state.runState}
         sessionFilePath={controller.state.sessionFilePath}

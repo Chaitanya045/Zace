@@ -13,6 +13,7 @@ import {
   resolvePendingApprovalFromUserMessage,
   type ChatTurn,
 } from "../cli/chat-session";
+import { findOpenPendingPermission, resolvePendingPermissionFromUserMessage } from "../permission/resolve";
 import { getSessionFilePath } from "../tools/session";
 
 function createPlainStreamObserver(config: AgentConfig): AgentObserver | undefined {
@@ -88,6 +89,7 @@ export async function runPlainChatMode(
 ): Promise<void> {
   const turns: ChatTurn[] = [];
   let pendingApproval: Awaited<ReturnType<typeof loadSessionState>>["pendingApproval"];
+  let pendingPermission: Awaited<ReturnType<typeof findOpenPendingPermission>> = null;
   let pendingFollowUpQuestion: string | undefined;
   const rl = createInterface({ input, output });
   const streamObserver = createPlainStreamObserver(config);
@@ -114,6 +116,10 @@ export async function runPlainChatMode(
   );
   turns.push(...sessionState.turns);
   pendingApproval = sessionState.pendingApproval;
+  pendingPermission = await findOpenPendingPermission({
+    maxAgeMs: config.pendingActionMaxAgeMs,
+    sessionId,
+  });
   pendingFollowUpQuestion = sessionState.pendingFollowUpQuestion;
 
   console.log("\n💬 Zace chat mode (plain fallback)");
@@ -125,6 +131,9 @@ export async function runPlainChatMode(
   }
   if (pendingApproval) {
     console.log(`Pending approval command: ${pendingApproval.context.command}\n`);
+  }
+  if (pendingPermission) {
+    console.log(`Pending permission:\n${pendingPermission.entry.prompt}\n`);
   }
 
   try {
@@ -181,6 +190,28 @@ export async function runPlainChatMode(
         }
       }
 
+      if (pendingPermission) {
+        const resolution = await resolvePendingPermissionFromUserMessage({
+          config,
+          pending: pendingPermission,
+          sessionId,
+          userInput: message,
+        });
+        if (resolution.status === "unclear") {
+          console.log(`\n❓ ${resolution.message}\n`);
+          continue;
+        }
+
+        if (resolution.status === "resolved") {
+          approvalResolutionNote = approvalResolutionNote
+            ? `${approvalResolutionNote}\n\n${resolution.contextNote}`
+            : resolution.contextNote;
+          pendingPermission = null;
+          pendingFollowUpQuestion = undefined;
+          console.log(`\n🧭 ${resolution.message}\n`);
+        }
+      }
+
       const task = buildChatTaskWithFollowUp(
         turns,
         message,
@@ -215,10 +246,15 @@ export async function runPlainChatMode(
           config.interruptedRunRecoveryEnabled
         );
         pendingApproval = refreshedSessionState.pendingApproval;
+        pendingPermission = await findOpenPendingPermission({
+          maxAgeMs: config.pendingActionMaxAgeMs,
+          sessionId,
+        });
         pendingFollowUpQuestion = refreshedSessionState.pendingFollowUpQuestion ?? result.message;
         console.log("Agent needs clarification. Reply with your answer.\n");
       } else {
         pendingApproval = undefined;
+        pendingPermission = null;
         pendingFollowUpQuestion = undefined;
       }
 

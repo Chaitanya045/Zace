@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto";
 import type { OpenPendingApproval } from "../agent/approval";
 import type { AgentResult } from "../agent/loop";
 import type { LlmClient } from "../llm/client";
+import type { OpenPendingPermission } from "../permission/pending";
 import type { AgentConfig } from "../types/config";
 
 import { findOpenPendingApproval, resolveApprovalFromUserReply } from "../agent/approval";
+import { findOpenPendingPermission } from "../permission/pending";
 import {
   appendSessionEntries,
   normalizeSessionId,
@@ -21,6 +23,7 @@ export type ChatTurn = {
 
 export type SessionState = {
   pendingApproval?: OpenPendingApproval;
+  pendingPermission?: OpenPendingPermission;
   pendingFollowUpQuestion?: string;
   turns: ChatTurn[];
 };
@@ -171,12 +174,21 @@ export async function loadSessionState(
       })
     : null;
 
+  const pendingPermission = approvalMemoryEnabled
+    ? await findOpenPendingPermission({
+        maxAgeMs: pendingActionMaxAgeMs,
+        sessionId,
+      })
+    : null;
+
   const lastTurn = turns[turns.length - 1];
   return {
     pendingApproval: pendingApproval ?? undefined,
     pendingFollowUpQuestion:
       pendingApproval?.entry.prompt ??
+      pendingPermission?.entry.prompt ??
       (lastTurn?.finalState === "waiting_for_user" ? lastTurn.assistant : undefined),
+    pendingPermission: pendingPermission ?? undefined,
     turns,
   };
 }

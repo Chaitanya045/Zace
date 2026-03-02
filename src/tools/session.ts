@@ -65,7 +65,7 @@ const sessionRunEventEntrySchema = z.object({
   type: z.literal("run_event"),
 });
 
-const sessionPendingActionKindSchema = z.enum(["approval", "loop_guard"]);
+const sessionPendingActionKindSchema = z.enum(["approval", "loop_guard", "permission"]);
 const sessionPendingActionStatusSchema = z.enum(["open", "resolved"]);
 
 const sessionPendingActionEntrySchema = z.object({
@@ -82,6 +82,17 @@ const sessionPendingActionEntrySchema = z.object({
 const sessionApprovalRuleScopeSchema = z.enum(["session", "workspace"]);
 const sessionApprovalRuleDecisionSchema = z.enum(["allow", "deny"]);
 
+const sessionPermissionRuleActionSchema = z.enum(["allow", "ask", "deny"]);
+
+const sessionPermissionRuleEntrySchema = z.object({
+  action: sessionPermissionRuleActionSchema,
+  pattern: z.string().min(1),
+  permission: z.string().min(1),
+  scope: sessionApprovalRuleScopeSchema,
+  timestamp: z.string(),
+  type: z.literal("permission_rule"),
+});
+
 const sessionApprovalRuleEntrySchema = z.object({
   decision: sessionApprovalRuleDecisionSchema,
   pattern: z.string().min(1),
@@ -96,6 +107,7 @@ export const sessionEntrySchema = z.discriminatedUnion("type", [
   sessionMessagePartDeltaEntrySchema,
   sessionMessageV2EntrySchema,
   sessionPendingActionEntrySchema,
+  sessionPermissionRuleEntrySchema,
   sessionRunEventEntrySchema,
   sessionSummaryEntrySchema,
   sessionRunEntrySchema,
@@ -108,6 +120,8 @@ export type SessionApprovalRuleScope = z.infer<typeof sessionApprovalRuleScopeSc
 export type SessionMessageEntry = Extract<SessionEntry, { type: "message" }>;
 export type SessionMessagePartDeltaEntry = Extract<SessionEntry, { type: "message_part_delta" }>;
 export type SessionMessageV2Entry = Extract<SessionEntry, { type: "message_v2" }>;
+export type SessionPermissionRuleAction = z.infer<typeof sessionPermissionRuleActionSchema>;
+export type SessionPermissionRuleEntry = Extract<SessionEntry, { type: "permission_rule" }>;
 export type SessionMessageRole = z.infer<typeof sessionMessageRoleSchema>;
 export type SessionPendingActionEntry = Extract<SessionEntry, { type: "pending_action" }>;
 export type SessionPendingActionKind = z.infer<typeof sessionPendingActionKindSchema>;
@@ -134,6 +148,14 @@ export type SessionMessagePartDeltaWrite = {
 export type SessionApprovalRuleWrite = {
   decision: SessionApprovalRuleDecision;
   pattern: string;
+  scope: SessionApprovalRuleScope;
+  timestamp?: string;
+};
+
+export type SessionPermissionRuleWrite = {
+  action: SessionPermissionRuleAction;
+  pattern: string;
+  permission: string;
   scope: SessionApprovalRuleScope;
   timestamp?: string;
 };
@@ -325,6 +347,23 @@ export async function appendSessionApprovalRule(
       scope: rule.scope,
       timestamp,
       type: "approval_rule",
+    },
+  ]);
+}
+
+export async function appendSessionPermissionRule(
+  sessionId: string,
+  rule: SessionPermissionRuleWrite
+): Promise<void> {
+  const timestamp = rule.timestamp ?? new Date().toISOString();
+  await appendSessionEntries(sessionId, [
+    {
+      action: rule.action,
+      pattern: rule.pattern,
+      permission: rule.permission,
+      scope: rule.scope,
+      timestamp,
+      type: "permission_rule",
     },
   ]);
 }

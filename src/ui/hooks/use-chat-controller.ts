@@ -18,6 +18,10 @@ import {
   resolvePendingApprovalFromUserMessage,
   type ChatTurn,
 } from "../../cli/chat-session";
+import {
+  findOpenPendingPermission,
+  resolvePendingPermissionFromUserMessage,
+} from "../../permission/resolve";
 import { STREAM_BUFFER_INTERVAL_MS } from "../buffer";
 import { buildToolCallTimelineEntry, buildToolResultTimelineEntry } from "../event-model";
 import { chatUiReducer, createInitialChatUiState } from "../state";
@@ -60,6 +64,7 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
   const pendingApprovalRef = useRef<Awaited<ReturnType<typeof loadSessionState>>["pendingApproval"]>(
     undefined
   );
+  const pendingPermissionRef = useRef<Awaited<ReturnType<typeof findOpenPendingPermission>>>(null);
   const pendingFollowUpQuestionRef = useRef<string | undefined>(undefined);
   const sequenceRef = useRef(0);
   const streamEntryRef = useRef<Partial<Record<StreamSlot, string>>>({});
@@ -121,10 +126,18 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
 
         turnsRef.current = sessionState.turns;
         pendingApprovalRef.current = sessionState.pendingApproval;
+        pendingPermissionRef.current = await findOpenPendingPermission({
+          maxAgeMs: input.config.pendingActionMaxAgeMs,
+          sessionId: input.sessionId,
+        });
         pendingFollowUpQuestionRef.current = sessionState.pendingFollowUpQuestion;
         dispatch({
           type: "set_pending_approval",
           value: Boolean(sessionState.pendingApproval),
+        });
+        dispatch({
+          type: "set_pending_permission",
+          value: Boolean(pendingPermissionRef.current),
         });
         dispatch({
           type: "set_pending_follow_up",
@@ -142,6 +155,14 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
         if (sessionState.pendingApproval) {
           createTimelineEntry({
             body: `Pending approval restored for command:\n${sessionState.pendingApproval.context.command}`,
+            kind: "status",
+            tone: "danger",
+          });
+        }
+
+        if (pendingPermissionRef.current) {
+          createTimelineEntry({
+            body: `Pending permission restored:\n${pendingPermissionRef.current.entry.prompt}`,
             kind: "status",
             tone: "danger",
           });
@@ -217,9 +238,14 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
     if (message === "/reset") {
       turnsRef.current = [];
       pendingApprovalRef.current = undefined;
+      pendingPermissionRef.current = null;
       pendingFollowUpQuestionRef.current = undefined;
       dispatch({
         type: "set_pending_approval",
+        value: false,
+      });
+      dispatch({
+        type: "set_pending_permission",
         value: false,
       });
       dispatch({
@@ -247,12 +273,16 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
       const pendingApproval = pendingApprovalRef.current
         ? "yes"
         : "no";
+      const pendingPermission = pendingPermissionRef.current
+        ? "yes"
+        : "no";
       createTimelineEntry({
         body:
           `Turns: ${String(turnsRef.current.length)}\n` +
           `Busy: ${state.isBusy ? "yes" : "no"}\n` +
           `Pending follow-up: ${pending}\n` +
-          `Pending approval: ${pendingApproval}`,
+          `Pending approval: ${pendingApproval}\n` +
+          `Pending permission: ${pendingPermission}`,
         kind: "status",
       });
       return;
@@ -339,6 +369,52 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
           body: approvalResolution.message,
           kind: "status",
           tone: approvalResolution.decision === "allow" ? "success" : "muted",
+        });
+      }
+    }
+
+    if (pendingPermissionRef.current) {
+      const resolution = await resolvePendingPermissionFromUserMessage({
+        config: input.config,
+        pending: pendingPermissionRef.current,
+        sessionId: input.sessionId,
+        userInput: message,
+      });
+      if (resolution.status === "unclear") {
+        createTimelineEntry({
+          body: resolution.message,
+          kind: "assistant",
+          title: "Permission pending",
+          tone: "danger",
+        });
+        dispatch({
+          type: "set_run_state",
+          value: "waiting_for_user",
+        });
+        dispatch({
+          type: "set_busy",
+          value: false,
+        });
+        dispatch({
+          type: "set_step_label",
+          value: undefined,
+        });
+        return;
+      }
+
+      if (resolution.status === "resolved") {
+        approvalResolutionNote = approvalResolutionNote
+          ? `${approvalResolutionNote}\n\n${resolution.contextNote}`
+          : resolution.contextNote;
+        pendingPermissionRef.current = null;
+        dispatch({
+          type: "set_pending_permission",
+          value: false,
+        });
+        createTimelineEntry({
+          body: resolution.message,
+          kind: "status",
+          tone: resolution.reply === "reject" ? "muted" : "success",
         });
       }
     }
@@ -523,6 +599,14 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
           type: "set_pending_approval",
           value: Boolean(refreshedSessionState.pendingApproval),
         });
+        pendingPermissionRef.current = await findOpenPendingPermission({
+          maxAgeMs: input.config.pendingActionMaxAgeMs,
+          sessionId: input.sessionId,
+        });
+        dispatch({
+          type: "set_pending_permission",
+          value: Boolean(pendingPermissionRef.current),
+        });
         pendingFollowUpQuestionRef.current =
           refreshedSessionState.pendingFollowUpQuestion ?? result.message;
         dispatch({
@@ -531,9 +615,14 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
         });
       } else {
         pendingApprovalRef.current = undefined;
+        pendingPermissionRef.current = null;
         pendingFollowUpQuestionRef.current = undefined;
         dispatch({
           type: "set_pending_approval",
+          value: false,
+        });
+        dispatch({
+          type: "set_pending_permission",
           value: false,
         });
         dispatch({
