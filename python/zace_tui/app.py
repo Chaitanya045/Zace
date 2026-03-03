@@ -147,6 +147,8 @@ class ZaceTextualApp(App[None]):
         self._activity_timer: Optional[Timer] = None
         self._active_theme = self._resolve_initial_theme(payload.ui_config)
         self._show_welcome = True
+        self._chat_items: list[dict[str, Optional[str]]] = []
+        self._chat_stream_index_by_id: dict[str, int] = {}
 
     def compose(self) -> ComposeResult:
         yield Static(id="top_glow")
@@ -241,6 +243,15 @@ class ZaceTextualApp(App[None]):
             text = str(event.get("text", ""))
             final_state_raw = event.get("finalState")
             final_state = str(final_state_raw) if isinstance(final_state_raw, str) else None
+            stream_id_raw = event.get("streamId")
+            stream_id = str(stream_id_raw) if isinstance(stream_id_raw, str) else None
+            chunk_raw = event.get("chunk")
+            chunk = str(chunk_raw) if isinstance(chunk_raw, str) else None
+
+            if stream_id and chunk in {"start", "delta", "end"}:
+                self._handle_streaming_chat_event(role, text, final_state, stream_id, chunk)
+                return
+
             self._append_chat(role, text, final_state)
             return
 
@@ -555,18 +566,83 @@ class ZaceTextualApp(App[None]):
             self._show_welcome = False
             self._render_layout_state()
 
+        self._chat_items.append(
+            {
+                "final_state": final_state,
+                "role": role,
+                "text": text,
+            }
+        )
+        self._render_chat()
+
+    def _handle_streaming_chat_event(
+        self,
+        role: str,
+        text: str,
+        final_state: Optional[str],
+        stream_id: str,
+        chunk: str,
+    ) -> None:
+        if self._show_welcome:
+            self._show_welcome = False
+            self._render_layout_state()
+
+        if chunk == "start":
+            self._chat_items.append(
+                {
+                    "final_state": None,
+                    "role": role,
+                    "text": text,
+                }
+            )
+            self._chat_stream_index_by_id[stream_id] = len(self._chat_items) - 1
+            self._render_chat()
+            return
+
+        index = self._chat_stream_index_by_id.get(stream_id)
+        if index is None or index >= len(self._chat_items):
+            self._chat_items.append(
+                {
+                    "final_state": final_state,
+                    "role": role,
+                    "text": text,
+                }
+            )
+            self._chat_stream_index_by_id[stream_id] = len(self._chat_items) - 1
+            self._render_chat()
+            return
+
+        if chunk == "delta":
+            current_text = self._chat_items[index].get("text", "") or ""
+            self._chat_items[index]["text"] = f"{current_text}{text}"
+            self._render_chat()
+            return
+
+        if chunk == "end":
+            if final_state:
+                self._chat_items[index]["final_state"] = final_state
+            self._chat_stream_index_by_id.pop(stream_id, None)
+            self._render_chat()
+
+    def _render_chat(self) -> None:
         try:
             log = self.query_one("#chat_log", RichLog)
         except NoMatches:
             return
 
-        safe_text = escape(text)
-        if role == "user":
-            prefix = "[#4EA5FF]you[/]"
-        elif role == "assistant":
-            prefix = "[#2BEE8C]agent[/]"
-        else:
-            prefix = "[#6A737D]system[/]"
+        log.clear()
 
-        suffix = f" [#88D498]({escape(final_state)})[/]" if final_state else ""
-        log.write(f"{prefix}: {safe_text}{suffix}")
+        for item in self._chat_items:
+            role = item.get("role", "assistant") or "assistant"
+            text = item.get("text", "") or ""
+            final_state = item.get("final_state")
+            safe_text = escape(text)
+            if role == "user":
+                prefix = "[#4EA5FF]you[/]"
+            elif role == "assistant":
+                prefix = "[#2BEE8C]agent[/]"
+            else:
+                prefix = "[#6A737D]system[/]"
+
+            suffix = f" [#88D498]({escape(final_state)})[/]" if final_state else ""
+            log.write(f"{prefix}: {safe_text}{suffix}")

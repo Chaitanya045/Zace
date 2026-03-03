@@ -61,8 +61,10 @@ export const bridgeEventSchema = z.discriminatedUnion("type", [
     type: z.literal("state_update"),
   }),
   z.object({
+    chunk: z.enum(["delta", "end", "start"]).optional(),
     finalState: z.string().optional(),
     role: chatRoleSchema,
+    streamId: z.string().min(1).optional(),
     text: z.string(),
     timestamp: z.number().int().nonnegative(),
     type: z.literal("chat_message"),

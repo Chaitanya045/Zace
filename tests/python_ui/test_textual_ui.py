@@ -257,3 +257,69 @@ async def test_welcome_shows_when_session_is_empty() -> None:
         chat_log = app.query_one("#chat_log", RichLog)
         assert welcome_screen.display is True
         assert chat_log.display is False
+
+
+@pytest.mark.asyncio
+async def test_streaming_chat_chunks_merge_into_single_message() -> None:
+    fake_bridge = FakeBridge()
+    fake_bridge.init_result["messages"] = []
+    fake_bridge.init_result["state"]["turnCount"] = 0
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        app.post_message(
+            BridgeEventMessage(
+                {
+                    "chunk": "start",
+                    "role": "assistant",
+                    "streamId": "assistant-1",
+                    "text": "",
+                    "timestamp": 1,
+                    "type": "chat_message",
+                }
+            )
+        )
+        app.post_message(
+            BridgeEventMessage(
+                {
+                    "chunk": "delta",
+                    "role": "assistant",
+                    "streamId": "assistant-1",
+                    "text": "Hello ",
+                    "timestamp": 2,
+                    "type": "chat_message",
+                }
+            )
+        )
+        app.post_message(
+            BridgeEventMessage(
+                {
+                    "chunk": "delta",
+                    "role": "assistant",
+                    "streamId": "assistant-1",
+                    "text": "world",
+                    "timestamp": 3,
+                    "type": "chat_message",
+                }
+            )
+        )
+        app.post_message(
+            BridgeEventMessage(
+                {
+                    "chunk": "end",
+                    "finalState": "completed",
+                    "role": "assistant",
+                    "streamId": "assistant-1",
+                    "text": "",
+                    "timestamp": 4,
+                    "type": "chat_message",
+                }
+            )
+        )
+        await pilot.pause()
+
+        assert len(app._chat_items) == 1
+        assert app._chat_items[0]["text"] == "Hello world"
+        assert app._chat_items[0]["final_state"] == "completed"

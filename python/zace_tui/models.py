@@ -22,8 +22,10 @@ class BridgeState(TypedDict, total=False):
 
 
 class ChatMessageEvent(TypedDict, total=False):
+    chunk: Literal["delta", "end", "start"]
     finalState: str
     role: Literal["assistant", "system", "user"]
+    streamId: str
     text: str
     timestamp: int
     type: Literal["chat_message"]

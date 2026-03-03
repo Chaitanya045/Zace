@@ -65,4 +65,17 @@ describe("ui bridge protocol", () => {
     expect(success.success).toBeTrue();
     expect(error.success).toBeTrue();
   });
+
+  test("accepts streaming chat message events", () => {
+    const parsed = bridgeEventSchema.safeParse({
+      chunk: "delta",
+      role: "assistant",
+      streamId: "assistant-1",
+      text: "hello",
+      timestamp: Date.now(),
+      type: "chat_message",
+    });
+
+    expect(parsed.success).toBeTrue();
+  });
 });

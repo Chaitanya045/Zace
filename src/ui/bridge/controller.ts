@@ -55,6 +55,28 @@ const STATUS_PROMPT_OPTIONS = {
   ],
 } as const;
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function splitForStreaming(text: string): string[] {
+  if (!text) {
+    return [];
+  }
+
+  const targetChunks = Math.min(80, Math.max(1, Math.ceil(text.length / 24)));
+  const chunkSize = Math.max(8, Math.ceil(text.length / targetChunks));
+  const chunks: string[] = [];
+
+  for (let index = 0; index < text.length; index += chunkSize) {
+    chunks.push(text.slice(index, index + chunkSize));
+  }
+
+  return chunks;
+}
+
 type BridgeControllerInput = {
   client: LlmClient;
   config: AgentConfig;
@@ -80,6 +102,7 @@ export class BridgeController {
   private approvedCommandSignaturesOnce: string[] = [];
   private approvedPermissionsOnce: Array<{ pattern: string; permission: string }> = [];
   private queuedResolutionNotes: string[] = [];
+  private assistantStreamCounter = 0;
 
   constructor(input: BridgeControllerInput) {
     this.client = input.client;
@@ -309,6 +332,42 @@ export class BridgeController {
     });
   }
 
+  private async emitAssistantMessage(text: string, finalState?: string): Promise<void> {
+    const streamId = `assistant-${String(Date.now())}-${String(this.assistantStreamCounter)}`;
+    this.assistantStreamCounter += 1;
+
+    this.emitEvent({
+      chunk: "start",
+      role: "assistant",
+      streamId,
+      text: "",
+      timestamp: Date.now(),
+      type: "chat_message",
+    });
+
+    for (const chunk of splitForStreaming(text)) {
+      this.emitEvent({
+        chunk: "delta",
+        role: "assistant",
+        streamId,
+        text: chunk,
+        timestamp: Date.now(),
+        type: "chat_message",
+      });
+      await delay(12);
+    }
+
+    this.emitEvent({
+      chunk: "end",
+      finalState,
+      role: "assistant",
+      streamId,
+      text: "",
+      timestamp: Date.now(),
+      type: "chat_message",
+    });
+  }
+
   private emitApprovalPrompt(pendingApproval: OpenPendingApproval): void {
     this.emitEvent({
       command: pendingApproval.context.command,
@@ -435,7 +494,7 @@ export class BridgeController {
       });
 
       if (resolution?.status === "unclear") {
-        this.emitChatMessage("assistant", resolution.message);
+        await this.emitAssistantMessage(resolution.message);
         this.updateState({
           isBusy: false,
           runState: "waiting_for_user",
@@ -472,7 +531,7 @@ export class BridgeController {
       });
 
       if (resolution.status === "unclear") {
-        this.emitChatMessage("assistant", resolution.message);
+        await this.emitAssistantMessage(resolution.message);
         this.updateState({
           isBusy: false,
           runState: "waiting_for_user",
@@ -571,7 +630,7 @@ export class BridgeController {
         user: message,
       });
 
-      this.emitChatMessage("assistant", result.message, result.finalState);
+      await this.emitAssistantMessage(result.message, result.finalState);
       this.updateState({
         runState: result.finalState,
         turnCount: this.turns.length,
