@@ -1,46 +1,31 @@
 Screen {
-  background: #f7f3ff;
-  color: #3f3754;
+  background: #0A0E0C;
+  color: #E0E0E0;
 }
 
 #session_bar {
-  background: #efe8ff;
-  border: round #c6b8ea;
-  color: #4a3f68;
   height: 3;
   margin: 0 1;
   padding: 0 1;
 }
 
 #chat_log {
-  background: #fff9f6;
-  border: round #d9c2dc;
-  color: #3f3754;
   height: 1fr;
   margin: 0 1;
   padding: 0 1;
 }
 
 #tool_strip {
-  background: #e7f7f1;
-  border: round #9ac9b6;
-  color: #2f5f52;
   height: 3;
   margin: 0 1;
   padding: 0 1;
 }
 
 #composer {
-  background: #f3f9ff;
-  border: round #b2d0e8;
-  color: #304a64;
   margin: 0 1 1 1;
 }
 
 #modal_container {
-  background: #fffdf8;
-  border: round #c9b5df;
-  color: #463a60;
   height: auto;
   margin: 4 8;
   padding: 1 2;
@@ -48,16 +33,203 @@ Screen {
 }
 
 #modal_title {
-  color: #594a7c;
   text-style: bold;
   padding-bottom: 1;
 }
 
 #modal_message {
-  color: #4f4466;
   padding-bottom: 1;
 }
 
-#modal_options {
+/* Zace theme (MintTerminal palette) */
+.theme-zace {
+  background: #0A0E0C;
+  color: #E0E0E0;
+}
+
+.theme-zace Header {
+  background: #0A0E0C;
+  color: #2BEE8C;
+  text-style: bold;
+}
+
+.theme-zace Footer {
+  background: #0A0E0C;
+  color: #6A737D;
+}
+
+.theme-zace #session_bar {
+  background: #141B17;
+  border: round #3A5A4C;
+  color: #E0E0E0;
+}
+
+.theme-zace #chat_log {
+  background: #0A0E0C;
+  border: round #3A5A4C;
+  color: #E0E0E0;
+}
+
+.theme-zace #tool_strip {
+  background: #141B17;
+  border: round #2BEE8C;
+  color: #88D498;
+}
+
+.theme-zace #composer {
+  background: #141B17;
+  border: round #3A5A4C;
+  color: #E8F8F2;
+}
+
+.theme-zace #modal_container {
+  background: #141B17;
+  border: round #2BEE8C;
+  color: #E0E0E0;
+}
+
+.theme-zace #modal_title {
+  color: #2BEE8C;
+}
+
+.theme-zace #modal_message {
+  color: #E0E0E0;
+}
+
+.theme-zace #modal_options {
+  border: round #3A5A4C;
+}
+
+.theme-zace #modal_options > .option-list--option-highlighted {
+  background: #2BEE8C;
+  color: #0A0E0C;
+}
+
+.theme-zace #modal_options > .option-list--option-hover {
+  background: #3A5A4C;
+  color: #E8F8F2;
+}
+
+.theme-zace #modal_options > .option-list--option-disabled {
+  color: #6A737D;
+}
+
+.theme-zace #modal_options > .option-list--separator {
+  color: #3A5A4C;
+}
+
+/* Legacy pastel theme */
+.theme-pastel {
+  background: #f7f3ff;
+  color: #3f3754;
+}
+
+.theme-pastel Header {
+  background: #efe8ff;
+  color: #4a3f68;
+}
+
+.theme-pastel Footer {
+  background: #efe8ff;
+  color: #4a3f68;
+}
+
+.theme-pastel #session_bar {
+  background: #efe8ff;
+  border: round #c6b8ea;
+  color: #4a3f68;
+}
+
+.theme-pastel #chat_log {
+  background: #fff9f6;
+  border: round #d9c2dc;
+  color: #3f3754;
+}
+
+.theme-pastel #tool_strip {
+  background: #e7f7f1;
+  border: round #9ac9b6;
+  color: #2f5f52;
+}
+
+.theme-pastel #composer {
+  background: #f3f9ff;
+  border: round #b2d0e8;
+  color: #304a64;
+}
+
+.theme-pastel #modal_container {
+  background: #fffdf8;
+  border: round #c9b5df;
+  color: #463a60;
+}
+
+.theme-pastel #modal_title {
+  color: #594a7c;
+}
+
+.theme-pastel #modal_message {
+  color: #4f4466;
+}
+
+.theme-pastel #modal_options {
   border: round #b7a7d4;
+}
+
+/* Ocean theme */
+.theme-ocean {
+  background: #07111f;
+  color: #e9f6ff;
+}
+
+.theme-ocean Header {
+  background: #0b1d34;
+  color: #9fd8ff;
+}
+
+.theme-ocean Footer {
+  background: #0b1d34;
+  color: #c8e8ff;
+}
+
+.theme-ocean #session_bar {
+  background: #10253f;
+  border: round #3d6fa1;
+  color: #d2ecff;
+}
+
+.theme-ocean #chat_log {
+  background: #0b1a2f;
+  border: round #2f537a;
+  color: #e6f4ff;
+}
+
+.theme-ocean #tool_strip {
+  background: #0d2837;
+  border: round #4da3a6;
+  color: #b8f4f2;
+}
+
+.theme-ocean #composer {
+  background: #0c2238;
+  border: round #4d87b9;
+  color: #e6f4ff;
+}
+
+.theme-ocean #modal_container {
+  background: #0a1b2f;
+  border: round #4c7daa;
+  color: #e6f4ff;
+}
+
+.theme-ocean #modal_title {
+  color: #9fd8ff;
+}
+
+.theme-ocean #modal_message {
+  color: #cbe7fb;
+}
+
+.theme-ocean #modal_options {
+  border: round #4c7daa;
 }

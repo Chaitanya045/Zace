@@ -7,8 +7,10 @@ from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import Footer, Header, Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
@@ -66,6 +68,7 @@ class HelpModal(ModalScreen[None]):
             "Shortcuts",
             "- Enter: submit message",
             "- Ctrl+P: command palette",
+            "- Ctrl+T: cycle theme",
             "- Ctrl+C: interrupt active run / exit",
             "- F1 or ?: help",
         ]
@@ -86,9 +89,11 @@ class ZaceTextualApp(App[None]):
     CSS_PATH = "theme.tcss"
     TITLE = "Zace"
     SUB_TITLE = "Textual"
+    THEME_ORDER = ("zace", "pastel", "ocean")
 
     BINDINGS = [
         Binding("ctrl+p", "open_palette", "Palette", priority=True),
+        Binding("ctrl+t", "cycle_theme", "Theme", priority=True),
         Binding("ctrl+c", "interrupt_or_exit", "Interrupt/Exit", priority=True),
         Binding("f1", "show_help", "Help"),
         Binding("question_mark", "show_help", "Help"),
@@ -98,6 +103,10 @@ class ZaceTextualApp(App[None]):
         {"id": "status", "label": "Show status"},
         {"id": "reset", "label": "Reset in-memory context"},
         {"id": "help", "label": "Show keyboard help"},
+        {"id": "theme_cycle", "label": "Cycle theme"},
+        {"id": "theme_zace", "label": "Theme: zace (high contrast)"},
+        {"id": "theme_pastel", "label": "Theme: pastel"},
+        {"id": "theme_ocean", "label": "Theme: ocean"},
         {"id": "exit", "label": "Exit"},
     ]
 
@@ -131,6 +140,8 @@ class ZaceTextualApp(App[None]):
         self._interrupt_armed = False
         self._modal_lock = asyncio.Lock()
         self._dot_phase = 0
+        self._activity_timer: Optional[Timer] = None
+        self._active_theme = self._resolve_initial_theme(payload.ui_config)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -141,8 +152,9 @@ class ZaceTextualApp(App[None]):
         yield Footer()
 
     async def on_mount(self) -> None:
+        self._apply_theme(self._active_theme)
         self.query_one("#composer", Input).focus()
-        self.set_interval(0.35, self._advance_activity_animation)
+        self._activity_timer = self.set_interval(0.35, self._advance_activity_animation)
         await self._bridge.start()
 
         try:
@@ -177,6 +189,9 @@ class ZaceTextualApp(App[None]):
         self._render_state()
 
     async def on_unmount(self) -> None:
+        if self._activity_timer is not None:
+            self._activity_timer.stop()
+            self._activity_timer = None
         await self._bridge.stop()
 
     async def _queue_bridge_event(self, event: dict[str, Any]) -> None:
@@ -252,28 +267,31 @@ class ZaceTextualApp(App[None]):
         self.run_worker(self._open_palette_flow(), group="palette", exclusive=True)
 
     async def _open_palette_flow(self) -> None:
-        choice = await self.push_screen_wait(
-            ChoiceModal(
-                title="Command Palette",
-                message="Select an action",
-                options=self.PALETTE_ACTIONS,
-            )
+        modal = ChoiceModal(
+            title="Command Palette",
+            message="Select an action",
+            options=self.PALETTE_ACTIONS,
         )
+        self._apply_theme_to_node(modal)
+        choice = await self.push_screen_wait(modal)
         if not isinstance(choice, str):
             return
 
-        await self._submit_payload(
-            {
-                "kind": "command",
-                "command": choice,
-            }
-        )
+        await self._handle_palette_action(choice)
+
+    async def action_cycle_theme(self) -> None:
+        next_index = (self.THEME_ORDER.index(self._active_theme) + 1) % len(self.THEME_ORDER)
+        next_theme = self.THEME_ORDER[next_index]
+        self._apply_theme(next_theme)
+        self.notify(f"Theme: {next_theme}", severity="information")
 
     async def action_show_help(self) -> None:
         self.run_worker(self._show_help_modal(), group="help_modal", exclusive=True)
 
     async def _show_help_modal(self) -> None:
-        await self.push_screen_wait(HelpModal())
+        modal = HelpModal()
+        self._apply_theme_to_node(modal)
+        await self.push_screen_wait(modal)
 
     async def action_interrupt_or_exit(self) -> None:
         if bool(self._state.get("isBusy", False)):
@@ -302,6 +320,9 @@ class ZaceTextualApp(App[None]):
         await self.action_exit_app()
 
     async def action_exit_app(self) -> None:
+        if self._activity_timer is not None:
+            self._activity_timer.stop()
+            self._activity_timer = None
         await self._bridge.stop()
         self.exit()
 
@@ -325,19 +346,19 @@ class ZaceTextualApp(App[None]):
             command = str(event.get("command", ""))
             reason = str(event.get("reason", ""))
             message = f"{prompt}\n\nCommand:\n{command}\n\nReason: {reason}"
-            choice = await self.push_screen_wait(
-                ChoiceModal(
-                    title="Approval Required",
-                    message=message,
-                    options=[
-                        option
-                        for option in options
-                        if isinstance(option, dict)
-                        and isinstance(option.get("id"), str)
-                        and isinstance(option.get("label"), str)
-                    ],
-                )
+            modal = ChoiceModal(
+                title="Approval Required",
+                message=message,
+                options=[
+                    option
+                    for option in options
+                    if isinstance(option, dict)
+                    and isinstance(option.get("id"), str)
+                    and isinstance(option.get("label"), str)
+                ],
             )
+            self._apply_theme_to_node(modal)
+            choice = await self.push_screen_wait(modal)
             if not isinstance(choice, str):
                 return
 
@@ -363,19 +384,19 @@ class ZaceTextualApp(App[None]):
             patterns = patterns_raw if isinstance(patterns_raw, list) else []
             pattern_text = ", ".join(str(pattern) for pattern in patterns)
             message = f"{prompt}\n\nPermission: {permission}\nPatterns: {pattern_text}"
-            choice = await self.push_screen_wait(
-                ChoiceModal(
-                    title="Permission Required",
-                    message=message,
-                    options=[
-                        option
-                        for option in options
-                        if isinstance(option, dict)
-                        and isinstance(option.get("id"), str)
-                        and isinstance(option.get("label"), str)
-                    ],
-                )
+            modal = ChoiceModal(
+                title="Permission Required",
+                message=message,
+                options=[
+                    option
+                    for option in options
+                    if isinstance(option, dict)
+                    and isinstance(option.get("id"), str)
+                    and isinstance(option.get("label"), str)
+                ],
             )
+            self._apply_theme_to_node(modal)
+            choice = await self.push_screen_wait(modal)
             if not isinstance(choice, str):
                 return
 
@@ -390,7 +411,10 @@ class ZaceTextualApp(App[None]):
                 self._append_chat("system", f"Permission reply failed: {error}")
 
     def _render_state(self) -> None:
-        session_bar = self.query_one("#session_bar", Static)
+        try:
+            session_bar = self.query_one("#session_bar", Static)
+        except NoMatches:
+            return
 
         pending_approval = "pending" if bool(self._state.get("hasPendingApproval", False)) else "none"
         pending_permission = "pending" if bool(self._state.get("hasPendingPermission", False)) else "none"
@@ -403,12 +427,63 @@ class ZaceTextualApp(App[None]):
                     f"turns: {self._state.get('turnCount', 0)}",
                     f"state: {self._state.get('runState', 'idle')}",
                     step_label,
+                    f"theme: {self._active_theme}",
                     f"approval: {pending_approval}",
                     f"permission: {pending_permission}",
                 ]
             )
         )
         self._render_activity_strip()
+
+    async def _handle_palette_action(self, choice: str) -> None:
+        if choice == "theme_cycle":
+            await self.action_cycle_theme()
+            return
+
+        if choice.startswith("theme_"):
+            theme_name = choice.removeprefix("theme_")
+            self._apply_theme(theme_name)
+            self.notify(f"Theme: {theme_name}", severity="information")
+            return
+
+        await self._submit_payload(
+            {
+                "kind": "command",
+                "command": choice,
+            }
+        )
+
+    def _resolve_initial_theme(self, ui_config: dict[str, Any]) -> str:
+        raw_theme = ui_config.get("theme")
+        if isinstance(raw_theme, str):
+            normalized = raw_theme.strip().lower()
+            if normalized in self.THEME_ORDER:
+                return normalized
+        return "zace"
+
+    def _apply_theme(self, theme_name: str) -> None:
+        if theme_name not in self.THEME_ORDER:
+            return
+        if theme_name == self._active_theme and self.has_class(f"theme-{theme_name}"):
+            return
+
+        for candidate in self.THEME_ORDER:
+            css_class = f"theme-{candidate}"
+            self.remove_class(css_class)
+            self.screen.remove_class(css_class)
+
+        current_css_class = f"theme-{theme_name}"
+        self.add_class(current_css_class)
+        self.screen.add_class(current_css_class)
+        self._active_theme = theme_name
+        self.sub_title = f"Textual · {theme_name}"
+        self.refresh(layout=True)
+        self._render_state()
+
+    def _apply_theme_to_node(self, node: ModalScreen[Any]) -> None:
+        for candidate in self.THEME_ORDER:
+            node.remove_class(f"theme-{candidate}")
+        node.add_class(f"theme-{self._active_theme}")
 
     def _advance_activity_animation(self) -> None:
         if not bool(self._state.get("isBusy", False)):
@@ -417,7 +492,10 @@ class ZaceTextualApp(App[None]):
         self._render_activity_strip()
 
     def _render_activity_strip(self) -> None:
-        tool_strip = self.query_one("#tool_strip", Static)
+        try:
+            tool_strip = self.query_one("#tool_strip", Static)
+        except NoMatches:
+            return
 
         active_tool = str(self._state.get("activeToolName", "") or "")
         is_busy = bool(self._state.get("isBusy", False))
@@ -434,15 +512,18 @@ class ZaceTextualApp(App[None]):
         tool_strip.update("active tool: idle")
 
     def _append_chat(self, role: str, text: str, final_state: str | None = None) -> None:
-        log = self.query_one("#chat_log", RichLog)
+        try:
+            log = self.query_one("#chat_log", RichLog)
+        except NoMatches:
+            return
 
         safe_text = escape(text)
         if role == "user":
-            prefix = "[#6C7AA8]you[/]"
+            prefix = "[#4EA5FF]you[/]"
         elif role == "assistant":
-            prefix = "[#6FA38C]agent[/]"
+            prefix = "[#2BEE8C]agent[/]"
         else:
-            prefix = "[#A68A7B]system[/]"
+            prefix = "[#6A737D]system[/]"
 
-        suffix = f" [#9CA3AF]({escape(final_state)})[/]" if final_state else ""
+        suffix = f" [#88D498]({escape(final_state)})[/]" if final_state else ""
         log.write(f"{prefix}: {safe_text}{suffix}")

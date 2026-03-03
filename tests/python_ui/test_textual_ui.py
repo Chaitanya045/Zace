@@ -67,6 +67,8 @@ async def test_smoke_boot_renders_session_bar() -> None:
         await pilot.pause()
         session_bar = app.query_one("#session_bar", Static)
         assert "session: test-session" in str(session_bar.renderable)
+        assert "theme: zace" in str(session_bar.renderable)
+        assert app.screen.has_class("theme-zace")
         assert fake_bridge.started is True
 
 
@@ -177,3 +179,43 @@ async def test_thinking_strip_updates() -> None:
 
         tool_strip = app.query_one("#tool_strip", Static)
         assert "thinking" in str(tool_strip.renderable)
+
+
+@pytest.mark.asyncio
+async def test_cycle_theme_shortcut_updates_theme() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+
+        session_bar = app.query_one("#session_bar", Static)
+        assert "theme: pastel" in str(session_bar.renderable)
+        assert app.screen.has_class("theme-pastel")
+
+
+@pytest.mark.asyncio
+async def test_theme_palette_action_is_local() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_palette_action("theme_ocean")
+        await pilot.pause()
+
+        session_bar = app.query_one("#session_bar", Static)
+        assert "theme: ocean" in str(session_bar.renderable)
+        assert app.screen.has_class("theme-ocean")
+        assert ("submit", {"kind": "command", "command": "theme_ocean"}) not in fake_bridge.requests
+
+
+def test_render_helpers_do_not_raise_before_mount() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    app._render_state()
+    app._render_activity_strip()
+    app._append_chat("assistant", "safe before mount")
