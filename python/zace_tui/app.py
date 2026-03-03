@@ -91,7 +91,7 @@ class ZaceTextualApp(App[None]):
         Binding("question_mark", "show_help", "Help"),
     ]
 
-    COMMANDS: list[BridgePromptOption] = [
+    PALETTE_ACTIONS: list[BridgePromptOption] = [
         {"id": "status", "label": "Show status"},
         {"id": "reset", "label": "Reset in-memory context"},
         {"id": "help", "label": "Show keyboard help"},
@@ -244,12 +244,12 @@ class ZaceTextualApp(App[None]):
 
     async def action_open_palette(self) -> None:
         choice = await self.push_screen_wait(
-            ChoiceModal(
-                title="Command Palette",
-                message="Select an action",
-                options=self.COMMANDS,
+                ChoiceModal(
+                    title="Command Palette",
+                    message="Select an action",
+                    options=self.PALETTE_ACTIONS,
+                )
             )
-        )
         if not isinstance(choice, str):
             return
 
