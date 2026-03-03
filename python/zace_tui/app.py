@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Optional
 
 from rich.markup import escape
 from textual.app import App, ComposeResult
@@ -22,7 +22,7 @@ class BridgeEventMessage(Message):
         self.event = event
 
 
-class ChoiceModal(ModalScreen[str | None]):
+class ChoiceModal(ModalScreen[Optional[str]]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
     ]

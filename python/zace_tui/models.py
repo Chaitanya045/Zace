@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, Union
 
 
 class BridgePromptOption(TypedDict):
@@ -64,17 +64,17 @@ class ErrorEvent(TypedDict):
     type: Literal["error"]
 
 
-BridgeEvent = (
-    ApprovalPromptEvent
-    | ChatMessageEvent
-    | ErrorEvent
-    | PermissionPromptEvent
-    | StateUpdateEvent
-    | ToolStatusEvent
-)
+BridgeEvent = Union[
+    ApprovalPromptEvent,
+    ChatMessageEvent,
+    ErrorEvent,
+    PermissionPromptEvent,
+    StateUpdateEvent,
+    ToolStatusEvent,
+]
 
 
-@dataclass(slots=True)
+@dataclass
 class BridgeInitPayload:
     session_file_path: str
     session_id: str
