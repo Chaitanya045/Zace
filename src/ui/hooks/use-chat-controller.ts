@@ -11,7 +11,7 @@ import type {
 } from "../types";
 
 import {
-  buildChatTaskWithFollowUp,
+  buildChatTaskWithFollowUpFromSession,
   loadSessionState,
   resolvePendingApprovalFromUserMessage,
   type ChatTurn,
@@ -422,12 +422,12 @@ export function useChatController(input: UseChatControllerInput): ChatUiControll
       }
     }
 
-    const task = buildChatTaskWithFollowUp(
-      turnsRef.current,
-      message,
-      followUpQuestionForTask,
-      approvalResolutionNote
-    );
+    const task = await buildChatTaskWithFollowUpFromSession({
+      approvalResolutionNote,
+      followUpQuestion: followUpQuestionForTask,
+      sessionId: input.sessionId,
+      userInput: message,
+    });
 
     const observer: AgentObserver = {
       onApprovalRequested: (event) => {

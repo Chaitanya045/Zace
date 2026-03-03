@@ -7,7 +7,7 @@ import type { AgentConfig } from "../types/config";
 
 import { runAgentLoop } from "../agent/loop";
 import {
-  buildChatTaskWithFollowUp,
+  buildChatTaskWithFollowUpFromSession,
   loadSessionState,
   persistSessionTurn,
   resolvePendingApprovalFromUserMessage,
@@ -216,12 +216,12 @@ export async function runPlainChatMode(
         }
       }
 
-      const task = buildChatTaskWithFollowUp(
-        turns,
-        message,
-        followUpQuestionForTask,
-        approvalResolutionNote
-      );
+      const task = await buildChatTaskWithFollowUpFromSession({
+        approvalResolutionNote,
+        followUpQuestion: followUpQuestionForTask,
+        sessionId,
+        userInput: message,
+      });
       console.log(`\n🔨 Zace: ${message}\n`);
 
       const startedAt = new Date();

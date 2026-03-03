@@ -12,6 +12,7 @@ import {
   appendSessionEntries,
   normalizeSessionId,
   readSessionEntries,
+  type SessionMessageEntry,
 } from "../tools/session";
 
 export type ChatTurn = {
@@ -29,6 +30,16 @@ export type SessionState = {
 };
 
 const MAX_CHAT_CONTEXT_TURNS = 6;
+const MAX_CHAT_CONTEXT_TOOL_MESSAGES = 12;
+const MAX_CHAT_CONTEXT_TOOL_MESSAGE_CHARS = 1_200;
+
+function truncateForPrompt(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+}
 
 function padDatePart(value: number): string {
   return String(value).padStart(2, "0");
@@ -91,8 +102,62 @@ export function buildChatTaskWithFollowUp(
   return `Continue this interactive conversation using the recent context.
 
 RECENT CONVERSATION:
-${history}
-${followUpContext}${approvalContext}`;
+ ${history}
+ ${followUpContext}${approvalContext}`;
+}
+
+export async function buildChatTaskWithFollowUpFromSession(input: {
+  approvalResolutionNote?: string;
+  followUpQuestion?: string;
+  sessionId: string;
+  userInput: string;
+}): Promise<string> {
+  const entries = await readSessionEntries(input.sessionId);
+  const turns = entries
+    .filter((entry) => entry.type === "run")
+    .map((entry) => ({
+      assistant: entry.assistantMessage,
+      finalState: entry.finalState,
+      steps: entry.steps,
+      user: entry.userMessage,
+    }));
+
+  const recentToolMessages: SessionMessageEntry[] = entries
+    .filter((entry): entry is SessionMessageEntry => entry.type === "message" && entry.role === "tool")
+    .slice(-MAX_CHAT_CONTEXT_TOOL_MESSAGES);
+
+  const recentTurns = turns.slice(-MAX_CHAT_CONTEXT_TURNS);
+  const followUpContext = input.followUpQuestion
+    ? `\n\nAGENT FOLLOW-UP QUESTION:\n${input.followUpQuestion}\n\nUSER FOLLOW-UP ANSWER:\n${input.userInput}`
+    : `\n\nCURRENT USER MESSAGE:\n${input.userInput}`;
+  const approvalContext = input.approvalResolutionNote
+    ? `\n\nAPPROVAL RESOLUTION CONTEXT:\n${input.approvalResolutionNote}`
+    : "";
+
+  const history = recentTurns
+    .map(
+      (turn, index) =>
+        `Turn ${index + 1}\nUser: ${turn.user}\nAssistant: ${turn.assistant}\nState: ${turn.finalState}`
+    )
+    .join("\n\n");
+
+  const toolContext = recentToolMessages.length > 0
+    ? `\n\nRECENT TOOL RESULTS (DIGESTS):\n${recentToolMessages
+        .map((message, index) => {
+          const content = truncateForPrompt(message.content, MAX_CHAT_CONTEXT_TOOL_MESSAGE_CHARS);
+          return `Tool ${index + 1}:\n${content}`;
+        })
+        .join("\n\n")}`
+    : "";
+
+  if (recentTurns.length === 0 && recentToolMessages.length === 0 && !input.followUpQuestion && !input.approvalResolutionNote) {
+    return input.userInput;
+  }
+
+  return `Continue this interactive conversation using the recent context.
+
+RECENT CONVERSATION:
+${history}${toolContext}${followUpContext}${approvalContext}`;
 }
 
 export async function loadSessionState(
