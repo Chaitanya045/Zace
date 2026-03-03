@@ -41,6 +41,9 @@ class ChoiceModal(ModalScreen[Optional[str]]):
             id="modal_container",
         )
 
+    def on_mount(self) -> None:
+        self.query_one("#modal_options", OptionList).focus()
+
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         selected = event.option.id
         if isinstance(selected, str):
@@ -85,8 +88,8 @@ class ZaceTextualApp(App[None]):
     SUB_TITLE = "Textual"
 
     BINDINGS = [
-        Binding("ctrl+p", "open_palette", "Palette"),
-        Binding("ctrl+c", "interrupt_or_exit", "Interrupt/Exit"),
+        Binding("ctrl+p", "open_palette", "Palette", priority=True),
+        Binding("ctrl+c", "interrupt_or_exit", "Interrupt/Exit", priority=True),
         Binding("f1", "show_help", "Help"),
         Binding("question_mark", "show_help", "Help"),
     ]
@@ -127,6 +130,7 @@ class ZaceTextualApp(App[None]):
         }
         self._interrupt_armed = False
         self._modal_lock = asyncio.Lock()
+        self._dot_phase = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -138,6 +142,7 @@ class ZaceTextualApp(App[None]):
 
     async def on_mount(self) -> None:
         self.query_one("#composer", Input).focus()
+        self.set_interval(0.35, self._advance_activity_animation)
         await self._bridge.start()
 
         try:
@@ -187,6 +192,7 @@ class ZaceTextualApp(App[None]):
                 self._state.update(state)
                 if not bool(self._state.get("isBusy", False)):
                     self._interrupt_armed = False
+                    self._dot_phase = 0
                 self._render_state()
             return
 
@@ -243,28 +249,30 @@ class ZaceTextualApp(App[None]):
         )
 
     async def action_open_palette(self) -> None:
+        self.run_worker(self._open_palette_flow(), group="palette", exclusive=True)
+
+    async def _open_palette_flow(self) -> None:
         choice = await self.push_screen_wait(
-                ChoiceModal(
-                    title="Command Palette",
-                    message="Select an action",
-                    options=self.PALETTE_ACTIONS,
-                )
+            ChoiceModal(
+                title="Command Palette",
+                message="Select an action",
+                options=self.PALETTE_ACTIONS,
             )
+        )
         if not isinstance(choice, str):
             return
 
-        self.run_worker(
-            self._submit_payload(
-                {
-                    "kind": "command",
-                    "command": choice,
-                }
-            ),
-            group="submit",
-            exclusive=True,
+        await self._submit_payload(
+            {
+                "kind": "command",
+                "command": choice,
+            }
         )
 
     async def action_show_help(self) -> None:
+        self.run_worker(self._show_help_modal(), group="help_modal", exclusive=True)
+
+    async def _show_help_modal(self) -> None:
         await self.push_screen_wait(HelpModal())
 
     async def action_interrupt_or_exit(self) -> None:
@@ -383,7 +391,6 @@ class ZaceTextualApp(App[None]):
 
     def _render_state(self) -> None:
         session_bar = self.query_one("#session_bar", Static)
-        tool_strip = self.query_one("#tool_strip", Static)
 
         pending_approval = "pending" if bool(self._state.get("hasPendingApproval", False)) else "none"
         pending_permission = "pending" if bool(self._state.get("hasPendingPermission", False)) else "none"
@@ -401,10 +408,27 @@ class ZaceTextualApp(App[None]):
                 ]
             )
         )
+        self._render_activity_strip()
+
+    def _advance_activity_animation(self) -> None:
+        if not bool(self._state.get("isBusy", False)):
+            return
+        self._dot_phase = (self._dot_phase + 1) % 4
+        self._render_activity_strip()
+
+    def _render_activity_strip(self) -> None:
+        tool_strip = self.query_one("#tool_strip", Static)
 
         active_tool = str(self._state.get("activeToolName", "") or "")
+        is_busy = bool(self._state.get("isBusy", False))
+        dots = "." * (self._dot_phase + 1)
+
         if active_tool:
-            tool_strip.update(f"active tool: {active_tool}")
+            tool_strip.update(f"running tool: {active_tool}{dots}")
+            return
+
+        if is_busy:
+            tool_strip.update(f"thinking{dots}")
             return
 
         tool_strip.update("active tool: idle")

@@ -152,3 +152,28 @@ async def test_tool_status_strip_updates() -> None:
         await pilot.pause()
 
         assert "active tool: idle" in str(tool_strip.renderable)
+
+
+@pytest.mark.asyncio
+async def test_thinking_strip_updates() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        app.post_message(
+            BridgeEventMessage(
+                {
+                    "state": {
+                        "activeToolName": "",
+                        "isBusy": True,
+                    },
+                    "type": "state_update",
+                }
+            )
+        )
+        await pilot.pause()
+
+        tool_strip = app.query_one("#tool_strip", Static)
+        assert "thinking" in str(tool_strip.renderable)
