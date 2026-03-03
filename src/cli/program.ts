@@ -53,7 +53,6 @@ async function runChatCommand(options: CliOptions): Promise<void> {
   applyRuntimeOptions(config, options);
   initializeLogger(config);
 
-  const client = new LlmClient(config);
   const sessionId = resolveOrCreateSessionId(options.session);
   const sessionPath = getSessionFilePath(sessionId);
 
@@ -62,13 +61,14 @@ async function runChatCommand(options: CliOptions): Promise<void> {
 
   if (isInteractiveTerminal()) {
     await runChatUi({
-      client,
       config,
+      sessionFilePath: sessionPath,
       sessionId,
     });
     return;
   }
 
+  const client = new LlmClient(config);
   await runPlainChatMode(client, config, sessionId);
 }
 

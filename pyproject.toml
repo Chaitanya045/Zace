@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zace-textual-ui"
+version = "0.1.0"
+description = "Zace Textual terminal UI"
+requires-python = ">=3.9"
+dependencies = [
+  "textual>=0.63,<1.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9.0",
+  "pytest-asyncio>=0.23,<1.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests/python_ui"]

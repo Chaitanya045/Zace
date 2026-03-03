@@ -16,7 +16,7 @@ It runs as a planner-executor loop where the model decides the next action and a
 - Script metadata registry at `.zace/runtime/scripts/registry.tsv`
 - OpenRouter-backed LLM client
 - Provider-compatibility transport normalization for planner/executor/safety/compaction LLM calls
-- Ink-based chat UI with shadcn-inspired minimal terminal design
+- Textual-based Python chat UI with a Bun bridge over `stdio` JSON-RPC
 - Runtime project-doc discovery (no fixed built-in doc path list)
 - Automatic context compaction when planner context reaches 80% usage
 - Session message journaling for active `--session` runs
@@ -27,6 +27,8 @@ It runs as a planner-executor loop where the model decides the next action and a
 ## Requirements
 
 - Bun (1.3+ recommended)
+- Python (3.9+)
+- uv
 - OpenRouter API key + model
 
 ## Setup
@@ -35,6 +37,7 @@ It runs as a planner-executor loop where the model decides the next action and a
 
 ```bash
 bun install
+uv sync
 ```
 
 2. Configure environment variables (for example in `.env`):
@@ -324,11 +327,12 @@ For active session runs:
 
 ## UI
 
-- Renderer: Ink (`ink` + `react`)
-- Layout: 3-pane minimal interface (header/status, timeline, composer)
-- Stream mode: buffered at 33ms for smooth incremental token rendering
-- Controls: Enter submit, `/status`, `/reset`, `/exit`, `Ctrl+C`
-- Design language: shadcn-inspired terminal style (monochrome + subtle accent)
+- Renderer: Textual (Python, alternate buffer TUI)
+- Bridge: Bun sidecar over `stdio` JSON-RPC (`src/ui/bridge/*`)
+- Layout: session/status header, chat pane, active-tool strip, composer
+- Controls: Enter submit, command palette (`Ctrl+P`), help (`F1`/`?`), `Ctrl+C` interrupt/exit
+- Prompts: modal approval/permission choices
+- Theme: pastel-first palette
 
 ## Development
 
@@ -359,7 +363,7 @@ bunx tsc --noEmit
 Run tests:
 
 ```bash
-bun test
+bun run test
 ```
 
 ## Project structure
@@ -373,6 +377,9 @@ src/
 ├── prompts/     # system/planner/executor prompts
 ├── tools/       # typed tool boundary (shell + session history)
 ├── types/       # shared contracts
-├── ui/          # Ink UI runtime + plain fallback + theme/components
+├── ui/          # Textual launcher + Bun bridge + plain fallback
 └── utils/       # logger/errors
+
+python/
+└── zace_tui/    # Textual application + bridge client
 ```

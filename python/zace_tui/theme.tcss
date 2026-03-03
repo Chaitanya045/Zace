@@ -1,0 +1,63 @@
+Screen {
+  background: #f7f3ff;
+  color: #3f3754;
+}
+
+#session_bar {
+  background: #efe8ff;
+  border: round #c6b8ea;
+  color: #4a3f68;
+  height: 3;
+  margin: 0 1;
+  padding: 0 1;
+}
+
+#chat_log {
+  background: #fff9f6;
+  border: round #d9c2dc;
+  color: #3f3754;
+  height: 1fr;
+  margin: 0 1;
+  padding: 0 1;
+}
+
+#tool_strip {
+  background: #e7f7f1;
+  border: round #9ac9b6;
+  color: #2f5f52;
+  height: 3;
+  margin: 0 1;
+  padding: 0 1;
+}
+
+#composer {
+  background: #f3f9ff;
+  border: round #b2d0e8;
+  color: #304a64;
+  margin: 0 1 1 1;
+}
+
+#modal_container {
+  background: #fffdf8;
+  border: round #c9b5df;
+  color: #463a60;
+  height: auto;
+  margin: 4 8;
+  padding: 1 2;
+  width: 70%;
+}
+
+#modal_title {
+  color: #594a7c;
+  text-style: bold;
+  padding-bottom: 1;
+}
+
+#modal_message {
+  color: #4f4466;
+  padding-bottom: 1;
+}
+
+#modal_options {
+  border: round #b7a7d4;
+}

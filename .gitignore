@@ -26,6 +26,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .eslintcache
 .cache
 *.tsbuildinfo
+__pycache__/
+.pytest_cache/
+.venv/
 
 # IntelliJ based IDEs
 .idea
