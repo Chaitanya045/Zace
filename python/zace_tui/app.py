@@ -109,6 +109,10 @@ class ZaceTextualApp(App[None]):
         {"id": "theme_ocean", "label": "Theme: ocean"},
         {"id": "exit", "label": "Exit"},
     ]
+    START_META = 'Build GPT-5.2 GitHub Copilot · xhigh'
+    START_PLACEHOLDER = 'Ask anything... "Fix broken tests"'
+    START_SHORTCUTS = "ctrl+t variants   tab agents   ctrl+p commands"
+    START_TIP = "Tip  Use /theme or Ctrl+T to switch themes"
 
     def __init__(
         self,
@@ -142,10 +146,25 @@ class ZaceTextualApp(App[None]):
         self._dot_phase = 0
         self._activity_timer: Optional[Timer] = None
         self._active_theme = self._resolve_initial_theme(payload.ui_config)
+        self._show_welcome = True
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
+        yield Static(id="top_glow")
         yield Static(id="session_bar")
+        yield Vertical(
+            Vertical(
+                Static("zace", id="welcome_logo"),
+                Vertical(
+                    Static(self.START_PLACEHOLDER, id="welcome_placeholder"),
+                    Static(self.START_META, id="welcome_meta"),
+                    id="welcome_input_card",
+                ),
+                Static(self.START_SHORTCUTS, id="welcome_shortcuts"),
+                Static(self.START_TIP, id="welcome_tip"),
+                id="welcome_content",
+            ),
+            id="welcome_screen",
+        )
         yield RichLog(id="chat_log", auto_scroll=True, markup=True, highlight=False, wrap=True)
         yield Static(id="tool_strip")
         yield Input(placeholder="Type your message and press Enter", id="composer")
@@ -175,17 +194,23 @@ class ZaceTextualApp(App[None]):
         if isinstance(state, dict):
             self._state.update(state)
 
+        has_messages = False
         messages = init_result.get("messages")
         if isinstance(messages, list):
             for message in messages:
                 if not isinstance(message, dict):
                     continue
+                has_messages = True
                 role = str(message.get("role", "assistant"))
                 text = str(message.get("text", ""))
                 final_state_raw = message.get("finalState")
                 final_state = str(final_state_raw) if isinstance(final_state_raw, str) else None
                 self._append_chat(role, text, final_state)
 
+        if has_messages or int(self._state.get("turnCount", 0)) > 0:
+            self._show_welcome = False
+
+        self._render_layout_state()
         self._render_state()
 
     async def on_unmount(self) -> None:
@@ -251,6 +276,10 @@ class ZaceTextualApp(App[None]):
         event.input.value = ""
         if not text:
             return
+
+        if self._show_welcome:
+            self._show_welcome = False
+            self._render_layout_state()
 
         self.run_worker(
             self._submit_payload(
@@ -435,6 +464,16 @@ class ZaceTextualApp(App[None]):
         )
         self._render_activity_strip()
 
+    def _render_layout_state(self) -> None:
+        try:
+            welcome_screen = self.query_one("#welcome_screen", Vertical)
+            chat_log = self.query_one("#chat_log", RichLog)
+        except NoMatches:
+            return
+
+        welcome_screen.display = self._show_welcome
+        chat_log.display = not self._show_welcome
+
     async def _handle_palette_action(self, choice: str) -> None:
         if choice == "theme_cycle":
             await self.action_cycle_theme()
@@ -512,6 +551,10 @@ class ZaceTextualApp(App[None]):
         tool_strip.update("active tool: idle")
 
     def _append_chat(self, role: str, text: str, final_state: str | None = None) -> None:
+        if self._show_welcome:
+            self._show_welcome = False
+            self._render_layout_state()
+
         try:
             log = self.query_one("#chat_log", RichLog)
         except NoMatches:

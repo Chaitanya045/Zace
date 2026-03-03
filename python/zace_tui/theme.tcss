@@ -9,6 +9,50 @@ Screen {
   padding: 0 1;
 }
 
+#top_glow {
+  height: 1;
+}
+
+#welcome_screen {
+  height: 1fr;
+  align: center middle;
+}
+
+#welcome_content {
+  height: auto;
+  width: 80;
+}
+
+#welcome_logo {
+  content-align: center middle;
+  margin: 0 0 2 0;
+  text-style: bold;
+}
+
+#welcome_input_card {
+  border-left: solid;
+  height: auto;
+  margin: 0 0 1 0;
+  padding: 1 2;
+}
+
+#welcome_placeholder {
+  margin: 0 0 1 0;
+}
+
+#welcome_meta {
+  text-style: bold;
+}
+
+#welcome_shortcuts {
+  content-align: right middle;
+  margin: 0 0 2 0;
+}
+
+#welcome_tip {
+  content-align: left middle;
+}
+
 #chat_log {
   height: 1fr;
   margin: 0 1;
@@ -64,10 +108,40 @@ Screen {
   color: #E0E0E0;
 }
 
+.theme-zace #top_glow {
+  background: #3A5A4C;
+  color: #3A5A4C;
+}
+
 .theme-zace #chat_log {
   background: #0A0E0C;
   border: round #3A5A4C;
   color: #E0E0E0;
+}
+
+.theme-zace #welcome_logo {
+  color: #E0E0E0;
+}
+
+.theme-zace #welcome_input_card {
+  background: #141B17;
+  border-left: solid #4EA5FF;
+}
+
+.theme-zace #welcome_placeholder {
+  color: #6A737D;
+}
+
+.theme-zace #welcome_meta {
+  color: #E0E0E0;
+}
+
+.theme-zace #welcome_shortcuts {
+  color: #6A737D;
+}
+
+.theme-zace #welcome_tip {
+  color: #88D498;
 }
 
 .theme-zace #tool_strip {
@@ -140,6 +214,35 @@ Screen {
   color: #4a3f68;
 }
 
+.theme-pastel #top_glow {
+  background: #c6b8ea;
+}
+
+.theme-pastel #welcome_logo {
+  color: #594a7c;
+}
+
+.theme-pastel #welcome_input_card {
+  background: #fff9f6;
+  border-left: solid #6c7aa8;
+}
+
+.theme-pastel #welcome_placeholder {
+  color: #6a6282;
+}
+
+.theme-pastel #welcome_meta {
+  color: #4a3f68;
+}
+
+.theme-pastel #welcome_shortcuts {
+  color: #736a92;
+}
+
+.theme-pastel #welcome_tip {
+  color: #2f5f52;
+}
+
 .theme-pastel #chat_log {
   background: #fff9f6;
   border: round #d9c2dc;
@@ -196,6 +299,35 @@ Screen {
   background: #10253f;
   border: round #3d6fa1;
   color: #d2ecff;
+}
+
+.theme-ocean #top_glow {
+  background: #3d6fa1;
+}
+
+.theme-ocean #welcome_logo {
+  color: #e9f6ff;
+}
+
+.theme-ocean #welcome_input_card {
+  background: #10253f;
+  border-left: solid #4d87b9;
+}
+
+.theme-ocean #welcome_placeholder {
+  color: #86a7c6;
+}
+
+.theme-ocean #welcome_meta {
+  color: #d2ecff;
+}
+
+.theme-ocean #welcome_shortcuts {
+  color: #96b5d2;
+}
+
+.theme-ocean #welcome_tip {
+  color: #b8f4f2;
 }
 
 .theme-ocean #chat_log {

@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from textual.widgets import Static
+from textual.containers import Vertical
+from textual.widgets import RichLog, Static
 
 from zace_tui.app import BridgeEventMessage, ZaceTextualApp
 from zace_tui.models import BridgeInitPayload
@@ -69,6 +70,10 @@ async def test_smoke_boot_renders_session_bar() -> None:
         assert "session: test-session" in str(session_bar.renderable)
         assert "theme: zace" in str(session_bar.renderable)
         assert app.screen.has_class("theme-zace")
+        welcome_screen = app.query_one("#welcome_screen", Vertical)
+        chat_log = app.query_one("#chat_log", RichLog)
+        assert welcome_screen.display is False
+        assert chat_log.display is True
         assert fake_bridge.started is True
 
 
@@ -217,5 +222,38 @@ def test_render_helpers_do_not_raise_before_mount() -> None:
     app = build_app(fake_bridge)
 
     app._render_state()
+    app._render_layout_state()
     app._render_activity_strip()
     app._append_chat("assistant", "safe before mount")
+
+
+@pytest.mark.asyncio
+async def test_welcome_hides_after_submit() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("h", "i", "enter")
+        await pilot.pause()
+
+        welcome_screen = app.query_one("#welcome_screen", Vertical)
+        chat_log = app.query_one("#chat_log", RichLog)
+        assert welcome_screen.display is False
+        assert chat_log.display is True
+
+
+@pytest.mark.asyncio
+async def test_welcome_shows_when_session_is_empty() -> None:
+    fake_bridge = FakeBridge()
+    fake_bridge.init_result["messages"] = []
+    fake_bridge.init_result["state"]["turnCount"] = 0
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        welcome_screen = app.query_one("#welcome_screen", Vertical)
+        chat_log = app.query_one("#chat_log", RichLog)
+        assert welcome_screen.display is True
+        assert chat_log.display is False
