@@ -4,7 +4,7 @@ const STREAM_PREVIEW_BYTE_LIMIT = 2048;
 const STREAM_PREVIEW_LINE_LIMIT = 64;
 const STREAM_PREVIEW_MAX_CHARS_PER_LINE = 220;
 const STREAM_PREVIEW_TRUNCATION_NOTICE =
-  "...[truncated: output preview is capped at 2048 bytes, 64 lines, 220 chars per line]";
+  "...[preview_truncated: tool memory preview is capped at 2048 bytes, 64 lines, 220 chars per line; inspect [artifacts] logs or use targeted reads (sed/rg/tail) instead of repeating the same broad inspect command]";
 
 function extractStructuredSection(output: string, sectionName: string): string | undefined {
   const escapedSectionName = sectionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -121,6 +121,11 @@ export function buildToolMemoryDigest(input: {
   const artifactsSection = extractStructuredSection(input.toolResult.output, "artifacts");
   if (artifactsSection) {
     lines.push(artifactsSection.split("\n").slice(0, 4).join("\n"));
+  }
+
+  const truncationSection = extractStructuredSection(input.toolResult.output, "truncation");
+  if (truncationSection) {
+    lines.push(truncationSection.split("\n").slice(0, 12).join("\n"));
   }
 
   if (!input.toolResult.success && input.toolResult.error) {
