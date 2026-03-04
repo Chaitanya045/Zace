@@ -4,10 +4,16 @@ from typing import Any
 
 import pytest
 from rich.align import Align
+from textual import events
 from textual.containers import Vertical
 from textual.widgets import Input, RichLog, Static
 
-from zace_tui.app import BridgeEventMessage, ZaceTextualApp
+from zace_tui.app import (
+    BridgeEventMessage,
+    ChatRichLog,
+    RoundedGlassScrollBarRender,
+    ZaceTextualApp,
+)
 from zace_tui.models import BridgeInitPayload
 
 
@@ -384,7 +390,7 @@ async def test_chat_messages_have_blank_separator_line() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_scrollbar_is_thin_and_reveals_temporarily() -> None:
+async def test_chat_scrollbar_is_thin_and_visible_only_during_scroll_activity() -> None:
     fake_bridge = FakeBridge()
     fake_bridge.init_result["messages"] = []
     fake_bridge.init_result["state"]["turnCount"] = 0
@@ -399,16 +405,15 @@ async def test_chat_scrollbar_is_thin_and_reveals_temporarily() -> None:
         assert log.styles.scrollbar_size_vertical == 1
         assert not log.has_class("scroll-active")
 
-        app._reveal_chat_scrollbar(log)
-        await pilot.pause()
+        app._reveal_chat_scrollbar()
         assert log.has_class("scroll-active")
 
-        await pilot.pause(app.CHAT_SCROLLBAR_REVEAL_SECONDS + 0.2)
+        await pilot.pause(app.CHAT_SCROLLBAR_HIDE_DELAY_SECONDS + 0.2)
         assert not log.has_class("scroll-active")
 
 
 @pytest.mark.asyncio
-async def test_chat_scrollbar_not_revealed_for_non_chat_widget() -> None:
+async def test_chat_scrollbar_hide_timer_is_reset_on_continued_scrolling() -> None:
     fake_bridge = FakeBridge()
     fake_bridge.init_result["messages"] = []
     fake_bridge.init_result["state"]["turnCount"] = 0
@@ -419,9 +424,72 @@ async def test_chat_scrollbar_not_revealed_for_non_chat_widget() -> None:
         app._append_chat("assistant", "line 1")
         await pilot.pause()
 
-        composer = app.query_one("#composer", Input)
         log = app.query_one("#chat_log", RichLog)
-        app._reveal_chat_scrollbar(composer)
+        app._reveal_chat_scrollbar()
+        await pilot.pause(app.CHAT_SCROLLBAR_HIDE_DELAY_SECONDS / 2)
+        app._reveal_chat_scrollbar()
+        await pilot.pause(app.CHAT_SCROLLBAR_HIDE_DELAY_SECONDS / 2)
+
+        assert log.has_class("scroll-active")
+
+        await pilot.pause(app.CHAT_SCROLLBAR_HIDE_DELAY_SECONDS + 0.2)
         await pilot.pause()
 
         assert not log.has_class("scroll-active")
+
+
+@pytest.mark.asyncio
+async def test_mouse_scroll_inside_chat_reveals_scrollbar_when_not_at_edges() -> None:
+    fake_bridge = FakeBridge()
+    fake_bridge.init_result["messages"] = []
+    fake_bridge.init_result["state"]["turnCount"] = 0
+    app = build_app(fake_bridge)
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        for index in range(50):
+            app._append_chat("assistant", f"line {index}")
+        await pilot.pause()
+
+        log = app.query_one("#chat_log", ChatRichLog)
+        assert log.max_scroll_y > 0
+        log.scroll_end(animate=False, immediate=True)
+        await pilot.pause()
+        assert log.is_vertical_scroll_end
+        assert not log.has_class("scroll-active")
+
+        log._on_mouse_scroll_up(
+            events.MouseScrollUp(
+                widget=log,
+                x=0,
+                y=0,
+                delta_x=0,
+                delta_y=0,
+                button=0,
+                shift=False,
+                meta=False,
+                ctrl=False,
+            )
+        )
+        assert log.has_class("scroll-active")
+
+
+@pytest.mark.asyncio
+async def test_chat_scrollbar_uses_rounded_glass_renderer() -> None:
+    fake_bridge = FakeBridge()
+    fake_bridge.init_result["messages"] = []
+    fake_bridge.init_result["state"]["turnCount"] = 0
+    app = build_app(fake_bridge)
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        for index in range(40):
+            app._append_chat("assistant", f"line {index}")
+        await pilot.pause()
+
+        log = app.query_one("#chat_log", ChatRichLog)
+        log.scroll_end(animate=False, immediate=True)
+        await pilot.pause()
+        log._refresh_scrollbars()
+
+        assert log.vertical_scrollbar.renderer is RoundedGlassScrollBarRender

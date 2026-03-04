@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from math import ceil
 from typing import Any, Optional
 
 from rich.align import Align
+from rich.color import Color
 from rich.padding import Padding
+from rich.segment import Segment, Segments
+from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
@@ -13,6 +17,7 @@ from textual.containers import Vertical
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.scrollbar import ScrollBarRender
 from textual.timer import Timer
 from textual.widgets import Footer, Header, Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
@@ -88,6 +93,101 @@ class HelpModal(ModalScreen[None]):
         self.dismiss(None)
 
 
+class RoundedGlassScrollBarRender(ScrollBarRender):
+    @classmethod
+    def render_bar(
+        cls,
+        size: int = 25,
+        virtual_size: float = 50,
+        window_size: float = 20,
+        position: float = 0,
+        thickness: int = 1,
+        vertical: bool = True,
+        back_color: Color = Color.parse("#555555"),
+        bar_color: Color = Color.parse("bright_magenta"),
+    ) -> Segments:
+        if size <= 0:
+            return Segments([], new_lines=vertical)
+
+        width_thickness = thickness if vertical else 1
+        blank = cls.BLANK_GLYPH * width_thickness
+        base_style = Style(bgcolor=back_color)
+
+        if not window_size or not virtual_size or size == virtual_size:
+            segments = [Segment(blank, base_style)] * size
+        else:
+            bar_ratio = virtual_size / size
+            thumb_size = max(1, ceil(window_size / bar_ratio))
+
+            virtual_scroll_range = max(virtual_size - window_size, 1)
+            position_ratio = max(0.0, min(1.0, position / virtual_scroll_range))
+            thumb_start = int((size - thumb_size) * position_ratio)
+            thumb_start = max(0, min(size - 1, thumb_start))
+            thumb_end = max(thumb_start + 1, min(size, thumb_start + thumb_size))
+
+            move_prev = {"@mouse.up": "scroll_up" if vertical else "scroll_left"}
+            move_next = {"@mouse.up": "scroll_down" if vertical else "scroll_right"}
+            grab_meta = {"@mouse.down": "grab"}
+
+            prev_bg_style = Style(bgcolor=back_color, meta=move_prev)
+            next_bg_style = Style(bgcolor=back_color, meta=move_next)
+            thumb_style = Style(color=bar_color, bgcolor=back_color, meta=grab_meta)
+
+            segments = [Segment(blank, prev_bg_style)] * size
+            segments[thumb_end:] = [Segment(blank, next_bg_style)] * (size - thumb_end)
+
+            thumb_length = thumb_end - thumb_start
+            for index in range(thumb_start, thumb_end):
+                if vertical:
+                    if thumb_length == 1:
+                        glyph = "●"
+                    elif index == thumb_start:
+                        glyph = "╷"
+                    elif index == thumb_end - 1:
+                        glyph = "╵"
+                    else:
+                        glyph = "│"
+                    text = glyph * width_thickness
+                else:
+                    if thumb_length == 1:
+                        text = "●"
+                    elif index == thumb_start:
+                        text = "╶"
+                    elif index == thumb_end - 1:
+                        text = "╴"
+                    else:
+                        text = "─"
+
+                segments[index] = Segment(text, thumb_style)
+
+        if vertical:
+            return Segments(segments, new_lines=True)
+
+        return Segments((segments + [Segment.line()]) * thickness, new_lines=False)
+
+
+class ChatRichLog(RichLog):
+    def _refresh_scrollbars(self) -> None:
+        super()._refresh_scrollbars()
+        if self._vertical_scrollbar is not None:
+            self._vertical_scrollbar.renderer = RoundedGlassScrollBarRender
+        if self._horizontal_scrollbar is not None:
+            self._horizontal_scrollbar.renderer = RoundedGlassScrollBarRender
+
+    def _notify_scroll_activity(self) -> None:
+        reveal = getattr(self.app, "_reveal_chat_scrollbar", None)
+        if callable(reveal):
+            reveal()
+
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        self._notify_scroll_activity()
+        super()._on_mouse_scroll_down(event)
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        self._notify_scroll_activity()
+        super()._on_mouse_scroll_up(event)
+
+
 class ZaceTextualApp(App[None]):
     CSS_PATH = "theme.tcss"
     TITLE = "Zace"
@@ -117,7 +217,7 @@ class ZaceTextualApp(App[None]):
     START_SHORTCUTS = "ctrl+t variants   tab agents   ctrl+p commands"
     START_TIP = "Tip  Use /theme or Ctrl+T to switch themes"
     CHAT_EDGE_PADDING = 2
-    CHAT_SCROLLBAR_REVEAL_SECONDS = 0.85
+    CHAT_SCROLLBAR_HIDE_DELAY_SECONDS = 0.6
 
     def __init__(
         self,
@@ -173,7 +273,7 @@ class ZaceTextualApp(App[None]):
             ),
             id="welcome_screen",
         )
-        yield RichLog(id="chat_log", auto_scroll=True, markup=True, highlight=False, wrap=True)
+        yield ChatRichLog(id="chat_log", auto_scroll=True, markup=True, highlight=False, wrap=True)
         yield Static(id="tool_strip")
         yield Input(placeholder="Type your message and press Enter", id="composer")
         yield Footer()
@@ -229,12 +329,6 @@ class ZaceTextualApp(App[None]):
             self._chat_scrollbar_hide_timer.stop()
             self._chat_scrollbar_hide_timer = None
         await self._bridge.stop()
-
-    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        self._reveal_chat_scrollbar(event.widget)
-
-    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        self._reveal_chat_scrollbar(event.widget)
 
     async def _queue_bridge_event(self, event: dict[str, Any]) -> None:
         self.post_message(BridgeEventMessage(event))
@@ -656,15 +750,7 @@ class ZaceTextualApp(App[None]):
             if index < total_items - 1:
                 log.write("", expand=True)
 
-    def _is_widget_within_chat_log(self, widget: object, chat_log: RichLog) -> bool:
-        current: object | None = widget
-        while current is not None:
-            if current is chat_log:
-                return True
-            current = getattr(current, "parent", None)
-        return False
-
-    def _reveal_chat_scrollbar(self, source_widget: object | None = None) -> None:
+    def _reveal_chat_scrollbar(self) -> None:
         try:
             chat_log = self.query_one("#chat_log", RichLog)
         except NoMatches:
@@ -673,25 +759,28 @@ class ZaceTextualApp(App[None]):
         if self._show_welcome or not chat_log.display:
             return
 
-        if source_widget is not None and not self._is_widget_within_chat_log(source_widget, chat_log):
-            return
-
         chat_log.add_class("scroll-active")
         if self._chat_scrollbar_hide_timer is not None:
             self._chat_scrollbar_hide_timer.reset()
-            return
-
-        self._chat_scrollbar_hide_timer = self.set_timer(
-            self.CHAT_SCROLLBAR_REVEAL_SECONDS,
-            self._hide_chat_scrollbar,
-        )
+        else:
+            self._chat_scrollbar_hide_timer = self.set_timer(
+                self.CHAT_SCROLLBAR_HIDE_DELAY_SECONDS,
+                self._hide_chat_scrollbar,
+            )
 
     def _hide_chat_scrollbar(self) -> None:
-        self._chat_scrollbar_hide_timer = None
         try:
             chat_log = self.query_one("#chat_log", RichLog)
         except NoMatches:
+            self._chat_scrollbar_hide_timer = None
             return
+        if chat_log.is_horizontal_scrollbar_grabbed or chat_log.is_vertical_scrollbar_grabbed:
+            self._chat_scrollbar_hide_timer = self.set_timer(
+                self.CHAT_SCROLLBAR_HIDE_DELAY_SECONDS,
+                self._hide_chat_scrollbar,
+            )
+            return
+        self._chat_scrollbar_hide_timer = None
         chat_log.remove_class("scroll-active")
 
     def _build_chat_line(self, role: str, text: str, final_state: str | None) -> Align:
