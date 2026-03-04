@@ -356,3 +356,21 @@ async def test_user_messages_render_at_chat_log_right_edge_on_wide_viewport() ->
         assert len(log.lines) == 1
         assert log.lines[0].cell_length == log.scrollable_content_region.width
         assert log.lines[0].text.rstrip().endswith("you: hello")
+
+
+@pytest.mark.asyncio
+async def test_chat_messages_have_blank_separator_line() -> None:
+    fake_bridge = FakeBridge()
+    fake_bridge.init_result["messages"] = []
+    fake_bridge.init_result["state"]["turnCount"] = 0
+    app = build_app(fake_bridge)
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        app._append_chat("assistant", "first")
+        app._append_chat("user", "second")
+        await pilot.pause()
+
+        log = app.query_one("#chat_log", RichLog)
+        assert len(log.lines) == 3
+        assert log.lines[1].text.strip() == ""

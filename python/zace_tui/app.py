@@ -633,11 +633,14 @@ class ZaceTextualApp(App[None]):
 
         log.clear()
 
-        for item in self._chat_items:
+        total_items = len(self._chat_items)
+        for index, item in enumerate(self._chat_items):
             role = item.get("role", "assistant") or "assistant"
             text = item.get("text", "") or ""
             final_state = item.get("final_state")
             log.write(self._build_chat_line(role, text, final_state), expand=True)
+            if index < total_items - 1:
+                log.write("", expand=True)
 
     def _build_chat_line(self, role: str, text: str, final_state: str | None) -> Align:
         line = Text()
