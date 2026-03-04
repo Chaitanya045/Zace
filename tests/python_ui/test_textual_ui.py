@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from rich.align import Align
 from textual.containers import Vertical
-from textual.widgets import RichLog, Static
+from textual.widgets import Input, RichLog, Static
 
 from zace_tui.app import BridgeEventMessage, ZaceTextualApp
 from zace_tui.models import BridgeInitPayload
@@ -381,3 +381,47 @@ async def test_chat_messages_have_blank_separator_line() -> None:
         log = app.query_one("#chat_log", RichLog)
         assert len(log.lines) == 3
         assert log.lines[1].text.strip() == ""
+
+
+@pytest.mark.asyncio
+async def test_chat_scrollbar_is_thin_and_reveals_temporarily() -> None:
+    fake_bridge = FakeBridge()
+    fake_bridge.init_result["messages"] = []
+    fake_bridge.init_result["state"]["turnCount"] = 0
+    app = build_app(fake_bridge)
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        app._append_chat("assistant", "line 1")
+        await pilot.pause()
+
+        log = app.query_one("#chat_log", RichLog)
+        assert log.styles.scrollbar_size_vertical == 1
+        assert not log.has_class("scroll-active")
+
+        app._reveal_chat_scrollbar(log)
+        await pilot.pause()
+        assert log.has_class("scroll-active")
+
+        await pilot.pause(app.CHAT_SCROLLBAR_REVEAL_SECONDS + 0.2)
+        assert not log.has_class("scroll-active")
+
+
+@pytest.mark.asyncio
+async def test_chat_scrollbar_not_revealed_for_non_chat_widget() -> None:
+    fake_bridge = FakeBridge()
+    fake_bridge.init_result["messages"] = []
+    fake_bridge.init_result["state"]["turnCount"] = 0
+    app = build_app(fake_bridge)
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        app._append_chat("assistant", "line 1")
+        await pilot.pause()
+
+        composer = app.query_one("#composer", Input)
+        log = app.query_one("#chat_log", RichLog)
+        app._reveal_chat_scrollbar(composer)
+        await pilot.pause()
+
+        assert not log.has_class("scroll-active")

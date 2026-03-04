@@ -6,6 +6,7 @@ from typing import Any, Optional
 from rich.align import Align
 from rich.padding import Padding
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -116,6 +117,7 @@ class ZaceTextualApp(App[None]):
     START_SHORTCUTS = "ctrl+t variants   tab agents   ctrl+p commands"
     START_TIP = "Tip  Use /theme or Ctrl+T to switch themes"
     CHAT_EDGE_PADDING = 2
+    CHAT_SCROLLBAR_REVEAL_SECONDS = 0.85
 
     def __init__(
         self,
@@ -148,6 +150,7 @@ class ZaceTextualApp(App[None]):
         self._modal_lock = asyncio.Lock()
         self._dot_phase = 0
         self._activity_timer: Optional[Timer] = None
+        self._chat_scrollbar_hide_timer: Optional[Timer] = None
         self._active_theme = self._resolve_initial_theme(payload.ui_config)
         self._show_welcome = True
         self._chat_items: list[dict[str, Optional[str]]] = []
@@ -222,7 +225,16 @@ class ZaceTextualApp(App[None]):
         if self._activity_timer is not None:
             self._activity_timer.stop()
             self._activity_timer = None
+        if self._chat_scrollbar_hide_timer is not None:
+            self._chat_scrollbar_hide_timer.stop()
+            self._chat_scrollbar_hide_timer = None
         await self._bridge.stop()
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        self._reveal_chat_scrollbar(event.widget)
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        self._reveal_chat_scrollbar(event.widget)
 
     async def _queue_bridge_event(self, event: dict[str, Any]) -> None:
         self.post_message(BridgeEventMessage(event))
@@ -643,6 +655,44 @@ class ZaceTextualApp(App[None]):
             log.write(self._build_chat_line(role, text, final_state), expand=True)
             if index < total_items - 1:
                 log.write("", expand=True)
+
+    def _is_widget_within_chat_log(self, widget: object, chat_log: RichLog) -> bool:
+        current: object | None = widget
+        while current is not None:
+            if current is chat_log:
+                return True
+            current = getattr(current, "parent", None)
+        return False
+
+    def _reveal_chat_scrollbar(self, source_widget: object | None = None) -> None:
+        try:
+            chat_log = self.query_one("#chat_log", RichLog)
+        except NoMatches:
+            return
+
+        if self._show_welcome or not chat_log.display:
+            return
+
+        if source_widget is not None and not self._is_widget_within_chat_log(source_widget, chat_log):
+            return
+
+        chat_log.add_class("scroll-active")
+        if self._chat_scrollbar_hide_timer is not None:
+            self._chat_scrollbar_hide_timer.reset()
+            return
+
+        self._chat_scrollbar_hide_timer = self.set_timer(
+            self.CHAT_SCROLLBAR_REVEAL_SECONDS,
+            self._hide_chat_scrollbar,
+        )
+
+    def _hide_chat_scrollbar(self) -> None:
+        self._chat_scrollbar_hide_timer = None
+        try:
+            chat_log = self.query_one("#chat_log", RichLog)
+        except NoMatches:
+            return
+        chat_log.remove_class("scroll-active")
 
     def _build_chat_line(self, role: str, text: str, final_state: str | None) -> Align:
         line = Text()

@@ -57,6 +57,15 @@ Screen {
   height: 1fr;
   margin: 0 1;
   padding: 0 1;
+  scrollbar-background: transparent;
+  scrollbar-background-active: transparent;
+  scrollbar-background-hover: transparent;
+  scrollbar-color: transparent;
+  scrollbar-color-active: transparent;
+  scrollbar-color-hover: transparent;
+  scrollbar-corner-color: transparent;
+  scrollbar-size-horizontal: 1;
+  scrollbar-size-vertical: 1;
 }
 
 #tool_strip {
@@ -117,6 +126,16 @@ Screen {
   background: #0A0E0C;
   border: round #3A5A4C;
   color: #E0E0E0;
+}
+
+.theme-zace #chat_log.scroll-active {
+  scrollbar-background: #141B17;
+  scrollbar-background-active: #1B2621;
+  scrollbar-background-hover: #1B2621;
+  scrollbar-color: #3A5A4C;
+  scrollbar-color-active: #2BEE8C;
+  scrollbar-color-hover: #88D498;
+  scrollbar-corner-color: #141B17;
 }
 
 .theme-zace #welcome_logo {
@@ -249,6 +268,16 @@ Screen {
   color: #3f3754;
 }
 
+.theme-pastel #chat_log.scroll-active {
+  scrollbar-background: #f3edf9;
+  scrollbar-background-active: #eee5f7;
+  scrollbar-background-hover: #eee5f7;
+  scrollbar-color: #b7a7d4;
+  scrollbar-color-active: #7f6aa6;
+  scrollbar-color-hover: #9a86bf;
+  scrollbar-corner-color: #f3edf9;
+}
+
 .theme-pastel #tool_strip {
   background: #e7f7f1;
   border: round #9ac9b6;
@@ -334,6 +363,16 @@ Screen {
   background: #0b1a2f;
   border: round #2f537a;
   color: #e6f4ff;
+}
+
+.theme-ocean #chat_log.scroll-active {
+  scrollbar-background: #10253f;
+  scrollbar-background-active: #13304f;
+  scrollbar-background-hover: #13304f;
+  scrollbar-color: #3d6fa1;
+  scrollbar-color-active: #9fd8ff;
+  scrollbar-color-hover: #6fb8e8;
+  scrollbar-corner-color: #10253f;
 }
 
 .theme-ocean #tool_strip {
