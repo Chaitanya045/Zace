@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Optional
 
 from rich.align import Align
+from rich.padding import Padding
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -114,6 +115,7 @@ class ZaceTextualApp(App[None]):
     START_PLACEHOLDER = 'Ask anything... "Fix broken tests"'
     START_SHORTCUTS = "ctrl+t variants   tab agents   ctrl+p commands"
     START_TIP = "Tip  Use /theme or Ctrl+T to switch themes"
+    CHAT_EDGE_PADDING = 2
 
     def __init__(
         self,
@@ -647,6 +649,7 @@ class ZaceTextualApp(App[None]):
         alignment = "left"
         label_style = "#6A737D"
         label = "system"
+        content: Text | Padding = line
 
         if role == "user":
             alignment = "right"
@@ -662,4 +665,9 @@ class ZaceTextualApp(App[None]):
         if final_state:
             line.append(f" ({final_state})", style="#88D498")
 
-        return Align(line, align=alignment)
+        if role == "user":
+            content = Padding(line, (0, self.CHAT_EDGE_PADDING, 0, 0))
+        else:
+            content = Padding(line, (0, 0, 0, self.CHAT_EDGE_PADDING))
+
+        return Align(content, align=alignment)

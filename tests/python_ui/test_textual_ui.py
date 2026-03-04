@@ -340,7 +340,7 @@ async def test_streaming_chat_chunks_merge_into_single_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_user_messages_render_at_chat_log_right_edge_on_wide_viewport() -> None:
+async def test_chat_messages_use_symmetric_edge_padding_on_wide_viewport() -> None:
     fake_bridge = FakeBridge()
     fake_bridge.init_result["messages"] = []
     fake_bridge.init_result["state"]["turnCount"] = 0
@@ -348,14 +348,21 @@ async def test_user_messages_render_at_chat_log_right_edge_on_wide_viewport() ->
 
     async with app.run_test(size=(160, 24)) as pilot:
         await pilot.pause()
+        app._append_chat("assistant", "hi")
         app._append_chat("user", "hello")
         await pilot.pause()
 
         log = app.query_one("#chat_log", RichLog)
         assert log.scrollable_content_region.width > 78
-        assert len(log.lines) == 1
-        assert log.lines[0].cell_length == log.scrollable_content_region.width
-        assert log.lines[0].text.rstrip().endswith("you: hello")
+        assert len(log.lines) == 3
+        assistant_line = log.lines[0].text
+        user_line = log.lines[2].text
+
+        assistant_left_inset = len(assistant_line) - len(assistant_line.lstrip(" "))
+        user_right_inset = len(user_line) - len(user_line.rstrip(" "))
+
+        assert assistant_left_inset == app.CHAT_EDGE_PADDING
+        assert user_right_inset == app.CHAT_EDGE_PADDING
 
 
 @pytest.mark.asyncio
