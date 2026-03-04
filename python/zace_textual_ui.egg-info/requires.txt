@@ -1,1 +1,2 @@
+pydantic<3,>=2
 textual<1.0,>=0.63

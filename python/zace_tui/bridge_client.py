@@ -5,6 +5,16 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from pydantic import ValidationError
+
+from .protocol import (
+    BridgeEventEnvelope,
+    BridgeResponseError,
+    BridgeResponseSuccess,
+    format_validation_error,
+    parse_wire_message,
+)
+
 
 class BridgeError(RuntimeError):
     """Raised when the bridge returns an error or closes unexpectedly."""
@@ -115,50 +125,38 @@ class JsonRpcBridgeClient:
                 )
                 continue
 
-            payload_type = payload.get("type")
-            if payload_type == "response":
-                await self._handle_response(payload)
+            try:
+                wire_message = parse_wire_message(payload)
+            except (TypeError, ValueError, ValidationError) as error:
+                await self._on_event(
+                    {
+                        "message": f"Bridge emitted malformed payload: {format_validation_error(error)}",
+                        "type": "error",
+                    }
+                )
                 continue
 
-            if payload_type == "event":
-                event = payload.get("event")
-                if isinstance(event, dict):
-                    await self._on_event(event)
-                else:
-                    await self._on_event(
-                        {
-                            "message": "Bridge emitted malformed event payload.",
-                            "type": "error",
-                        }
-                    )
+            if isinstance(wire_message, BridgeEventEnvelope):
+                await self._on_event(wire_message.event.model_dump(mode="python", exclude_none=True))
                 continue
 
-            await self._on_event(
-                {
-                    "message": "Bridge emitted unsupported message type.",
-                    "type": "error",
-                }
-            )
+            await self._handle_response(wire_message)
 
-    async def _handle_response(self, payload: dict[str, Any]) -> None:
-        request_id = str(payload.get("id", ""))
+    async def _handle_response(self, payload: BridgeResponseSuccess | BridgeResponseError) -> None:
+        request_id = payload.id
         future = self._pending.get(request_id)
         if not future:
             return
 
-        if payload.get("success") is True:
-            result = payload.get("result")
+        if isinstance(payload, BridgeResponseSuccess):
+            result = payload.result
             if isinstance(result, dict):
                 future.set_result(result)
             else:
                 future.set_result({})
             return
 
-        error_message = payload.get("error")
-        if isinstance(error_message, str) and error_message:
-            future.set_exception(BridgeError(error_message))
-        else:
-            future.set_exception(BridgeError("Bridge request failed."))
+        future.set_exception(BridgeError(payload.error))
 
     async def _read_stderr(self) -> None:
         assert self._process is not None

@@ -10,3 +10,11 @@ python/zace_tui/app.py
 python/zace_tui/bridge_client.py
 python/zace_tui/main.py
 python/zace_tui/models.py
+python/zace_tui/protocol.py
+python/zace_tui/ui/__init__.py
+python/zace_tui/ui/app.py
+python/zace_tui/ui/chat_rendering.py
+python/zace_tui/ui/messages.py
+python/zace_tui/ui/modals.py
+python/zace_tui/ui/scrollbar.py
+python/zace_tui/ui/widgets.py

@@ -6,8 +6,17 @@ import os
 import sys
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+
 from .app import ZaceTextualApp
 from .models import BridgeInitPayload
+
+
+class CliArgsModel(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    session_file_path: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
 
 
 def _load_json_env(name: str, default: Any) -> Any:
@@ -21,36 +30,49 @@ def _load_json_env(name: str, default: Any) -> Any:
         return default
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> CliArgsModel:
     parser = argparse.ArgumentParser(description="Zace Textual UI")
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--session-file-path", required=True)
-    return parser.parse_args()
+    namespace = parser.parse_args()
+    return CliArgsModel.model_validate(vars(namespace))
 
 
 def main() -> int:
-    args = _parse_args()
+    try:
+        args = _parse_args()
+    except ValidationError as error:
+        print(f"Invalid CLI arguments: {error}", file=sys.stderr)
+        return 1
 
-    bridge_command = _load_json_env(
+    bridge_command_raw = _load_json_env(
         "ZACE_BRIDGE_COMMAND_JSON",
         ["bun", "run", "src/ui/bridge/entry.ts"],
     )
-    if not isinstance(bridge_command, list) or not all(isinstance(part, str) for part in bridge_command):
+    try:
+        bridge_command = TypeAdapter(list[str]).validate_python(bridge_command_raw, strict=True)
+    except ValidationError:
         print("Invalid ZACE_BRIDGE_COMMAND_JSON value.", file=sys.stderr)
         return 1
 
-    ui_config = _load_json_env("ZACE_UI_CONFIG_JSON", {})
-    if not isinstance(ui_config, dict):
+    ui_config_raw = _load_json_env("ZACE_UI_CONFIG_JSON", {})
+    try:
+        ui_config = TypeAdapter(dict[str, Any]).validate_python(ui_config_raw, strict=True)
+    except ValidationError:
         ui_config = {}
 
-    payload = BridgeInitPayload(
-        session_file_path=args.session_file_path,
-        session_id=args.session_id,
-        ui_config=ui_config,
-    )
+    try:
+        payload = BridgeInitPayload(
+            session_file_path=args.session_file_path,
+            session_id=args.session_id,
+            ui_config=ui_config,
+        )
+    except ValidationError as error:
+        print(f"Invalid initialization payload: {error}", file=sys.stderr)
+        return 1
 
     app = ZaceTextualApp(
-        bridge_command=list(bridge_command),
+        bridge_command=bridge_command,
         bridge_env=dict(os.environ),
         payload=payload,
         workdir=os.environ.get("ZACE_WORKDIR", os.getcwd()),
