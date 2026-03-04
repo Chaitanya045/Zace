@@ -78,4 +78,37 @@ describe("ui bridge protocol", () => {
 
     expect(parsed.success).toBeTrue();
   });
+
+  test("accepts list_sessions request", () => {
+    const parsed = bridgeClientMessageSchema.safeParse({
+      id: "5",
+      method: "list_sessions",
+      params: {},
+      type: "request",
+    });
+
+    expect(parsed.success).toBeTrue();
+  });
+
+  test("rejects switch_session request without sessionId", () => {
+    const parsed = bridgeClientMessageSchema.safeParse({
+      id: "6",
+      method: "switch_session",
+      params: {},
+      type: "request",
+    });
+
+    expect(parsed.success).toBeFalse();
+  });
+
+  test("accepts new_session request", () => {
+    const parsed = bridgeClientMessageSchema.safeParse({
+      id: "7",
+      method: "new_session",
+      params: {},
+      type: "request",
+    });
+
+    expect(parsed.success).toBeTrue();
+  });
 });

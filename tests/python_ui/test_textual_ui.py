@@ -6,6 +6,7 @@ import pytest
 from rich.align import Align
 from textual import events
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Input, RichLog, Static
 
 from zace_tui.app import (
@@ -36,6 +37,50 @@ class FakeBridge:
                 "turnCount": 1,
             },
         }
+        self.list_sessions_result: dict[str, Any] = {
+            "sessions": [
+                {
+                    "lastInteractedAgo": "5m ago",
+                    "lastInteractedAt": "2026-03-04T10:55:00.000Z",
+                    "sessionFilePath": ".zace/sessions/test-session.jsonl",
+                    "sessionId": "test-session",
+                    "title": "Current Session",
+                },
+                {
+                    "lastInteractedAgo": "1h ago",
+                    "lastInteractedAt": "2026-03-04T10:00:00.000Z",
+                    "sessionFilePath": ".zace/sessions/other-session.jsonl",
+                    "sessionId": "other-session",
+                    "title": "Other Session",
+                },
+            ]
+        }
+        self.switch_session_result: dict[str, Any] = {
+            "messages": [
+                {"role": "assistant", "text": "Loaded other session", "timestamp": 0},
+            ],
+            "state": {
+                "hasPendingApproval": False,
+                "hasPendingPermission": False,
+                "isBusy": False,
+                "runState": "idle",
+                "sessionFilePath": ".zace/sessions/other-session.jsonl",
+                "sessionId": "other-session",
+                "turnCount": 1,
+            },
+        }
+        self.new_session_result: dict[str, Any] = {
+            "messages": [],
+            "state": {
+                "hasPendingApproval": False,
+                "hasPendingPermission": False,
+                "isBusy": False,
+                "runState": "idle",
+                "sessionFilePath": ".zace/sessions/chat-20260304-120000-abc123.jsonl",
+                "sessionId": "chat-20260304-120000-abc123",
+                "turnCount": 0,
+            },
+        }
 
     async def start(self) -> None:
         self.started = True
@@ -49,6 +94,12 @@ class FakeBridge:
             return self.init_result
         if method == "interrupt":
             return {"status": "not_running"}
+        if method == "list_sessions":
+            return self.list_sessions_result
+        if method == "switch_session":
+            return self.switch_session_result
+        if method == "new_session":
+            return self.new_session_result
         return {}
 
 
@@ -67,15 +118,14 @@ def build_app(fake_bridge: FakeBridge) -> ZaceTextualApp:
 
 
 @pytest.mark.asyncio
-async def test_smoke_boot_renders_session_bar() -> None:
+async def test_smoke_boot_renders_without_session_bar() -> None:
     fake_bridge = FakeBridge()
     app = build_app(fake_bridge)
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        session_bar = app.query_one("#session_bar", Static)
-        assert "session: test-session" in str(session_bar.renderable)
-        assert "theme: zace" in str(session_bar.renderable)
+        with pytest.raises(NoMatches):
+            app.query_one("#session_bar", Static)
         assert app.screen.has_class("theme-zace")
         welcome_screen = app.query_one("#welcome_screen", Vertical)
         chat_log = app.query_one("#chat_log", RichLog)
@@ -97,6 +147,89 @@ async def test_command_palette_submits_status_command() -> None:
         await pilot.pause()
 
         assert ("submit", {"kind": "command", "command": "status"}) in fake_bridge.requests
+
+
+@pytest.mark.asyncio
+async def test_switch_session_palette_action_is_local_and_updates_session_state() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    async def _select_other_session(_: Any) -> str:
+        return "other-session"
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen_wait = _select_other_session  # type: ignore[assignment]
+        await app._handle_palette_action("switch_session")
+        await pilot.pause()
+
+        assert ("list_sessions", {}) in fake_bridge.requests
+        assert ("switch_session", {"sessionId": "other-session"}) in fake_bridge.requests
+        assert ("submit", {"kind": "command", "command": "switch_session"}) not in fake_bridge.requests
+        assert app._state.get("sessionId") == "other-session"
+        assert app._chat_items[-1]["text"] == "Loaded other session"
+
+
+@pytest.mark.asyncio
+async def test_switch_session_is_blocked_while_busy() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._state["isBusy"] = True
+        await app._handle_palette_action("switch_session")
+        await pilot.pause()
+
+        assert ("list_sessions", {}) not in fake_bridge.requests
+
+
+@pytest.mark.asyncio
+async def test_new_session_palette_action_is_local_and_resets_session_state() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_palette_action("new_session")
+        await pilot.pause()
+
+        assert ("new_session", {}) in fake_bridge.requests
+        assert ("submit", {"kind": "command", "command": "new_session"}) not in fake_bridge.requests
+        assert app._state.get("sessionId") == "chat-20260304-120000-abc123"
+        assert app._chat_items == []
+        assert app._show_welcome is True
+
+
+@pytest.mark.asyncio
+async def test_new_session_clears_composer_draft() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        composer = app.query_one("#composer", Input)
+        composer.value = "draft text"
+
+        await app._handle_palette_action("new_session")
+        await pilot.pause()
+
+        assert composer.value == ""
+
+
+@pytest.mark.asyncio
+async def test_new_session_is_blocked_while_busy() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._state["isBusy"] = True
+
+        await app._handle_palette_action("new_session")
+        await pilot.pause()
+
+        assert ("new_session", {}) not in fake_bridge.requests
 
 
 @pytest.mark.asyncio
@@ -203,8 +336,7 @@ async def test_cycle_theme_shortcut_updates_theme() -> None:
         await pilot.press("ctrl+t")
         await pilot.pause()
 
-        session_bar = app.query_one("#session_bar", Static)
-        assert "theme: pastel" in str(session_bar.renderable)
+        assert app._active_theme == "pastel"
         assert app.screen.has_class("theme-pastel")
 
 
@@ -218,8 +350,7 @@ async def test_theme_palette_action_is_local() -> None:
         await app._handle_palette_action("theme_ocean")
         await pilot.pause()
 
-        session_bar = app.query_one("#session_bar", Static)
-        assert "theme: ocean" in str(session_bar.renderable)
+        assert app._active_theme == "ocean"
         assert app.screen.has_class("theme-ocean")
         assert ("submit", {"kind": "command", "command": "theme_ocean"}) not in fake_bridge.requests
 

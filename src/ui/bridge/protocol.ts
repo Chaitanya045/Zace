@@ -50,6 +50,16 @@ export const initialChatMessageSchema = z.object({
 });
 export type InitialChatMessage = z.infer<typeof initialChatMessageSchema>;
 
+export const sessionListItemSchema = z.object({
+  firstUserMessage: z.string().optional(),
+  lastInteractedAgo: z.string().min(1),
+  lastInteractedAt: z.string().min(1),
+  sessionFilePath: z.string().min(1),
+  sessionId: z.string().min(1),
+  title: z.string().min(1),
+});
+export type SessionListItem = z.infer<typeof sessionListItemSchema>;
+
 const promptOptionSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
@@ -121,6 +131,11 @@ export const interruptResultSchema = z.object({
 });
 export type InterruptResult = z.infer<typeof interruptResultSchema>;
 
+export const listSessionsResultSchema = z.object({
+  sessions: z.array(sessionListItemSchema),
+});
+export type ListSessionsResult = z.infer<typeof listSessionsResultSchema>;
+
 export const ackResultSchema = z.object({
   ok: z.boolean(),
 });
@@ -143,6 +158,23 @@ export const submitRequestSchema = requestBaseSchema.extend({
 
 export const interruptRequestSchema = requestBaseSchema.extend({
   method: z.literal("interrupt"),
+  params: z.object({}),
+});
+
+export const listSessionsRequestSchema = requestBaseSchema.extend({
+  method: z.literal("list_sessions"),
+  params: z.object({}),
+});
+
+export const switchSessionRequestSchema = requestBaseSchema.extend({
+  method: z.literal("switch_session"),
+  params: z.object({
+    sessionId: z.string().min(1),
+  }),
+});
+
+export const newSessionRequestSchema = requestBaseSchema.extend({
+  method: z.literal("new_session"),
   params: z.object({}),
 });
 
@@ -169,6 +201,9 @@ export const bridgeClientMessageSchema = z.discriminatedUnion("method", [
   initRequestSchema,
   submitRequestSchema,
   interruptRequestSchema,
+  listSessionsRequestSchema,
+  switchSessionRequestSchema,
+  newSessionRequestSchema,
   approvalReplyRequestSchema,
   permissionReplyRequestSchema,
   shutdownRequestSchema,

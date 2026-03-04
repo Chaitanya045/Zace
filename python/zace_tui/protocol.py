@@ -39,6 +39,19 @@ class InterruptResult(ZaceProtocolModel):
     status: Literal["already_requested", "not_running", "requested"]
 
 
+class SessionListItem(ZaceProtocolModel):
+    firstUserMessage: str | None = None
+    lastInteractedAgo: str = Field(min_length=1)
+    lastInteractedAt: str = Field(min_length=1)
+    sessionFilePath: str = Field(min_length=1)
+    sessionId: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+
+
+class ListSessionsResult(ZaceProtocolModel):
+    sessions: list[SessionListItem]
+
+
 class BridgeResponseSuccess(ZaceProtocolModel):
     id: str = Field(min_length=1)
     result: Any = None
@@ -111,6 +124,7 @@ BridgeResponseAdapter = TypeAdapter(BridgeResponse)
 InitResultAdapter = TypeAdapter(InitResult)
 SubmitResultAdapter = TypeAdapter(SubmitResult)
 InterruptResultAdapter = TypeAdapter(InterruptResult)
+ListSessionsResultAdapter = TypeAdapter(ListSessionsResult)
 BridgeInitRequestParamsAdapter = TypeAdapter(BridgeInitRequestParams)
 SubmitPayloadAdapter = TypeAdapter(SubmitPayload)
 
@@ -150,6 +164,10 @@ def parse_submit_result(payload: Any) -> SubmitResult:
 
 def parse_interrupt_result(payload: Any) -> InterruptResult:
     return InterruptResultAdapter.validate_python(payload)
+
+
+def parse_list_sessions_result(payload: Any) -> ListSessionsResult:
+    return ListSessionsResultAdapter.validate_python(payload)
 
 
 def parse_init_request_params(payload: Any) -> BridgeInitRequestParams:

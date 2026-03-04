@@ -7,6 +7,7 @@ from zace_tui.models import ChatMessageEvent
 from zace_tui.protocol import (
     BridgeResponseError,
     BridgeResponseSuccess,
+    parse_list_sessions_result,
     parse_bridge_event,
     parse_bridge_response,
     parse_wire_message,
@@ -95,3 +96,38 @@ def test_parse_wire_message_dispatches_event_and_response() -> None:
 
     assert getattr(parsed_event, "type", None) == "event"
     assert isinstance(parsed_response, BridgeResponseSuccess)
+
+
+def test_parse_list_sessions_result_accepts_valid_payload() -> None:
+    payload = {
+        "sessions": [
+            {
+                "lastInteractedAgo": "1h ago",
+                "lastInteractedAt": "2026-03-04T10:00:00.000Z",
+                "sessionFilePath": ".zace/sessions/chat-1.jsonl",
+                "sessionId": "chat-1",
+                "title": "Fix failing tests",
+            }
+        ]
+    }
+
+    result = parse_list_sessions_result(payload)
+
+    assert len(result.sessions) == 1
+    assert result.sessions[0].sessionId == "chat-1"
+
+
+def test_parse_list_sessions_result_rejects_missing_required_field() -> None:
+    payload = {
+        "sessions": [
+            {
+                "lastInteractedAgo": "1h ago",
+                "lastInteractedAt": "2026-03-04T10:00:00.000Z",
+                "sessionId": "chat-1",
+                "title": "Fix failing tests",
+            }
+        ]
+    }
+
+    with pytest.raises(ValidationError):
+        parse_list_sessions_result(payload)

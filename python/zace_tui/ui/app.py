@@ -31,6 +31,7 @@ from ..protocol import (
     parse_init_request_params,
     parse_init_result,
     parse_interrupt_result,
+    parse_list_sessions_result,
     parse_submit_payload,
     parse_submit_result,
 )
@@ -56,6 +57,8 @@ class ZaceTextualApp(App[None]):
 
     PALETTE_ACTIONS: list[BridgePromptOption] = [
         BridgePromptOption(id="status", label="Show status"),
+        BridgePromptOption(id="switch_session", label="Switch session"),
+        BridgePromptOption(id="new_session", label="New session"),
         BridgePromptOption(id="reset", label="Reset in-memory context"),
         BridgePromptOption(id="help", label="Show keyboard help"),
         BridgePromptOption(id="theme_cycle", label="Cycle theme"),
@@ -110,7 +113,6 @@ class ZaceTextualApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static(id="top_glow")
-        yield Static(id="session_bar")
         yield Vertical(
             Vertical(
                 Static("zace", id="welcome_logo"),
@@ -389,28 +391,6 @@ class ZaceTextualApp(App[None]):
                 self._append_chat("system", f"Permission reply failed: {error}")
 
     def _render_state(self) -> None:
-        try:
-            session_bar = self.query_one("#session_bar", Static)
-        except NoMatches:
-            return
-
-        pending_approval = "pending" if bool(self._state.get("hasPendingApproval", False)) else "none"
-        pending_permission = "pending" if bool(self._state.get("hasPendingPermission", False)) else "none"
-        step_label = str(self._state.get("stepLabel", "step:n/a") or "step:n/a")
-
-        session_bar.update(
-            " | ".join(
-                [
-                    f"session: {self._state.get('sessionId', '')}",
-                    f"turns: {self._state.get('turnCount', 0)}",
-                    f"state: {self._state.get('runState', 'idle')}",
-                    step_label,
-                    f"theme: {self._active_theme}",
-                    f"approval: {pending_approval}",
-                    f"permission: {pending_permission}",
-                ]
-            )
-        )
         self._render_activity_strip()
 
     def _render_layout_state(self) -> None:
@@ -424,6 +404,14 @@ class ZaceTextualApp(App[None]):
         chat_log.display = not self._show_welcome
 
     async def _handle_palette_action(self, choice: str) -> None:
+        if choice == "switch_session":
+            await self._switch_session_flow()
+            return
+
+        if choice == "new_session":
+            await self._new_session_flow()
+            return
+
         if choice == "theme_cycle":
             await self.action_cycle_theme()
             return
@@ -441,6 +429,147 @@ class ZaceTextualApp(App[None]):
             }
         )
         await self._submit_payload(payload.model_dump())
+
+    async def _switch_session_flow(self) -> None:
+        if bool(self._state.get("isBusy", False)):
+            self.notify("Cannot switch session while run is active.", severity="warning")
+            return
+
+        try:
+            list_result_raw = await self._bridge.request("list_sessions", {})
+        except BridgeError as error:
+            self._append_chat("system", f"Session listing failed: {error}")
+            return
+
+        try:
+            list_result = parse_list_sessions_result(list_result_raw)
+        except ValidationError as error:
+            self._append_chat(
+                "system",
+                f"Session list payload validation failed: {format_validation_error(error)}",
+            )
+            return
+
+        if len(list_result.sessions) == 0:
+            self.notify("No sessions available in this directory.", severity="information")
+            return
+
+        options = [
+            BridgePromptOption(
+                id=session.sessionId,
+                label=self._format_session_palette_label(session.title, session.lastInteractedAgo),
+            )
+            for session in list_result.sessions
+        ]
+
+        modal = ChoiceModal(
+            title="Switch Session",
+            message="Select a session",
+            options=options,
+        )
+        self._apply_theme_to_node(modal)
+        selected_session_id = await self.push_screen_wait(modal)
+        if not isinstance(selected_session_id, str):
+            return
+
+        if selected_session_id == str(self._state.get("sessionId", "")):
+            self.notify("Already using this session.", severity="information")
+            return
+
+        try:
+            switch_result_raw = await self._bridge.request(
+                "switch_session",
+                {
+                    "sessionId": selected_session_id,
+                },
+            )
+        except BridgeError as error:
+            self._append_chat("system", f"Session switch failed: {error}")
+            return
+
+        try:
+            switch_result = parse_init_result(switch_result_raw)
+        except ValidationError as error:
+            self._append_chat(
+                "system",
+                f"Session switch payload validation failed: {format_validation_error(error)}",
+            )
+            return
+
+        self._apply_switched_session(switch_result)
+        self.notify(f"Switched session: {selected_session_id}", severity="information")
+
+    async def _new_session_flow(self) -> None:
+        if bool(self._state.get("isBusy", False)):
+            self.notify("Cannot switch session while run is active.", severity="warning")
+            return
+
+        try:
+            new_session_result_raw = await self._bridge.request("new_session", {})
+        except BridgeError as error:
+            self._append_chat("system", f"New session failed: {error}")
+            return
+
+        try:
+            new_session_result = parse_init_result(new_session_result_raw)
+        except ValidationError as error:
+            self._append_chat(
+                "system",
+                f"New session payload validation failed: {format_validation_error(error)}",
+            )
+            return
+
+        self._apply_switched_session(new_session_result)
+        try:
+            composer = self.query_one("#composer", Input)
+        except NoMatches:
+            composer = None
+        if composer is not None:
+            composer.value = ""
+        self.notify("Started new session", severity="information")
+
+    def _format_session_palette_label(self, title: str, last_interacted_ago: str) -> str:
+        normalized_title = " ".join(title.split())
+        max_title_width = 32
+        if len(normalized_title) > max_title_width:
+            normalized_title = f"{normalized_title[: max_title_width - 3]}..."
+        return f"[{normalized_title.ljust(max_title_width)}  {last_interacted_ago}]"
+
+    def _apply_switched_session(self, init_result: Any) -> None:
+        self._interrupt_armed = False
+        self._dot_phase = 0
+        self._chat_items = []
+        self._chat_stream_index_by_id = {}
+        self._render_chat()
+
+        self._state.update(
+            {
+                "activeToolName": "",
+                "hasPendingApproval": False,
+                "hasPendingPermission": False,
+                "isBusy": False,
+                "runState": "idle",
+                "stepLabel": "",
+                "turnCount": 0,
+            }
+        )
+        self._state.update(init_result.state.model_dump(exclude_none=True))
+
+        has_messages = False
+        for message in init_result.messages:
+            has_messages = True
+            self._chat_items.append(
+                {
+                    "final_state": message.finalState,
+                    "role": message.role,
+                    "text": message.text,
+                }
+            )
+
+        self._show_welcome = not (has_messages or int(self._state.get("turnCount", 0)) > 0)
+        self._render_layout_state()
+        self._render_chat()
+        self._render_state()
 
     def _resolve_initial_theme(self, ui_config: dict[str, Any]) -> str:
         raw_theme = ui_config.get("theme")

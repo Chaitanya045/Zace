@@ -57,6 +57,12 @@ const server = startLineJsonRpcServer({
         return await controller.submit(request.params);
       case "interrupt":
         return await controller.interrupt();
+      case "list_sessions":
+        return await controller.listSessions();
+      case "switch_session":
+        return await controller.switchSession(request.params.sessionId);
+      case "new_session":
+        return await controller.newSession();
       case "approval_reply":
         return await controller.approvalReply(request.params.decision);
       case "permission_reply":

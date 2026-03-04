@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
@@ -36,6 +36,12 @@ const sessionMessagePartDeltaEntrySchema = z.object({
   partId: z.string().min(1),
   timestamp: z.string(),
   type: z.literal("message_part_delta"),
+});
+
+const sessionMetaEntrySchema = z.object({
+  timestamp: z.string(),
+  title: z.string().min(1),
+  type: z.literal("session_meta"),
 });
 
 const sessionRunEntrySchema = z.object({
@@ -105,6 +111,7 @@ export const sessionEntrySchema = z.discriminatedUnion("type", [
   sessionApprovalRuleEntrySchema,
   sessionMessageEntrySchema,
   sessionMessagePartDeltaEntrySchema,
+  sessionMetaEntrySchema,
   sessionMessageV2EntrySchema,
   sessionPendingActionEntrySchema,
   sessionPermissionRuleEntrySchema,
@@ -119,6 +126,7 @@ export type SessionApprovalRuleEntry = Extract<SessionEntry, { type: "approval_r
 export type SessionApprovalRuleScope = z.infer<typeof sessionApprovalRuleScopeSchema>;
 export type SessionMessageEntry = Extract<SessionEntry, { type: "message" }>;
 export type SessionMessagePartDeltaEntry = Extract<SessionEntry, { type: "message_part_delta" }>;
+export type SessionMetaEntry = Extract<SessionEntry, { type: "session_meta" }>;
 export type SessionMessageV2Entry = Extract<SessionEntry, { type: "message_v2" }>;
 export type SessionPermissionRuleAction = z.infer<typeof sessionPermissionRuleActionSchema>;
 export type SessionPermissionRuleEntry = Extract<SessionEntry, { type: "permission_rule" }>;
@@ -144,6 +152,11 @@ export type SessionMessagePartDeltaWrite = {
   messageId: string;
   partId: string;
   timestamp?: string;
+};
+
+export type SessionMetaTitleWrite = {
+  timestamp?: string;
+  title: string;
 };
 export type SessionApprovalRuleWrite = {
   decision: SessionApprovalRuleDecision;
@@ -176,6 +189,22 @@ export type SessionRunEventWrite = {
   step: number;
   timestamp?: string;
 };
+
+export type SessionCatalogItem = {
+  firstUserMessage?: string;
+  lastInteractedAgo: string;
+  lastInteractedAt: string;
+  sessionFilePath: string;
+  sessionId: string;
+  title?: string;
+};
+
+const SESSION_FILENAME_REGEX = /^([A-Za-z0-9][A-Za-z0-9_-]{0,63})\.jsonl$/u;
+const RELATIVE_TIME_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+const RELATIVE_TIME_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+const RELATIVE_TIME_DAY_MS = 24 * 60 * 60 * 1000;
+const RELATIVE_TIME_HOUR_MS = 60 * 60 * 1000;
+const RELATIVE_TIME_MINUTE_MS = 60 * 1000;
 
 function sessionIdToPath(sessionId: string): string {
   return join(SESSIONS_DIRECTORY_PATH, `${sessionId}.jsonl`);
@@ -298,6 +327,20 @@ export async function appendSessionMessagePartDelta(
   ]);
 }
 
+export async function appendSessionMetaTitle(
+  sessionId: string,
+  meta: SessionMetaTitleWrite
+): Promise<void> {
+  const timestamp = meta.timestamp ?? new Date().toISOString();
+  await appendSessionEntries(sessionId, [
+    {
+      timestamp,
+      title: meta.title.trim(),
+      type: "session_meta",
+    },
+  ]);
+}
+
 export async function appendSessionRunEvent(
   sessionId: string,
   event: SessionRunEventWrite
@@ -412,4 +455,127 @@ export function findLatestOpenPendingAction(
 export async function readSessionMessages(sessionId: string): Promise<SessionMessageEntry[]> {
   const entries = await readSessionEntries(sessionId);
   return entries.filter((entry): entry is SessionMessageEntry => entry.type === "message");
+}
+
+function extractSessionTitle(entries: SessionEntry[]): string | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) {
+      continue;
+    }
+    if (entry.type !== "session_meta") {
+      continue;
+    }
+    const normalizedTitle = entry.title.trim();
+    if (normalizedTitle.length > 0) {
+      return normalizedTitle;
+    }
+  }
+  return undefined;
+}
+
+function extractFirstUserMessage(entries: SessionEntry[]): string | undefined {
+  const firstRunEntry = entries.find((entry): entry is Extract<SessionEntry, { type: "run" }> => entry.type === "run");
+  if (firstRunEntry) {
+    const normalized = firstRunEntry.userMessage.trim();
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+
+  const firstMessageEntry = entries.find(
+    (entry): entry is SessionMessageEntry => entry.type === "message" && entry.role === "user"
+  );
+  if (!firstMessageEntry) {
+    return undefined;
+  }
+
+  const normalized = firstMessageEntry.content.trim();
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  return normalized;
+}
+
+export function formatRelativeSessionTime(lastInteractedAtIso: string, now: Date = new Date()): string {
+  const timestamp = Date.parse(lastInteractedAtIso);
+  if (!Number.isFinite(timestamp)) {
+    return "just now";
+  }
+
+  const deltaMs = Math.max(0, now.getTime() - timestamp);
+  if (deltaMs < RELATIVE_TIME_MINUTE_MS) {
+    return "just now";
+  }
+  if (deltaMs < RELATIVE_TIME_HOUR_MS) {
+    return `${String(Math.floor(deltaMs / RELATIVE_TIME_MINUTE_MS))}m ago`;
+  }
+  if (deltaMs < RELATIVE_TIME_DAY_MS) {
+    return `${String(Math.floor(deltaMs / RELATIVE_TIME_HOUR_MS))}h ago`;
+  }
+  if (deltaMs < RELATIVE_TIME_MONTH_MS) {
+    return `${String(Math.floor(deltaMs / RELATIVE_TIME_DAY_MS))}d ago`;
+  }
+  if (deltaMs < RELATIVE_TIME_YEAR_MS) {
+    return `${String(Math.floor(deltaMs / RELATIVE_TIME_MONTH_MS))}mo ago`;
+  }
+  return `${String(Math.floor(deltaMs / RELATIVE_TIME_YEAR_MS))}y ago`;
+}
+
+export async function listSessionCatalog(input?: { now?: Date }): Promise<SessionCatalogItem[]> {
+  let filenames: string[];
+  try {
+    filenames = await readdir(SESSIONS_DIRECTORY_PATH);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+
+  const now = input?.now ?? new Date();
+  const catalog: Array<SessionCatalogItem & { lastInteractedAtMs: number }> = [];
+
+  for (const filename of filenames) {
+    const matched = filename.match(SESSION_FILENAME_REGEX);
+    if (!matched) {
+      continue;
+    }
+
+    const sessionId = matched[1];
+    if (!sessionId) {
+      continue;
+    }
+    const sessionFilePath = join(SESSIONS_DIRECTORY_PATH, filename);
+    let fileStat;
+    try {
+      fileStat = await stat(sessionFilePath);
+    } catch {
+      continue;
+    }
+    if (!fileStat.isFile()) {
+      continue;
+    }
+
+    let entries: SessionEntry[];
+    try {
+      entries = await readSessionEntries(sessionId);
+    } catch {
+      continue;
+    }
+
+    const lastInteractedAt = fileStat.mtime.toISOString();
+    catalog.push({
+      firstUserMessage: extractFirstUserMessage(entries),
+      lastInteractedAgo: formatRelativeSessionTime(lastInteractedAt, now),
+      lastInteractedAt,
+      lastInteractedAtMs: fileStat.mtimeMs,
+      sessionFilePath,
+      sessionId,
+      title: extractSessionTitle(entries),
+    });
+  }
+
+  catalog.sort((left, right) => right.lastInteractedAtMs - left.lastInteractedAtMs);
+  return catalog.map(({ lastInteractedAtMs: _lastInteractedAtMs, ...item }) => item);
 }

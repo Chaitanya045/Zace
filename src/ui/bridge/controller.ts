@@ -12,6 +12,7 @@ import type {
   BridgeState,
   InitResult,
   InterruptResult,
+  ListSessionsResult,
   SubmitPayload,
   SubmitResult,
 } from "./protocol";
@@ -22,6 +23,7 @@ import {
 } from "../../agent/approval";
 import {
   buildChatTaskWithFollowUpFromSession,
+  createAutoSessionId,
   loadSessionState,
   resolvePendingApprovalFromUserMessage,
   type ChatTurn,
@@ -31,7 +33,13 @@ import { resolvePendingPermissionAction } from "../../permission/pending";
 import { findOpenPendingPermission, resolvePendingPermissionFromUserMessage } from "../../permission/resolve";
 import { storePermissionRule } from "../../permission/store";
 import { SessionProcessor } from "../../session/processor/session-processor";
-import { appendSessionApprovalRule } from "../../tools/session";
+import { backfillMissingSessionTitles } from "../../session/session-title";
+import {
+  appendSessionApprovalRule,
+  getSessionFilePath,
+  listSessionCatalog,
+  normalizeSessionId,
+} from "../../tools/session";
 
 const HELP_TEXT = [
   "Keyboard shortcuts:",
@@ -89,8 +97,8 @@ export class BridgeController {
   private readonly client: LlmClient;
   private readonly config: AgentConfig;
   private readonly emitEvent: (event: BridgeEvent) => void;
-  private readonly sessionFilePath: string;
-  private readonly sessionId: string;
+  private sessionFilePath: string;
+  private sessionId: string;
 
   private state: BridgeState;
   private turns: ChatTurn[] = [];
@@ -122,6 +130,78 @@ export class BridgeController {
   }
 
   async init(): Promise<InitResult> {
+    return this.loadActiveSession();
+  }
+
+  async listSessions(): Promise<ListSessionsResult> {
+    const catalog = await listSessionCatalog();
+    let titledCatalog = catalog;
+    try {
+      titledCatalog = await backfillMissingSessionTitles({
+        client: this.client,
+        sessions: catalog,
+      });
+    } catch {
+      // Keep list operation resilient if title generation fails.
+    }
+
+    return {
+      sessions: titledCatalog.map((session) => ({
+        ...session,
+        title:
+          typeof session.title === "string" && session.title.trim().length > 0
+            ? session.title
+            : `Session ${session.sessionId}`,
+      })),
+    };
+  }
+
+  async switchSession(sessionId: string): Promise<InitResult> {
+    if (this.state.isBusy) {
+      throw new Error("Cannot switch session while run is active.");
+    }
+
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    const catalog = await listSessionCatalog();
+    const hasSessionInCurrentDirectory = catalog.some(
+      (session) => session.sessionId === normalizedSessionId
+    );
+    if (!hasSessionInCurrentDirectory) {
+      throw new Error("Session not found in current directory.");
+    }
+
+    this.sessionId = normalizedSessionId;
+    this.sessionFilePath = getSessionFilePath(normalizedSessionId);
+    this.resetSessionRuntimeState();
+    return this.loadActiveSession();
+  }
+
+  async newSession(): Promise<InitResult> {
+    if (this.state.isBusy) {
+      throw new Error("Cannot switch session while run is active.");
+    }
+
+    const newSessionId = createAutoSessionId();
+    this.sessionId = newSessionId;
+    this.sessionFilePath = getSessionFilePath(newSessionId);
+    this.resetSessionRuntimeState();
+    return this.loadActiveSession();
+  }
+
+  private resetSessionRuntimeState(): void {
+    this.turns = [];
+    this.pendingApproval = undefined;
+    this.pendingPermission = null;
+    this.pendingFollowUpQuestion = undefined;
+    this.activeAbortController = undefined;
+    this.interruptRequested = false;
+    this.approvedCommandSignaturesOnce = [];
+    this.approvedPermissionsOnce = [];
+    this.queuedResolutionNotes = [];
+    this.assistantStreamCounter = 0;
+  }
+
+  private async loadActiveSession(): Promise<InitResult> {
     const sessionState = await loadSessionState(
       this.sessionId,
       this.config.pendingActionMaxAgeMs,
@@ -138,9 +218,14 @@ export class BridgeController {
     this.pendingFollowUpQuestion = sessionState.pendingFollowUpQuestion;
 
     this.updateState({
+      activeToolName: undefined,
       hasPendingApproval: Boolean(this.pendingApproval),
       hasPendingPermission: Boolean(this.pendingPermission),
+      isBusy: false,
       runState: this.pendingFollowUpQuestion ? "waiting_for_user" : "idle",
+      sessionFilePath: this.sessionFilePath,
+      sessionId: this.sessionId,
+      stepLabel: undefined,
       turnCount: this.turns.length,
     });
 

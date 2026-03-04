@@ -3,12 +3,6 @@ Screen {
   color: #E0E0E0;
 }
 
-#session_bar {
-  height: 3;
-  margin: 0 1;
-  padding: 0 1;
-}
-
 #top_glow {
   height: 1;
 }
@@ -109,12 +103,6 @@ Screen {
 .theme-zace Footer {
   background: #0A0E0C;
   color: #6A737D;
-}
-
-.theme-zace #session_bar {
-  background: #141B17;
-  border: round #3A5A4C;
-  color: #E0E0E0;
 }
 
 .theme-zace #top_glow {
@@ -227,12 +215,6 @@ Screen {
   color: #4a3f68;
 }
 
-.theme-pastel #session_bar {
-  background: #efe8ff;
-  border: round #c6b8ea;
-  color: #4a3f68;
-}
-
 .theme-pastel #top_glow {
   background: #c6b8ea;
 }
@@ -322,12 +304,6 @@ Screen {
 .theme-ocean Footer {
   background: #0b1d34;
   color: #c8e8ff;
-}
-
-.theme-ocean #session_bar {
-  background: #10253f;
-  border: round #3d6fa1;
-  color: #d2ecff;
 }
 
 .theme-ocean #top_glow {
