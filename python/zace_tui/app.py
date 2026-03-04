@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from rich.markup import escape
+from rich.align import Align
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -636,13 +637,26 @@ class ZaceTextualApp(App[None]):
             role = item.get("role", "assistant") or "assistant"
             text = item.get("text", "") or ""
             final_state = item.get("final_state")
-            safe_text = escape(text)
-            if role == "user":
-                prefix = "[#4EA5FF]you[/]"
-            elif role == "assistant":
-                prefix = "[#2BEE8C]agent[/]"
-            else:
-                prefix = "[#6A737D]system[/]"
+            log.write(self._build_chat_line(role, text, final_state), expand=True)
 
-            suffix = f" [#88D498]({escape(final_state)})[/]" if final_state else ""
-            log.write(f"{prefix}: {safe_text}{suffix}")
+    def _build_chat_line(self, role: str, text: str, final_state: str | None) -> Align:
+        line = Text()
+        alignment = "left"
+        label_style = "#6A737D"
+        label = "system"
+
+        if role == "user":
+            alignment = "right"
+            label_style = "#4EA5FF"
+            label = "you"
+        elif role == "assistant":
+            label_style = "#2BEE8C"
+            label = "agent"
+
+        line.append(label, style=label_style)
+        line.append(": ")
+        line.append(text)
+        if final_state:
+            line.append(f" ({final_state})", style="#88D498")
+
+        return Align(line, align=alignment)

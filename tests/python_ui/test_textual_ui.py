@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from rich.align import Align
 from textual.containers import Vertical
 from textual.widgets import RichLog, Static
 
@@ -227,6 +228,19 @@ def test_render_helpers_do_not_raise_before_mount() -> None:
     app._append_chat("assistant", "safe before mount")
 
 
+def test_chat_line_alignment_is_role_based() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    user_line = app._build_chat_line("user", "hello", None)
+    assistant_line = app._build_chat_line("assistant", "hi", None)
+
+    assert isinstance(user_line, Align)
+    assert isinstance(assistant_line, Align)
+    assert user_line.align == "right"
+    assert assistant_line.align == "left"
+
+
 @pytest.mark.asyncio
 async def test_welcome_hides_after_submit() -> None:
     fake_bridge = FakeBridge()
@@ -323,3 +337,22 @@ async def test_streaming_chat_chunks_merge_into_single_message() -> None:
         assert len(app._chat_items) == 1
         assert app._chat_items[0]["text"] == "Hello world"
         assert app._chat_items[0]["final_state"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_user_messages_render_at_chat_log_right_edge_on_wide_viewport() -> None:
+    fake_bridge = FakeBridge()
+    fake_bridge.init_result["messages"] = []
+    fake_bridge.init_result["state"]["turnCount"] = 0
+    app = build_app(fake_bridge)
+
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause()
+        app._append_chat("user", "hello")
+        await pilot.pause()
+
+        log = app.query_one("#chat_log", RichLog)
+        assert log.scrollable_content_region.width > 78
+        assert len(log.lines) == 1
+        assert log.lines[0].cell_length == log.scrollable_content_region.width
+        assert log.lines[0].text.rstrip().endswith("you: hello")
