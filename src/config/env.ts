@@ -124,6 +124,10 @@ export function parseEnvironment(input: Record<string, string | undefined>) {
   return envSchema.safeParse(input);
 }
 
+export function getProcessEnvironmentSnapshot(): Record<string, string | undefined> {
+  return { ...process.env };
+}
+
 const parsed = parseEnvironment(process.env);
 
 if (!parsed.success) {
