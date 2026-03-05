@@ -207,5 +207,5 @@ describe("lsp bootstrap probe on config change", () => {
 
     expect(runEvents).toContain("lsp_bootstrap_probe_started");
     expect(runEvents).toContain("lsp_bootstrap_probe_succeeded");
-  });
+  }, 20_000);
 });

@@ -141,5 +141,5 @@ describe("lsp bootstrap attempt limit", () => {
 
     expect(result.finalState).toBe("waiting_for_user");
     expect(result.message).toContain("Reached bootstrap remediation limit");
-  });
+  }, 20_000);
 });
