@@ -1,5 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable } from "node:stream";
+
+import { getProcessEnvironmentSnapshot } from "../../config/env";
+import { spawnProcess } from "../system/process";
 
 type ProcessSignal = Exclude<Parameters<typeof process.kill>[1], number | undefined>;
 
@@ -49,12 +51,13 @@ function getShellInvocation(command: string): { args: string[]; executable: stri
 }
 
 function buildCommandEnvironment(commandEnv?: Record<string, string>): Record<string, string | undefined> {
+  const baseEnvironment = getProcessEnvironmentSnapshot();
   if (!commandEnv) {
-    return process.env as Record<string, string | undefined>;
+    return baseEnvironment;
   }
 
   return {
-    ...process.env,
+    ...baseEnvironment,
     ...commandEnv,
   };
 }
@@ -93,7 +96,7 @@ async function killWindowsProcessTree(pid: number, force: boolean): Promise<void
     if (force) {
       killArgs.push("/F");
     }
-    const killProcess = spawn("taskkill", killArgs, {
+    const killProcess = spawnProcess("taskkill", killArgs, {
       stdio: "ignore",
       windowsHide: true,
     });
@@ -135,7 +138,7 @@ export async function runSpawnedShellCommand(input: {
   workingDirectory: string;
 }): Promise<SpawnedCommandResult> {
   const { args, executable } = getShellInvocation(input.command);
-  const processHandle: ChildProcessWithoutNullStreams = spawn(executable, args, {
+  const processHandle = spawnProcess(executable, args, {
     cwd: input.workingDirectory,
     detached: process.platform !== "win32",
     env: buildCommandEnvironment(input.commandEnv),

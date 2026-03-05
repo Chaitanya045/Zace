@@ -1,6 +1,7 @@
-import { spawn, spawnSync } from "node:child_process";
-
 import type { AgentConfig } from "../types/config";
+
+import { getProcessEnvironmentSnapshot } from "../config/env";
+import { spawnProcess, spawnProcessSync } from "../tools/system/process";
 
 type RunChatUiInput = {
   config: AgentConfig;
@@ -9,7 +10,7 @@ type RunChatUiInput = {
 };
 
 function hasCommand(command: string): boolean {
-  const result = spawnSync(command, ["--version"], {
+  const result = spawnProcessSync(command, ["--version"], {
     stdio: "ignore",
   });
   return !result.error && result.status === 0;
@@ -22,9 +23,9 @@ function ensureTextualRuntimeAvailable(projectRoot: string): void {
     );
   }
 
-  const textualCheck = spawnSync("uv", ["run", "python", "-c", "import textual"], {
+  const textualCheck = spawnProcessSync("uv", ["run", "python", "-c", "import textual"], {
     cwd: projectRoot,
-    env: process.env,
+    env: getProcessEnvironmentSnapshot(),
     stdio: "ignore",
   });
 
@@ -36,7 +37,7 @@ function ensureTextualRuntimeAvailable(projectRoot: string): void {
 }
 
 export function isInteractiveTerminal(): boolean {
-  const term = process.env.TERM?.toLowerCase();
+  const term = getProcessEnvironmentSnapshot().TERM?.toLowerCase();
   if (term === "dumb") {
     return false;
   }
@@ -55,7 +56,7 @@ export async function runChatUi(input: RunChatUiInput): Promise<void> {
   };
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(
+    const child = spawnProcess(
       "uv",
       [
         "run",
@@ -70,7 +71,7 @@ export async function runChatUi(input: RunChatUiInput): Promise<void> {
       {
         cwd: projectRoot,
         env: {
-          ...process.env,
+          ...getProcessEnvironmentSnapshot(),
           ZACE_BRIDGE_COMMAND_JSON: JSON.stringify(["bun", "run", "src/ui/bridge/entry.ts"]),
           ZACE_UI_CONFIG_JSON: JSON.stringify(uiConfig),
           ZACE_WORKDIR: projectRoot,

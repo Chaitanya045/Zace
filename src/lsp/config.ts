@@ -1,6 +1,7 @@
-import { readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { z } from "zod";
+
+import { fsReadFile as readFile, fsStat as stat } from "../tools/system/fs";
 
 export const lspServerConfigSchema = z.object({
   command: z.array(z.string().min(1)).min(1),

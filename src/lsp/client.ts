@@ -1,10 +1,12 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
 
 import type { LspServerConfig } from "./config";
+
+import { getProcessEnvironmentSnapshot } from "../config/env";
+import { fsReadFile } from "../tools/system/fs";
+import { spawnProcess } from "../tools/system/process";
 
 export interface LspPosition {
   character: number;
@@ -114,7 +116,7 @@ export class LspClient {
 
   private readonly diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  private readonly processHandle: ChildProcessWithoutNullStreams;
+  private readonly processHandle: ReturnType<typeof spawnProcess>;
 
   private readonly rootPath: string;
 
@@ -128,7 +130,7 @@ export class LspClient {
 
   private constructor(input: {
     connection: ReturnType<typeof createMessageConnection>;
-    processHandle: ChildProcessWithoutNullStreams;
+    processHandle: ReturnType<typeof spawnProcess>;
     rootPath: string;
     server: LspServerConfig;
     waitForDiagnosticsMs: number;
@@ -141,10 +143,10 @@ export class LspClient {
   }
 
   static async create(input: LspClientCreateInput): Promise<LspClient> {
-    const processHandle = spawn(input.server.command[0]!, input.server.command.slice(1), {
+    const processHandle = spawnProcess(input.server.command[0]!, input.server.command.slice(1), {
       cwd: input.rootPath,
       env: {
-        ...process.env,
+        ...getProcessEnvironmentSnapshot(),
         ...input.server.env,
       },
       stdio: "pipe",
@@ -231,7 +233,7 @@ export class LspClient {
   async notifyOpen(pathValue: string): Promise<void> {
     const absolutePath = normalizeLspPath(pathValue);
     const uri = pathToFileURL(absolutePath).href;
-    const text = await readFile(absolutePath, "utf8");
+    const text = await fsReadFile(absolutePath, "utf8");
     const nextVersion = (this.openedFileVersions.get(absolutePath) ?? 0) + 1;
     this.openedFileVersions.set(absolutePath, nextVersion);
 
