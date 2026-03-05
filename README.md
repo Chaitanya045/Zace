@@ -91,24 +91,26 @@ AGENT_COMMAND_DENY_PATTERNS=
 ## Architecture
 
 - Agent loop orchestration:
-  - `/Users/chaitanya/Work/forge/src/agent/loop.ts` (compat facade)
-  - `/Users/chaitanya/Work/forge/src/agent/core/run-agent-loop.ts` (runtime orchestration)
+  - `src/agent/loop.ts` (compat facade)
+  - `src/agent/core/run-agent-loop.ts` (runtime orchestration)
 - Planner domain:
-  - `/Users/chaitanya/Work/forge/src/agent/planner.ts` (compat facade)
-  - `/Users/chaitanya/Work/forge/src/agent/planner/plan.ts`
-  - `/Users/chaitanya/Work/forge/src/agent/planner/parser.ts`
-  - `/Users/chaitanya/Work/forge/src/agent/planner/schema.ts`
-  - `/Users/chaitanya/Work/forge/src/agent/planner/repair.ts`
-  - `/Users/chaitanya/Work/forge/src/agent/planner/invalid-artifacts.ts`
+  - `src/agent/planner.ts` (compat facade)
+  - `src/agent/planner/plan.ts`
+  - `src/agent/planner/parser.ts`
+  - `src/agent/planner/schema.ts`
+  - `src/agent/planner/repair.ts`
+  - `src/agent/planner/invalid-artifacts.ts`
 - Shell tool domain:
-  - `/Users/chaitanya/Work/forge/src/tools/shell.ts` (compat facade)
-  - `/Users/chaitanya/Work/forge/src/tools/shell/index.ts`
-  - `/Users/chaitanya/Work/forge/src/tools/shell/process-lifecycle.ts`
-  - `/Users/chaitanya/Work/forge/src/tools/shell/changed-files.ts`
+  - `src/tools/shell.ts` (compat facade)
+  - `src/tools/shell/index.ts`
+  - `src/tools/shell/process-lifecycle.ts`
+  - `src/tools/shell/changed-files.ts`
+  - `src/tools/system/fs.ts`
+  - `src/tools/system/process.ts`
 - LLM compatibility pipeline:
-  - `/Users/chaitanya/Work/forge/src/llm/compat/index.ts`
-  - `/Users/chaitanya/Work/forge/src/llm/compat/normalize-messages.ts`
-  - `/Users/chaitanya/Work/forge/src/llm/compat/classify-error.ts`
+  - `src/llm/compat/index.ts`
+  - `src/llm/compat/normalize-messages.ts`
+  - `src/llm/compat/classify-error.ts`
 
 ## Usage
 

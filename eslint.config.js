@@ -30,16 +30,14 @@ const RESTRICTED_SIDE_EFFECT_IMPORT_PATHS = [
     }
 ];
 
-const TEMPORARY_SIDE_EFFECT_RULE_EXCEPTIONS = [
-    "src/agent/approval.ts",
-    "src/agent/completion.ts",
-    "src/agent/core/run-loop/command-safety.ts",
-    "src/agent/planner/invalid-artifacts.ts",
+const SIDE_EFFECT_RULE_EXCEPTIONS = [
+    // Environment parsing boundary.
     "src/config/env.ts",
-    "src/lsp/client.ts",
-    "src/lsp/config.ts",
+    // Current side-effect boundary.
     "src/tools/**/*.ts",
-    "src/ui/index.ts"
+    // Transitional non-tool modules still pending migration.
+    "src/agent/lsp-bootstrap/autoprovision.ts",
+    "src/agent/scripts.ts"
 ];
 
 export default [
@@ -130,7 +128,7 @@ export default [
         rules: {
             /*
              * Phase 1 guardrail: prevent adding new side-effect imports/env access
-             * outside approved boundary files. Existing exceptions are temporary.
+             * outside approved boundary files.
              */
             "no-restricted-imports": [
                 "error",
@@ -179,7 +177,7 @@ export default [
         }
     },
     {
-        files: TEMPORARY_SIDE_EFFECT_RULE_EXCEPTIONS,
+        files: SIDE_EFFECT_RULE_EXCEPTIONS,
         rules: {
             "no-restricted-imports": "off",
             "no-restricted-properties": "off"

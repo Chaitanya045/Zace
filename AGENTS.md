@@ -94,22 +94,40 @@ src/
 ├── cli/                  # CLI wiring and command definitions
 │   └── program.ts
 │
-├── agent/                # Core agent logic
-│   ├── loop.ts           # Planner–executor loop
-│   ├── planner.ts        # Task planning
-│   ├── executor.ts       # Tool execution orchestration
-│   ├── state.ts          # Agent state machine
-│   └── memory.ts         # In-memory messages & summaries
+├── agent/                # Core runtime orchestration and policy
+│   ├── loop.ts           # Compatibility facade
+│   ├── core/             # Main run loop phases
+│   ├── planner/          # Planner schema/parse/repair helpers
+│   ├── completion/       # Completion gate evaluation
+│   └── lsp-bootstrap/    # Runtime LSP bootstrap/autoprovision logic
 │
-├── llm/                  # Model abstraction layer
-│   ├── client.ts         # LLM client wrapper
-│   └── types.ts          # Request/response types
+├── llm/                  # Model abstraction layer + compatibility pipeline
+│   ├── client.ts
+│   ├── types.ts
+│   └── compat/
+│
+├── lsp/                  # LSP config/runtime client management
+│   ├── index.ts
+│   ├── client.ts
+│   └── config.ts
+│
+├── permission/           # Permission memory/ruleset resolution
+├── session/              # Session storage + processor helpers
 │
 ├── tools/                # Side-effect boundary
-│   ├── fs.ts             # File system operations
-│   ├── shell.ts          # Shell command execution
-│   ├── git.ts            # Git helpers (status, diff)
-│   └── index.ts          # Tool registry
+│   ├── index.ts          # Tool registry bootstrap
+│   ├── registry.ts
+│   ├── bash.ts
+│   ├── shell.ts          # Facade re-export
+│   ├── shell/            # Shell tool implementation
+│   ├── session.ts
+│   ├── session-history.ts
+│   └── system/           # Low-level fs/process wrappers
+│
+├── ui/                   # Textual bridge + plain fallback UI
+│   ├── index.ts
+│   ├── plain-fallback.ts
+│   └── bridge/
 │
 ├── prompts/              # Versioned prompts
 │   ├── system.ts
@@ -136,8 +154,8 @@ src/
 
 ### 1. Tool Boundary (Critical)
 
-- The agent **must not** import `fs`, `child_process`, or Bun shell APIs directly.
-- All side effects **must** go through `src/tools/*`.
+- Non-tool modules **must not** import `fs`, `child_process`, or Bun shell APIs directly.
+- Side effects **must** go through `src/tools/*` (or `config/env.ts` for validated environment access).
 - Tools are:
   - Named
   - Typed
@@ -201,7 +219,7 @@ Never inline prompts inside logic.
 bun install
 
 # Run the CLI locally
-bun run src/index.ts "your task here"
+bun run src/index.ts
 
 # Run linting
 bun lint
