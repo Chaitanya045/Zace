@@ -1,9 +1,9 @@
-import { stat } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 
 import type { LlmClient } from "../../../llm/client";
 import type { AgentConfig } from "../../../types/config";
 
+import { fsStat as stat } from "../../../tools/system/fs";
 import { assessCommandSafety } from "../../safety";
 import { SCRIPT_DIRECTORY_PATH } from "../../scripts";
 

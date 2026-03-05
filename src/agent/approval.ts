@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
 
@@ -14,6 +13,11 @@ import {
   readSessionEntries,
 } from "../tools/session";
 import { buildExecuteCommandSignature } from "../tools/shell";
+import {
+  fsMkdir as mkdir,
+  fsReadFile as readFile,
+  fsWriteFile as writeFile,
+} from "../tools/system/fs";
 import { assessApprovalResponse } from "./safety";
 
 export type ApprovalDecision = "allow" | "deny";

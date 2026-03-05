@@ -1,5 +1,6 @@
-import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
+
+import { fsAccess as access, fsReadFile as readFile } from "../tools/system/fs";
 
 export interface CompletionGate {
   command: string;
