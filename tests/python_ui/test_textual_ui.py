@@ -4,6 +4,8 @@ from typing import Any
 
 import pytest
 from rich.align import Align
+from rich.padding import Padding
+from rich.text import Text
 from textual import events
 from textual.containers import Vertical
 from textual.css.query import NoMatches
@@ -115,6 +117,18 @@ def build_app(fake_bridge: FakeBridge) -> ZaceTextualApp:
         ),
         workdir=".",
     )
+
+
+def extract_chat_line_text(line: Align) -> str:
+    renderable = line.renderable
+    if isinstance(renderable, Padding):
+        inner = renderable.renderable
+        if isinstance(inner, Text):
+            return inner.plain
+        return str(inner)
+    if isinstance(renderable, Text):
+        return renderable.plain
+    return str(renderable)
 
 
 @pytest.mark.asyncio
@@ -378,6 +392,28 @@ def test_chat_line_alignment_is_role_based() -> None:
     assert assistant_line.align == "left"
 
 
+def test_assistant_chat_line_hides_final_state_suffix() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    assistant_line = app._build_chat_line("assistant", "hi", "waiting_for_user")
+    plain_text = extract_chat_line_text(assistant_line)
+
+    assert "agent: hi" in plain_text
+    assert "(waiting_for_user)" not in plain_text
+
+
+def test_non_assistant_chat_line_keeps_final_state_suffix() -> None:
+    fake_bridge = FakeBridge()
+    app = build_app(fake_bridge)
+
+    system_line = app._build_chat_line("system", "note", "waiting_for_user")
+    plain_text = extract_chat_line_text(system_line)
+
+    assert "system: note" in plain_text
+    assert "(waiting_for_user)" in plain_text
+
+
 @pytest.mark.asyncio
 async def test_welcome_hides_after_submit() -> None:
     fake_bridge = FakeBridge()
@@ -474,6 +510,10 @@ async def test_streaming_chat_chunks_merge_into_single_message() -> None:
         assert len(app._chat_items) == 1
         assert app._chat_items[0]["text"] == "Hello world"
         assert app._chat_items[0]["final_state"] == "completed"
+
+        log = app.query_one("#chat_log", RichLog)
+        assert len(log.lines) == 1
+        assert "(completed)" not in log.lines[0].text
 
 
 @pytest.mark.asyncio

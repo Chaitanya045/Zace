@@ -31,7 +31,7 @@ def build_chat_line(role: str, text: str, final_state: str | None, edge_padding:
     line.append(label, style=label_style)
     line.append(": ")
     line.append(text)
-    if final_state:
+    if final_state and role != "assistant":
         line.append(f" ({final_state})", style="#88D498")
 
     if role == "user":
