@@ -40,6 +40,7 @@ export const SessionProcessor = {
       abortSignal: input.abortSignal,
       approvedCommandSignaturesOnce: input.approvedCommandSignaturesOnce,
       approvedPermissionsOnce: input.approvedPermissionsOnce,
+      deferLongTermMemoryPersistence: true,
       executeToolCall: input.executeToolCall,
       observer: input.observer,
       onProcessorEvent: input.onProcessorEvent,

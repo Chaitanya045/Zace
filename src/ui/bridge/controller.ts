@@ -49,6 +49,7 @@ const HELP_TEXT = [
   "- Ctrl+C: interrupt running turn (press again to force exit)",
   "- F1 or ?: open help",
 ].join("\n");
+const ASSISTANT_STREAM_DELAY_MS = 8;
 
 const STATUS_PROMPT_OPTIONS = {
   approval: [
@@ -204,10 +205,12 @@ export class BridgeController {
 
     this.turns = [...sessionState.turns];
     this.pendingApproval = sessionState.pendingApproval;
-    this.pendingPermission = await findOpenPendingPermission({
-      maxAgeMs: this.config.pendingActionMaxAgeMs,
-      sessionId: this.sessionId,
-    });
+    this.pendingPermission = this.config.approvalMemoryEnabled
+      ? await findOpenPendingPermission({
+        maxAgeMs: this.config.pendingActionMaxAgeMs,
+        sessionId: this.sessionId,
+      })
+      : null;
     this.pendingFollowUpQuestion = sessionState.pendingFollowUpQuestion;
 
     this.updateState({
@@ -432,7 +435,7 @@ export class BridgeController {
         timestamp: Date.now(),
         type: "chat_message",
       });
-      await delay(12);
+      await delay(ASSISTANT_STREAM_DELAY_MS);
     }
 
     this.emitEvent({
@@ -723,19 +726,25 @@ export class BridgeController {
       });
 
       if (result.finalState === "waiting_for_user") {
-        const refreshedSessionState = await loadSessionState(
-          this.sessionId,
-          this.config.pendingActionMaxAgeMs,
-          this.config.approvalMemoryEnabled,
-          this.config.interruptedRunRecoveryEnabled
-        );
+        if (this.config.approvalMemoryEnabled) {
+          const refreshedSessionState = await loadSessionState(
+            this.sessionId,
+            this.config.pendingActionMaxAgeMs,
+            this.config.approvalMemoryEnabled,
+            this.config.interruptedRunRecoveryEnabled
+          );
 
-        this.pendingApproval = refreshedSessionState.pendingApproval;
-        this.pendingPermission = await findOpenPendingPermission({
-          maxAgeMs: this.config.pendingActionMaxAgeMs,
-          sessionId: this.sessionId,
-        });
-        this.pendingFollowUpQuestion = refreshedSessionState.pendingFollowUpQuestion ?? result.message;
+          this.pendingApproval = refreshedSessionState.pendingApproval;
+          this.pendingPermission = await findOpenPendingPermission({
+            maxAgeMs: this.config.pendingActionMaxAgeMs,
+            sessionId: this.sessionId,
+          });
+          this.pendingFollowUpQuestion = refreshedSessionState.pendingFollowUpQuestion ?? result.message;
+        } else {
+          this.pendingApproval = undefined;
+          this.pendingPermission = null;
+          this.pendingFollowUpQuestion = result.message;
+        }
 
         this.updateState({
           hasPendingApproval: Boolean(this.pendingApproval),

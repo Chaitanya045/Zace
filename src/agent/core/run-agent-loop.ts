@@ -57,6 +57,7 @@ export interface RunAgentLoopOptions {
   abortSignal?: AbortSignalLike;
   approvedCommandSignaturesOnce?: string[];
   approvedPermissionsOnce?: Array<{ pattern: string; permission: string }>;
+  deferLongTermMemoryPersistence?: boolean;
   executeToolCall?: (
     toolCall: {
       arguments: Record<string, unknown>;
@@ -88,6 +89,28 @@ export function ensureUserFacingQuestion(message: string): string {
   return `${trimmed} What should I do next?`;
 }
 
+const deferredLongTermMemoryByWorkspace = new Map<string, Promise<void>>();
+
+function scheduleDeferredLongTermMemoryWrite(
+  workspaceRoot: string,
+  writeOperation: () => Promise<void>
+): void {
+  const previous = deferredLongTermMemoryByWorkspace.get(workspaceRoot) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(writeOperation)
+    .catch((error) => {
+      logError("Failed to persist deferred turn long-term memory", error);
+    })
+    .finally(() => {
+      if (deferredLongTermMemoryByWorkspace.get(workspaceRoot) === next) {
+        deferredLongTermMemoryByWorkspace.delete(workspaceRoot);
+      }
+    });
+
+  deferredLongTermMemoryByWorkspace.set(workspaceRoot, next);
+}
+
 export async function runAgentLoop(
   client: LlmClient,
   config: AgentConfig,
@@ -100,6 +123,7 @@ export async function runAgentLoop(
   const observer = options?.observer;
   const sessionId = options?.sessionId;
   const abortSignal = options?.abortSignal;
+  const workspaceRoot = process.cwd();
   const runStartedAt = new Date();
   const toolExecutionContext: ToolExecutionContext | undefined = abortSignal
     ? { abortSignal }
@@ -180,19 +204,27 @@ export async function runAgentLoop(
     });
 
     try {
-      await recordTurnFinalization({
-        assistantMessage: result.message,
-        compactionSummaryPaths,
-        context: result.context,
-        endedAt: new Date(),
-        finalReason: reason,
-        finalState: result.finalState,
-        runId,
-        sessionId,
-        startedAt: runStartedAt,
-        success: result.success,
-        task,
-      });
+      const persistLongTermMemory = async (): Promise<void> => {
+        await recordTurnFinalization({
+          assistantMessage: result.message,
+          compactionSummaryPaths,
+          context: result.context,
+          endedAt: new Date(),
+          finalReason: reason,
+          finalState: result.finalState,
+          runId,
+          sessionId,
+          startedAt: runStartedAt,
+          success: result.success,
+          task,
+          workspaceRoot,
+        });
+      };
+      if (options?.deferLongTermMemoryPersistence) {
+        scheduleDeferredLongTermMemoryWrite(workspaceRoot, persistLongTermMemory);
+      } else {
+        await persistLongTermMemory();
+      }
     } catch (error) {
       logError("Failed to persist turn long-term memory", error);
     }

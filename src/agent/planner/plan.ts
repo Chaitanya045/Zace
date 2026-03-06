@@ -89,10 +89,15 @@ export async function plan(
   const prompt = buildPlannerPrompt(context, options?.completionCriteria, {
     completionRequireLsp: options?.completionRequireLsp,
   });
-  const baseMessages = injectSystemContextMessage([
+  const plannerConversationMessages = [
     ...memory.getMessages(),
     { content: prompt, role: "user" as const },
-  ], brainContext.message.content);
+  ];
+  const baseMessages = injectSystemContextMessage(
+    plannerConversationMessages,
+    brainContext.message.content
+  );
+  const leanPlannerMessages = [...plannerConversationMessages];
   const plannerOutputMode = options?.plannerOutputMode ?? "auto";
   const plannerSchemaStrict = options?.plannerSchemaStrict ?? true;
   const maxInvalidArtifactChars = Math.max(200, options?.plannerMaxInvalidArtifactChars ?? 4_000);
@@ -134,6 +139,7 @@ export async function plan(
   const invokePlannerModel = async (
     input: {
       forceNormalizeToolRole?: boolean;
+      messages?: LlmMessage[];
       stream: boolean;
       transportStructured: boolean;
     }
@@ -146,7 +152,7 @@ export async function plan(
       return await client.chat(
         {
           callKind: "planner",
-          messages: baseMessages,
+          messages: input.messages ?? baseMessages,
           ...(input.forceNormalizeToolRole ? { normalizeToolRole: true } : {}),
           ...(input.transportStructured
             ? {
@@ -369,7 +375,7 @@ export async function plan(
       {
         callKind: "planner",
         messages: [
-          ...baseMessages,
+          ...leanPlannerMessages,
           { content: lastInvalidContent, role: "assistant" as const },
           { content: buildPlannerJsonRepairPrompt(lastInvalidContent), role: "user" as const },
         ],
@@ -413,7 +419,7 @@ export async function plan(
       {
         callKind: "planner",
         messages: [
-          ...baseMessages,
+          ...leanPlannerMessages,
           { content: lastInvalidContent, role: "assistant" as const },
           { content: buildPlannerJsonRetryPrompt(lastInvalidContent), role: "user" as const },
         ],

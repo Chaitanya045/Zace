@@ -23,7 +23,7 @@ export async function loadPermissionRuleset(input: {
   sessionId?: string;
   workspaceRoot?: string;
 }): Promise<PermissionNext.Ruleset> {
-  if (!input.sessionId) {
+  if (!input.config.approvalMemoryEnabled || !input.sessionId) {
     return [];
   }
 

@@ -232,6 +232,7 @@ export async function runPlainChatMode(
         abortSignal: activeAbortController.signal,
         approvedCommandSignaturesOnce,
         approvedPermissionsOnce,
+        deferLongTermMemoryPersistence: true,
         observer: streamObserver,
         sessionId,
       });

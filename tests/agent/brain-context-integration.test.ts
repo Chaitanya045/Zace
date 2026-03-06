@@ -147,4 +147,59 @@ describe("brain context integration", () => {
       await rm(workspaceRoot, { force: true, recursive: true });
     }
   });
+
+  test("planner repair calls stay lean and omit persistent brain context", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "zace-brain-plan-repair-"));
+    const originalCwd = process.cwd();
+    const seenMessages: LlmMessage[][] = [];
+
+    try {
+      await seedBrainWorkspace(workspaceRoot);
+      process.chdir(workspaceRoot);
+
+      const llmClient = {
+        chat: async (request: { messages: LlmMessage[] }) => {
+          seenMessages.push(request.messages);
+          if (seenMessages.length === 1) {
+            return {
+              content: "Planning: malformed output",
+            };
+          }
+
+          return {
+            content: JSON.stringify({
+              action: "continue",
+              reasoning: "Inspect repository state first.",
+              toolCall: {
+                arguments: {
+                  command: "rg -n auth src",
+                },
+                name: "bash",
+              },
+            }),
+          };
+        },
+      } as unknown as LlmClient;
+
+      await plan(llmClient, createPlannerContext(), {
+        getMessages: () => [
+          {
+            content: "system prompt",
+            role: "system",
+          },
+        ],
+      });
+
+      expect(seenMessages.length).toBeGreaterThanOrEqual(2);
+      expect(
+        seenMessages[0]?.some((message) => message.content.includes("PERSISTENT BRAIN CONTEXT (PLANNER)"))
+      ).toBeTrue();
+      expect(
+        seenMessages[1]?.some((message) => message.content.includes("PERSISTENT BRAIN CONTEXT (PLANNER)"))
+      ).toBeFalse();
+    } finally {
+      process.chdir(originalCwd);
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
 });

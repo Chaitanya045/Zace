@@ -104,45 +104,47 @@ export async function runStartupPhase<TResult>(input: {
 }> {
   let context = input.context;
 
-  const discoveredScripts = await input.runToolCall({
-    arguments: {
-      command: DISCOVER_SCRIPTS_COMMAND,
-      timeout: 30_000,
-    },
-    name: "bash",
-  }, input.toolExecutionContext);
-  if (discoveredScripts.artifacts?.lifecycleEvent === "abort" || discoveredScripts.artifacts?.aborted) {
-    return {
-      context,
-      finalizedResult: await input.finalizeInterrupted({
-        reason: "startup_command_aborted",
-        step: 0,
-        toolCall: {
-          arguments: {
-            command: DISCOVER_SCRIPTS_COMMAND,
-            timeout: 30_000,
+  if (input.config.runtimeScriptEnforced ?? false) {
+    const discoveredScripts = await input.runToolCall({
+      arguments: {
+        command: DISCOVER_SCRIPTS_COMMAND,
+        timeout: 30_000,
+      },
+      name: "bash",
+    }, input.toolExecutionContext);
+    if (discoveredScripts.artifacts?.lifecycleEvent === "abort" || discoveredScripts.artifacts?.aborted) {
+      return {
+        context,
+        finalizedResult: await input.finalizeInterrupted({
+          reason: "startup_command_aborted",
+          step: 0,
+          toolCall: {
+            arguments: {
+              command: DISCOVER_SCRIPTS_COMMAND,
+              timeout: 30_000,
+            },
+            name: "bash",
           },
-          name: "bash",
-        },
-        toolResult: discoveredScripts,
-      }),
-    };
-  }
-  const discoveredCatalogUpdate = updateScriptCatalogFromOutput(
-    context.scriptCatalog,
-    discoveredScripts.output,
-    0
-  );
-  context = updateScriptCatalog(context, discoveredCatalogUpdate.catalog);
-  await syncScriptRegistry(
-    context.scriptCatalog,
-    (toolCall) => input.runToolCall(toolCall, input.toolExecutionContext)
-  );
-  if (discoveredCatalogUpdate.notes.length > 0) {
-    input.memory.addMessage(
-      "assistant",
-      `Startup script discovery complete. Registered or updated ${discoveredCatalogUpdate.notes.length} scripts in ${SCRIPT_REGISTRY_PATH}.`
+          toolResult: discoveredScripts,
+        }),
+      };
+    }
+    const discoveredCatalogUpdate = updateScriptCatalogFromOutput(
+      context.scriptCatalog,
+      discoveredScripts.output,
+      0
     );
+    context = updateScriptCatalog(context, discoveredCatalogUpdate.catalog);
+    await syncScriptRegistry(
+      context.scriptCatalog,
+      (toolCall) => input.runToolCall(toolCall, input.toolExecutionContext)
+    );
+    if (discoveredCatalogUpdate.notes.length > 0) {
+      input.memory.addMessage(
+        "assistant",
+        `Startup script discovery complete. Registered or updated ${discoveredCatalogUpdate.notes.length} scripts in ${SCRIPT_REGISTRY_PATH}.`
+      );
+    }
   }
   let discoveredDocCandidates: string[] = [];
   if (input.config.docContextMode !== "off") {

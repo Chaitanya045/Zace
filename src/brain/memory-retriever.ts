@@ -28,8 +28,13 @@ const MEMORY_QUERY_STOP_WORDS = new Set([
   "for",
   "from",
   "have",
+  "help",
   "into",
+  "just",
+  "like",
+  "make",
   "need",
+  "please",
   "repo",
   "that",
   "the",
@@ -42,6 +47,8 @@ const RIPGREP_PATTERN_LIMIT = 12;
 const RIPGREP_MATCH_LIMIT = 48;
 const SNIPPET_CHAR_LIMIT = 280;
 const IMPORTANT_FILE_LIMIT = 8;
+const RECENT_EPISODIC_LOG_SEARCH_LIMIT = 24;
+const RECENT_SUMMARY_SEARCH_LIMIT = 24;
 const RETRIEVED_SNIPPET_LIMIT = 8;
 
 type MemoryGraphFileContext = {
@@ -279,14 +286,20 @@ async function collectMarkdownSearchFiles(paths: BrainPaths): Promise<Array<{
     },
   ];
 
-  for (const directoryEntry of await listMarkdownFiles(paths.sessionLogsDirectory)) {
+  for (const directoryEntry of await listMarkdownFiles(
+    paths.sessionLogsDirectory,
+    RECENT_EPISODIC_LOG_SEARCH_LIMIT
+  )) {
     files.push({
       filePath: directoryEntry,
       sourceType: "episodic_log",
     });
   }
 
-  for (const directoryEntry of await listMarkdownFiles(paths.summariesDirectory)) {
+  for (const directoryEntry of await listMarkdownFiles(
+    paths.summariesDirectory,
+    RECENT_SUMMARY_SEARCH_LIMIT
+  )) {
     files.push({
       filePath: directoryEntry,
       sourceType: "summary",
@@ -296,21 +309,27 @@ async function collectMarkdownSearchFiles(paths: BrainPaths): Promise<Array<{
   return files;
 }
 
-async function listMarkdownFiles(directoryPath: string): Promise<string[]> {
+async function listMarkdownFiles(
+  directoryPath: string,
+  limit = Number.POSITIVE_INFINITY
+): Promise<string[]> {
   try {
     const entries = await fsReaddir(directoryPath, { withFileTypes: true });
     const nestedPaths = await Promise.all(
       entries.map(async (entry) => {
         const entryPath = join(directoryPath, entry.name);
         if (entry.isDirectory()) {
-          return await listMarkdownFiles(entryPath);
+          return await listMarkdownFiles(entryPath, limit);
         }
 
         return entry.name.endsWith(".md") ? [entryPath] : [];
       })
     );
 
-    return nestedPaths.flat().sort((left, right) => left.localeCompare(right));
+    return nestedPaths
+      .flat()
+      .sort((left, right) => right.localeCompare(left))
+      .slice(0, limit);
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return [];
@@ -547,6 +566,17 @@ async function searchMarkdownMemories(
   const matches = ripgrepMatches ?? await scanFilesWithoutRipgrep(markdownFiles, input.keywords);
   const sourceTypeByPath = new Map(markdownFiles.map((entry) => [entry.filePath, entry.sourceType]));
   const seenMatchKeys = new Set<string>();
+  const timestampCache = new Map<string, Promise<number | undefined>>();
+  const getCachedTimestamp = (filePath: string): Promise<number | undefined> => {
+    const existing = timestampCache.get(filePath);
+    if (existing) {
+      return existing;
+    }
+
+    const pending = statTimestamp(filePath);
+    timestampCache.set(filePath, pending);
+    return pending;
+  };
   const snippets = await Promise.all(
     matches.map(async (match) => {
       const matchKey = `${match.filePath}:${String(match.lineNumber)}`;
@@ -562,7 +592,7 @@ async function searchMarkdownMemories(
         lineNumber: match.lineNumber,
         score:
           keywordMatches * 10 +
-          computeRecencyBonus(await statTimestamp(match.filePath)) +
+          computeRecencyBonus(await getCachedTimestamp(match.filePath)) +
           (pathMatchesContext(relativeSourcePath, input.relevantFiles) ? 2 : 0) +
           computeFileImportanceBonus(match.text, input.importantFiles, match.filePath, input.workspaceRoot),
         sourcePath: relativeSourcePath,
