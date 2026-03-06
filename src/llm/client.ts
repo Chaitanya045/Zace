@@ -6,6 +6,7 @@ import { log } from "../utils/logger";
 import { classifyProviderError, normalizeMessagesForTransport } from "./compat";
 
 type ChatOptions = {
+  abortSignal?: AbortSignal;
   onToken?: (token: string) => void;
   stream?: boolean;
 };
@@ -257,7 +258,11 @@ export class LlmClient {
       const shouldStream = options?.stream ?? this.streamByDefault;
 
       if (shouldStream) {
-        const streamResponse = await this.chatStream(transportRequest.request, options?.onToken);
+        const streamResponse = await this.chatStream(
+          transportRequest.request,
+          options?.onToken,
+          options?.abortSignal
+        );
         if (transportRequest.reasons.length === 0) {
           return streamResponse;
         }
@@ -273,7 +278,7 @@ export class LlmClient {
         body: JSON.stringify(buildChatRequestBody(this.model, transportRequest.request, { stream: false })),
         headers: this.getRequestHeaders(),
         method: "POST",
-        signal: this.composeRequestSignal(this.llmRequestTimeoutMs),
+        signal: this.composeRequestSignal(this.llmRequestTimeoutMs, options?.abortSignal),
       });
 
       if (!response.ok) {
@@ -335,13 +340,21 @@ export class LlmClient {
     }
   }
 
-  private async chatStream(request: LlmRequest, onToken?: (token: string) => void): Promise<LlmResponse> {
+  private async chatStream(
+    request: LlmRequest,
+    onToken?: (token: string) => void,
+    abortSignal?: AbortSignal
+  ): Promise<LlmResponse> {
     const streamAbortController = new AbortController();
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       body: JSON.stringify(buildChatRequestBody(this.model, request, { stream: true })),
       headers: this.getRequestHeaders(),
       method: "POST",
-      signal: this.composeRequestSignal(this.llmRequestTimeoutMs, streamAbortController.signal),
+      signal: this.composeRequestSignal(
+        this.llmRequestTimeoutMs,
+        abortSignal,
+        streamAbortController.signal
+      ),
     });
 
     if (!response.ok) {
@@ -427,13 +440,19 @@ export class LlmClient {
     };
   }
 
-  private composeRequestSignal(timeoutMs: number, inputSignal?: AbortSignal): AbortSignal {
+  private composeRequestSignal(
+    timeoutMs: number,
+    ...inputSignals: Array<AbortSignal | undefined>
+  ): AbortSignal {
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    if (!inputSignal) {
+    const activeSignals = inputSignals.filter(
+      (signal): signal is AbortSignal => signal !== undefined
+    );
+    if (activeSignals.length === 0) {
       return timeoutSignal;
     }
 
-    return AbortSignal.any([inputSignal, timeoutSignal]);
+    return AbortSignal.any([timeoutSignal, ...activeSignals]);
   }
 
   private async readStreamChunkWithIdleTimeout(

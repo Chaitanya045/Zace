@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { LlmClient } from "../llm/client";
-import type { ToolCall, ToolExecutionContext, ToolResult } from "../types/tool";
+import type { AbortSignalLike, ToolCall, ToolExecutionContext, ToolResult } from "../types/tool";
 
 import { buildExecutorPrompt, type ExecutorRetryContext } from "../prompts/executor";
 import { buildSystemPrompt } from "../prompts/system";
@@ -22,6 +22,7 @@ export interface ToolAnalysisResult {
 }
 
 type ExecuteOptions = {
+  abortSignal?: AbortSignalLike;
   onStreamEnd?: () => void;
   onStreamStart?: () => void;
   onStreamToken?: (token: string) => void;
@@ -98,6 +99,9 @@ export async function analyzeToolResult(
   if (options?.stream) {
     options.onStreamStart?.();
   }
+  const abortChatOptions = options?.abortSignal
+    ? { abortSignal: options.abortSignal as AbortSignal }
+    : undefined;
   let response: Awaited<ReturnType<LlmClient["chat"]>>;
   try {
     response = await client.chat(
@@ -107,12 +111,13 @@ export async function analyzeToolResult(
       },
       options?.stream
         ? {
+          ...(abortChatOptions ?? {}),
           onToken: (token) => {
             options.onStreamToken?.(token);
           },
           stream: true,
         }
-        : undefined
+        : abortChatOptions
     );
   } finally {
     if (options?.stream) {

@@ -50,6 +50,28 @@ const BASE_REQUEST: LlmRequest = {
 };
 
 describe("llm client timeout guardrails", () => {
+  test("aborts hanging non-stream request when caller signal aborts", async () => {
+    const originalFetch = globalThis.fetch;
+    const seenSignals: AbortSignal[] = [];
+    globalThis.fetch = createAbortAwareHangingFetch(seenSignals);
+
+    try {
+      const client = createClient({ llmRequestTimeoutMs: 60_000 });
+      const abortController = new AbortController();
+      const requestPromise = client.chat(BASE_REQUEST, {
+        abortSignal: abortController.signal,
+        stream: false,
+      });
+      abortController.abort(new Error("manual_abort"));
+
+      await expect(requestPromise).rejects.toThrow("Failed to call LLM");
+      expect(seenSignals).toHaveLength(1);
+      expect(seenSignals[0]?.aborted).toBeTrue();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("times out hanging non-stream request and passes fetch signal", async () => {
     const originalFetch = globalThis.fetch;
     const seenSignals: AbortSignal[] = [];

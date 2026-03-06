@@ -2,6 +2,7 @@ import type { PlannerOutputMode } from "../../config/env";
 import type { LlmClient } from "../../llm/client";
 import type { LlmMessage, LlmUsage } from "../../llm/types";
 import type { AgentContext } from "../../types/agent";
+import type { AbortSignalLike } from "../../types/tool";
 
 import { buildPlannerPrompt } from "../../prompts/planner";
 import { LlmError } from "../../utils/errors";
@@ -39,6 +40,7 @@ export interface PlanResult {
 }
 
 type PlanOptions = {
+  abortSignal?: AbortSignalLike;
   completionCriteria?: string[];
   completionRequireLsp?: boolean;
   onStreamEnd?: () => void;
@@ -88,6 +90,9 @@ export async function plan(
   const maxInvalidArtifactChars = Math.max(200, options?.plannerMaxInvalidArtifactChars ?? 4_000);
   const maxRepairs = Math.max(0, options?.plannerParseMaxRepairs ?? 2);
   const retryOnFailure = options?.plannerParseRetryOnFailure ?? true;
+  const abortChatOptions = options?.abortSignal
+    ? { abortSignal: options.abortSignal as AbortSignal }
+    : undefined;
 
   let usage: LlmUsage | undefined;
   let llmRequestNormalized = false;
@@ -148,12 +153,13 @@ export async function plan(
         },
         input.stream
           ? {
+              ...(abortChatOptions ?? {}),
               onToken: (token) => {
                 options?.onStreamToken?.(token);
               },
               stream: true,
             }
-          : undefined
+          : abortChatOptions
       );
     } finally {
       if (input.stream) {
@@ -351,14 +357,17 @@ export async function plan(
   }
 
   for (let repairAttempt = 0; repairAttempt < maxRepairs; repairAttempt += 1) {
-    const repairResponse = await client.chat({
-      callKind: "planner",
-      messages: [
-        ...baseMessages,
-        { content: lastInvalidContent, role: "assistant" as const },
-        { content: buildPlannerJsonRepairPrompt(lastInvalidContent), role: "user" as const },
-      ],
-    });
+    const repairResponse = await client.chat(
+      {
+        callKind: "planner",
+        messages: [
+          ...baseMessages,
+          { content: lastInvalidContent, role: "assistant" as const },
+          { content: buildPlannerJsonRepairPrompt(lastInvalidContent), role: "user" as const },
+        ],
+      },
+      abortChatOptions
+    );
     if (repairResponse.normalized?.reasons && repairResponse.normalized.reasons.length > 0) {
       llmRequestNormalized = true;
       for (const reason of repairResponse.normalized.reasons) {
@@ -392,14 +401,17 @@ export async function plan(
   }
 
   if (retryOnFailure) {
-    const retryResponse = await client.chat({
-      callKind: "planner",
-      messages: [
-        ...baseMessages,
-        { content: lastInvalidContent, role: "assistant" as const },
-        { content: buildPlannerJsonRetryPrompt(lastInvalidContent), role: "user" as const },
-      ],
-    });
+    const retryResponse = await client.chat(
+      {
+        callKind: "planner",
+        messages: [
+          ...baseMessages,
+          { content: lastInvalidContent, role: "assistant" as const },
+          { content: buildPlannerJsonRetryPrompt(lastInvalidContent), role: "user" as const },
+        ],
+      },
+      abortChatOptions
+    );
     if (retryResponse.normalized?.reasons && retryResponse.normalized.reasons.length > 0) {
       llmRequestNormalized = true;
       for (const reason of retryResponse.normalized.reasons) {

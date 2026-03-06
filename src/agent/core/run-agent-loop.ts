@@ -423,6 +423,7 @@ export async function runAgentLoop(
         step: stepNumber,
       });
       const planResult = await plan(client, loopState.context, memory, {
+        abortSignal,
         completionCriteria: getCompletionCriteria(),
         completionRequireLsp: config.completionRequireLsp,
         ...createLlmStreamCallbacks({

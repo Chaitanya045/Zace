@@ -773,6 +773,7 @@ export async function handleExecutionPhase<TResult>(input: {
               step: input.stepNumber,
               toolName: toolCall.name,
             }),
+            abortSignal: input.abortSignal,
             retryContext: {
               attempt,
               maxRetries: retryConfiguration.maxRetries,
