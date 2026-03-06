@@ -4,6 +4,7 @@ import type { LlmMessage, LlmUsage } from "../../llm/types";
 import type { AgentContext } from "../../types/agent";
 import type { AbortSignalLike } from "../../types/tool";
 
+import { buildBrainContextMessage, injectSystemContextMessage } from "../../brain";
 import { buildPlannerPrompt } from "../../prompts/planner";
 import { LlmError } from "../../utils/errors";
 import { logStep } from "../../utils/logger";
@@ -78,13 +79,18 @@ export async function plan(
 ): Promise<PlanResult> {
   logStep(context.currentStep + 1, "Planning next action");
 
+  const brainContext = await buildBrainContextMessage({
+    callKind: "planner",
+    query: context.task,
+    relevantFiles: Array.from(context.fileSummaries.keys()),
+  });
   const prompt = buildPlannerPrompt(context, options?.completionCriteria, {
     completionRequireLsp: options?.completionRequireLsp,
   });
-  const baseMessages = [
+  const baseMessages = injectSystemContextMessage([
     ...memory.getMessages(),
     { content: prompt, role: "user" as const },
-  ];
+  ], brainContext.message.content);
   const plannerOutputMode = options?.plannerOutputMode ?? "auto";
   const plannerSchemaStrict = options?.plannerSchemaStrict ?? true;
   const maxInvalidArtifactChars = Math.max(200, options?.plannerMaxInvalidArtifactChars ?? 4_000);

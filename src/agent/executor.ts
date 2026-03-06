@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { LlmClient } from "../llm/client";
 import type { AbortSignalLike, ToolCall, ToolExecutionContext, ToolResult } from "../types/tool";
 
+import { buildBrainContextMessage } from "../brain";
 import { buildExecutorPrompt, type ExecutorRetryContext } from "../prompts/executor";
 import { buildSystemPrompt } from "../prompts/system";
 import { toolRegistry } from "../tools";
@@ -84,6 +85,16 @@ export async function analyzeToolResult(
 ): Promise<ToolAnalysisResult> {
   // Use LLM to analyze the result
   const prompt = buildExecutorPrompt(toolCall, toolResult, options?.retryContext);
+  const toolResultExcerpt = toolResult.output.slice(0, 400);
+  const brainContext = await buildBrainContextMessage({
+    callKind: "executor",
+    query: [
+      toolCall.name,
+      JSON.stringify(toolCall.arguments),
+      toolResultExcerpt,
+      toolResult.error ?? "",
+    ].join("\n"),
+  });
 
   // Build focused system prompt for execution analysis
   const systemPrompt = buildSystemPrompt({
@@ -92,7 +103,10 @@ export async function analyzeToolResult(
   });
 
   const messages = [
-    { content: systemPrompt, role: "system" as const },
+    {
+      content: `${systemPrompt}\n\n${brainContext.message.content}`,
+      role: "system" as const,
+    },
     { content: prompt, role: "user" as const },
   ];
 
