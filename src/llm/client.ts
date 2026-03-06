@@ -35,6 +35,17 @@ type ParsedProviderError = {
   responseFormatUnsupported: boolean;
 };
 
+const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 45_000;
+const DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS = 20_000;
+
+function resolvePositiveTimeout(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+
+  return Math.trunc(value);
+}
+
 function parseNonNegativeInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return undefined;
@@ -204,6 +215,8 @@ export class LlmClient {
   private readonly configuredContextWindowTokens?: number;
   private modelContextWindowPromise: null | Promise<number | undefined> = null;
   private readonly model: string;
+  private readonly llmRequestTimeoutMs: number;
+  private readonly llmStreamIdleTimeoutMs: number;
   private readonly normalizeToolRoleByDefault: boolean;
   private readonly streamByDefault: boolean;
 
@@ -211,6 +224,14 @@ export class LlmClient {
     this.apiKey = config.llmApiKey;
     this.baseUrl = "https://openrouter.ai/api/v1";
     this.configuredContextWindowTokens = config.contextWindowTokens;
+    this.llmRequestTimeoutMs = resolvePositiveTimeout(
+      config.llmRequestTimeoutMs,
+      DEFAULT_LLM_REQUEST_TIMEOUT_MS
+    );
+    this.llmStreamIdleTimeoutMs = resolvePositiveTimeout(
+      config.llmStreamIdleTimeoutMs,
+      DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS
+    );
     this.model = config.llmModel;
     this.normalizeToolRoleByDefault = config.llmCompatNormalizeToolRole;
     this.streamByDefault = config.stream;
@@ -252,6 +273,7 @@ export class LlmClient {
         body: JSON.stringify(buildChatRequestBody(this.model, transportRequest.request, { stream: false })),
         headers: this.getRequestHeaders(),
         method: "POST",
+        signal: this.composeRequestSignal(this.llmRequestTimeoutMs),
       });
 
       if (!response.ok) {
@@ -314,10 +336,12 @@ export class LlmClient {
   }
 
   private async chatStream(request: LlmRequest, onToken?: (token: string) => void): Promise<LlmResponse> {
+    const streamAbortController = new AbortController();
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       body: JSON.stringify(buildChatRequestBody(this.model, request, { stream: true })),
       headers: this.getRequestHeaders(),
       method: "POST",
+      signal: this.composeRequestSignal(this.llmRequestTimeoutMs, streamAbortController.signal),
     });
 
     if (!response.ok) {
@@ -349,7 +373,10 @@ export class LlmClient {
     let usage: LlmUsage | undefined;
 
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await this.readStreamChunkWithIdleTimeout(
+        reader,
+        streamAbortController
+      );
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -398,6 +425,41 @@ export class LlmClient {
       content,
       usage,
     };
+  }
+
+  private composeRequestSignal(timeoutMs: number, inputSignal?: AbortSignal): AbortSignal {
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    if (!inputSignal) {
+      return timeoutSignal;
+    }
+
+    return AbortSignal.any([inputSignal, timeoutSignal]);
+  }
+
+  private async readStreamChunkWithIdleTimeout(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    streamAbortController: AbortController
+  ): Promise<ReadableStreamReadResult<Uint8Array>> {
+    return new Promise((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        const timeoutError = new Error(
+          `LLM stream idle timeout after ${this.llmStreamIdleTimeoutMs}ms`
+        );
+        streamAbortController.abort(timeoutError);
+        reject(timeoutError);
+      }, this.llmStreamIdleTimeoutMs);
+
+      reader.read().then(
+        (result) => {
+          clearTimeout(timeoutHandle);
+          resolve(result);
+        },
+        (error) => {
+          clearTimeout(timeoutHandle);
+          reject(error);
+        }
+      );
+    });
   }
 
   private normalizeRequestForTransport(request: LlmRequest): {

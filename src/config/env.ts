@@ -87,6 +87,8 @@ export const envSchema = z.object({
   AGENT_GATE_DISALLOW_MASKING: createEnvBooleanSchema(true),
   AGENT_INTERRUPTED_RUN_RECOVERY_ENABLED: createEnvBooleanSchema(true),
   AGENT_LLM_COMPAT_NORMALIZE_TOOL_ROLE: createEnvBooleanSchema(true),
+  AGENT_LLM_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
+  AGENT_LLM_STREAM_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
   AGENT_LSP_AUTO_PROVISION: createEnvBooleanSchema(true),
   AGENT_LSP_BOOTSTRAP_BLOCK_ON_FAILED: createEnvBooleanSchema(true),
   AGENT_LSP_ENABLED: createEnvBooleanSchema(true),

@@ -37,6 +37,8 @@ export type AgentConfig = {
   llmApiKey: string;
   llmModel: string;
   llmProvider: "openrouter";
+  llmRequestTimeoutMs?: number;
+  llmStreamIdleTimeoutMs?: number;
   maxSteps: number;
   pendingActionMaxAgeMs: number;
   plannerMaxInvalidArtifactChars?: number;
@@ -82,6 +84,8 @@ export function getAgentConfig(): AgentConfig {
     llmCompatNormalizeToolRole: env.AGENT_LLM_COMPAT_NORMALIZE_TOOL_ROLE,
     llmModel: env.OPENROUTER_MODEL,
     llmProvider: env.LLM_PROVIDER,
+    llmRequestTimeoutMs: env.AGENT_LLM_REQUEST_TIMEOUT_MS,
+    llmStreamIdleTimeoutMs: env.AGENT_LLM_STREAM_IDLE_TIMEOUT_MS,
     lspAutoProvision: env.AGENT_LSP_AUTO_PROVISION,
     lspBootstrapBlockOnFailed: env.AGENT_LSP_BOOTSTRAP_BLOCK_ON_FAILED,
     lspEnabled: env.AGENT_LSP_ENABLED,

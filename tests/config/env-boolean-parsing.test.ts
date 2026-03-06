@@ -61,10 +61,31 @@ describe("env boolean parsing", () => {
     expect(parsed.data.AGENT_RUNTIME_SCRIPT_ENFORCED).toBe(false);
   });
 
+  test("defaults llm timeout values", () => {
+    const parsed = parseEnvironment(createBaseEnvironment());
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) {
+      return;
+    }
+    expect(parsed.data.AGENT_LLM_REQUEST_TIMEOUT_MS).toBe(45_000);
+    expect(parsed.data.AGENT_LLM_STREAM_IDLE_TIMEOUT_MS).toBe(20_000);
+  });
+
   test("rejects invalid boolean strings", () => {
     const parsed = parseEnvironment({
       ...createBaseEnvironment(),
       AGENT_COMPLETION_REQUIRE_LSP: "not-a-boolean",
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  test("rejects non-positive llm timeout values", () => {
+    const parsed = parseEnvironment({
+      ...createBaseEnvironment(),
+      AGENT_LLM_REQUEST_TIMEOUT_MS: "0",
+      AGENT_LLM_STREAM_IDLE_TIMEOUT_MS: "-10",
     });
 
     expect(parsed.success).toBe(false);
