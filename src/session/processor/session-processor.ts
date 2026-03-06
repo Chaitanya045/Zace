@@ -6,7 +6,6 @@ import type { AbortSignalLike, ToolExecutionContext, ToolResult } from "../../ty
 
 import { runAgentLoop, type AgentResult } from "../../agent/loop";
 import { appendSessionEntries } from "../../tools/session";
-import { assignSessionTitleFromFirstUserMessage } from "../session-title";
 
 export type SessionProcessorTurnInput = {
   abortSignal?: AbortSignalLike;
@@ -23,7 +22,6 @@ export type SessionProcessorTurnInput = {
   ) => Promise<ToolResult>;
   observer?: AgentObserver;
   onProcessorEvent?: (event: AgentProcessorEvent) => void;
-  isFirstTurn?: boolean;
   sessionId: string;
   task: string;
   userMessage: string;
@@ -77,14 +75,6 @@ export const SessionProcessor = {
         userMessage: input.userMessage,
       },
     ]);
-
-    if (input.isFirstTurn) {
-      await assignSessionTitleFromFirstUserMessage({
-        client: input.client,
-        sessionId: input.sessionId,
-        userMessage: input.userMessage,
-      });
-    }
 
     return {
       endedAt,

@@ -695,7 +695,6 @@ export class BridgeController {
         approvedPermissionsOnce: this.consumeApprovedPermissionsOnce(),
         client: this.client,
         config: this.config,
-        isFirstTurn: false,
         observer,
         sessionId: this.sessionId,
         task,
