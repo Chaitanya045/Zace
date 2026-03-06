@@ -13,7 +13,9 @@ import {
   ensureBrainStructure,
   initializeTurnWorkingMemory,
   persistPlannerState,
+  recordCompactionMemory,
   recordPlannerTransition,
+  recordTurnFinalization,
 } from "../../brain";
 import { createLlmStreamCallbacks } from "../../llm/stream-adapter";
 import { createPermissionMemory } from "../../permission/memory";
@@ -98,10 +100,12 @@ export async function runAgentLoop(
   const observer = options?.observer;
   const sessionId = options?.sessionId;
   const abortSignal = options?.abortSignal;
+  const runStartedAt = new Date();
   const toolExecutionContext: ToolExecutionContext | undefined = abortSignal
     ? { abortSignal }
     : undefined;
   const runId = randomUUID();
+  const compactionSummaryPaths: string[] = [];
   const sessionFilePath = sessionId ? getSessionFilePath(sessionId) : undefined;
   const completionBlockRepeatLimit = Math.max(1, config.completionBlockRepeatLimit ?? 2);
   const memory = new Memory({
@@ -174,6 +178,24 @@ export async function runAgentLoop(
       sessionId,
       step,
     });
+
+    try {
+      await recordTurnFinalization({
+        assistantMessage: result.message,
+        compactionSummaryPaths,
+        context: result.context,
+        endedAt: new Date(),
+        finalReason: reason,
+        finalState: result.finalState,
+        runId,
+        sessionId,
+        startedAt: runStartedAt,
+        success: result.success,
+        task,
+      });
+    } catch (error) {
+      logError("Failed to persist turn long-term memory", error);
+    }
 
     return result;
   };
@@ -492,6 +514,20 @@ export async function runAgentLoop(
         stepNumber,
       });
       if (compactionResult.compacted) {
+        if (compactionResult.summary) {
+          try {
+            const summaryPath = await recordCompactionMemory({
+              relatedFiles: Array.from(loopState.context.fileSummaries.keys()),
+              runId,
+              sessionId,
+              step: stepNumber,
+              summary: compactionResult.summary,
+            });
+            compactionSummaryPaths.push(summaryPath);
+          } catch (error) {
+            logError("Failed to persist compaction summary", error);
+          }
+        }
         const ratioPercent =
           typeof compactionResult.usageRatio === "number"
             ? Math.round(compactionResult.usageRatio * 100)

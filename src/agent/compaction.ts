@@ -38,6 +38,7 @@ export type CompactionResult = {
   contextWindowTokens?: number;
   inputTokens?: number;
   reason: string;
+  summary?: string;
   usageRatio?: number;
 };
 
@@ -133,6 +134,7 @@ export async function maybeCompactContext(input: {
       contextWindowTokens,
       inputTokens,
       reason: compacted ? "compacted" : "compaction_not_applied",
+      summary: compacted ? summaryResponse.content : undefined,
       usageRatio: decision.usageRatio,
     };
   } catch (error) {

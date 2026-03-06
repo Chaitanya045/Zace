@@ -1,4 +1,5 @@
 import type { PlannerPlanState } from "../agent/planner/schema";
+import type { AgentContext, AgentState } from "../types/agent";
 import type { ToolResult } from "../types/tool";
 import type { BrainPaths } from "./paths";
 import type { CurrentPlan, WorkingMemory } from "./types";
@@ -23,6 +24,7 @@ import {
   readRepositorySummarySource,
   updateRepoMapWithTouchedFiles,
 } from "./repo-mapper";
+import { recordCompactionSummary, recordTurnLongTermMemory } from "./session-logger";
 import {
   createInitialCompletedTasks,
   serializeCompletedTasks,
@@ -59,6 +61,21 @@ type ToolTransitionInput = {
   task: string;
   toolName: string;
   toolResult: ToolResult;
+  workspaceRoot?: string;
+};
+
+type TurnFinalizationInput = {
+  assistantMessage: string;
+  compactionSummaryPaths?: string[];
+  context: AgentContext;
+  endedAt: Date;
+  finalReason: string;
+  finalState: AgentState;
+  runId: string;
+  sessionId?: string;
+  startedAt: Date;
+  success: boolean;
+  task: string;
   workspaceRoot?: string;
 };
 
@@ -531,4 +548,24 @@ export async function recordToolTransition(input: ToolTransitionInput): Promise<
   });
 
   return nextWorkingMemory;
+}
+
+export async function recordCompactionMemory(input: {
+  relatedFiles?: string[];
+  runId: string;
+  sessionId?: string;
+  step: number;
+  summary: string;
+  workspaceRoot?: string;
+}): Promise<string> {
+  return await recordCompactionSummary(input);
+}
+
+export async function recordTurnFinalization(
+  input: TurnFinalizationInput
+): Promise<{
+  episodicLogPath: string;
+  gitArtifactPath?: string;
+}> {
+  return await recordTurnLongTermMemory(input);
 }

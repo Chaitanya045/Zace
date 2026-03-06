@@ -36,6 +36,15 @@ type GraphTransitionResult = {
   nodes: MemoryGraphNode[];
 };
 
+type ArtifactLinkInput = {
+  artifactPath: string;
+  description: string;
+  edgeType?: string;
+  relatedFiles?: string[];
+  sessionId?: string;
+  workspaceRoot?: string;
+};
+
 function buildNodeId(type: MemoryGraphNode["type"], value: string): string {
   const slug = value
     .toLowerCase()
@@ -226,6 +235,79 @@ export async function updateMemoryGraphForTransition(
         weight: changedFileSet.has(touchedFile) ? 2 : 1,
       });
     }
+  }
+
+  await Promise.all([
+    fsWriteFile(paths.nodesFile, serializeMemoryGraphNodes(nodes), "utf8"),
+    fsWriteFile(paths.edgesFile, serializeMemoryGraphEdges(edges), "utf8"),
+  ]);
+
+  return {
+    edges,
+    nodes,
+  };
+}
+
+export async function recordArtifactLinks(
+  input: ArtifactLinkInput
+): Promise<GraphTransitionResult> {
+  const workspaceRoot = input.workspaceRoot ?? process.cwd();
+  const paths = getBrainPaths(workspaceRoot);
+  const [existingNodes, existingEdges] = await Promise.all([
+    parseJsonFile(paths.nodesFile, (value) => memoryGraphNodesSchema.safeParse(value), createInitialMemoryGraphNodes()),
+    parseJsonFile(paths.edgesFile, (value) => memoryGraphEdgesSchema.safeParse(value), createInitialMemoryGraphEdges()),
+  ]);
+  const now = new Date().toISOString();
+  const relatedFiles = Array.from(new Set((input.relatedFiles ?? []).filter(Boolean)));
+  const artifactPath = input.artifactPath.replace(/\\/gu, "/");
+  const artifactNodeId = buildNodeId("artifact", artifactPath);
+  let nodes = upsertNode(existingNodes, {
+    description: clipLabel(input.description, 160),
+    filePath: artifactPath,
+    id: artifactNodeId,
+    label: artifactPath,
+    type: "artifact",
+    updatedAt: now,
+  });
+  let edges = existingEdges;
+
+  for (const relatedFile of relatedFiles) {
+    const normalizedFile = relatedFile.replace(/\\/gu, "/");
+    const fileNodeId = buildNodeId("file", normalizedFile);
+    nodes = upsertNode(nodes, {
+      description: "Referenced by a persisted brain artifact.",
+      filePath: normalizedFile,
+      id: fileNodeId,
+      label: normalizedFile,
+      type: "file",
+      updatedAt: now,
+    });
+    edges = upsertEdge(edges, {
+      from: artifactNodeId,
+      to: fileNodeId,
+      type: "describes_file",
+      updatedAt: now,
+      weight: 1,
+    });
+  }
+
+  if (input.sessionId) {
+    const sessionNodeId = buildNodeId("session", input.sessionId);
+    nodes = upsertNode(nodes, {
+      description: clipLabel(input.description, 120),
+      id: sessionNodeId,
+      label: `Session ${input.sessionId}`,
+      sessionId: input.sessionId,
+      type: "session",
+      updatedAt: now,
+    });
+    edges = upsertEdge(edges, {
+      from: sessionNodeId,
+      to: artifactNodeId,
+      type: input.edgeType ?? "generated_artifact",
+      updatedAt: now,
+      weight: 1,
+    });
   }
 
   await Promise.all([
