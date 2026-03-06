@@ -1,4 +1,5 @@
-import { fsReaddir, fsReadFile, fsStat } from "../tools/system/fs";
+import { fsReaddir, fsReadFile, fsStat, fsWriteFile } from "../tools/system/fs";
+import { getBrainPaths } from "./paths";
 
 type RepoSummarySource = {
   agentsContent?: string;
@@ -123,6 +124,51 @@ export async function buildInitialRepoMapMarkdown(workspaceRoot: string): Promis
   return `${lines.join("\n")}\n`;
 }
 
+function buildIncrementalRepoMapEntry(pathValue: string, changedFiles: Set<string>): string {
+  if (changedFiles.has(pathValue)) {
+    return `- \`${pathValue}\` - updated during agent execution.`;
+  }
+
+  if (pathValue.startsWith("tests/")) {
+    return `- \`${pathValue}\` - inspected test coverage during agent execution.`;
+  }
+
+  return `- \`${pathValue}\` - inspected during agent execution.`;
+}
+
+export async function updateRepoMapWithTouchedFiles(input: {
+  changedFiles: string[];
+  touchedFiles: string[];
+  workspaceRoot?: string;
+}): Promise<string> {
+  const workspaceRoot = input.workspaceRoot ?? process.cwd();
+  const paths = getBrainPaths(workspaceRoot);
+  const existingContent = await readTextFile(paths.repoMapFile);
+  const touchedFiles = Array.from(new Set(input.touchedFiles.filter(Boolean))).sort((left, right) =>
+    left.localeCompare(right)
+  );
+  if (touchedFiles.length === 0) {
+    return existingContent;
+  }
+
+  const changedFileSet = new Set(input.changedFiles);
+  const missingEntries = touchedFiles
+    .filter((pathValue) => !existingContent.includes(`\`${pathValue}\``))
+    .map((pathValue) => buildIncrementalRepoMapEntry(pathValue, changedFileSet));
+
+  if (missingEntries.length === 0) {
+    return existingContent;
+  }
+
+  const incrementalSectionHeader = "## Incremental Updates";
+  const nextContent = existingContent.includes(incrementalSectionHeader)
+    ? `${existingContent.trimEnd()}\n${missingEntries.join("\n")}\n`
+    : `${existingContent.trimEnd()}\n\n${incrementalSectionHeader}\n${missingEntries.join("\n")}\n`;
+
+  await fsWriteFile(paths.repoMapFile, nextContent, "utf8");
+  return nextContent;
+}
+
 async function listTopLevelSourceEntries(srcDirectoryPath: string): Promise<string[]> {
   if (!(await pathExists(srcDirectoryPath))) {
     return [];
@@ -145,4 +191,12 @@ async function listTopLevelSourceEntries(srcDirectoryPath: string): Promise<stri
     })
     .sort((left, right) => left.renderedPath.localeCompare(right.renderedPath))
     .map((entry) => `- \`${entry.renderedPath}\` - ${entry.description}`);
+}
+
+async function readTextFile(pathValue: string): Promise<string> {
+  try {
+    return await fsReadFile(pathValue, "utf8");
+  } catch {
+    return "";
+  }
 }

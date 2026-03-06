@@ -9,7 +9,12 @@ import type { AgentObserver } from "../observer";
 import type { AgentProcessorEvent } from "../stream-events";
 import type { CommandApprovalResult, RunLoopMutableState, ToolCallLike } from "./run-loop/types";
 
-import { ensureBrainStructure, persistPlannerState } from "../../brain";
+import {
+  ensureBrainStructure,
+  initializeTurnWorkingMemory,
+  persistPlannerState,
+  recordPlannerTransition,
+} from "../../brain";
 import { createLlmStreamCallbacks } from "../../llm/stream-adapter";
 import { createPermissionMemory } from "../../permission/memory";
 import { loadPermissionRuleset } from "../../permission/store";
@@ -147,6 +152,10 @@ export async function runAgentLoop(
   }
   const runToolCall = options?.executeToolCall ?? executeToolCall;
   const getCompletionCriteria = (): string[] => describeCompletionPlan(loopState.completionPlan);
+  await initializeTurnWorkingMemory({
+    sessionId,
+    task,
+  });
   const finalizeResult = async (
     result: AgentResult,
     step: number,
@@ -463,6 +472,14 @@ export async function runAgentLoop(
       await persistPlannerState({
         action: planResult.action,
         planState: planResult.planState,
+      });
+      await recordPlannerTransition({
+        action: planResult.action,
+        contextFilePaths: Array.from(loopState.context.fileSummaries.keys()),
+        planReasoning: planResult.reasoning,
+        planState: planResult.planState,
+        sessionId,
+        task,
       });
 
       memory.addMessage("assistant", `Planning: ${planResult.reasoning}`);

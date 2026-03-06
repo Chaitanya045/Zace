@@ -1,9 +1,13 @@
+import type { PlannerPlanState } from "../agent/planner/schema";
+import type { ToolResult } from "../types/tool";
 import type { BrainPaths } from "./paths";
+import type { CurrentPlan, WorkingMemory } from "./types";
 
 import { BASE_SYSTEM_PROMPT } from "../prompts/system";
 import { fsMkdir, fsReadFile, fsStat, fsWriteFile } from "../tools/system/fs";
 import {
   createInitialFileImportanceMap,
+  recomputeTouchedFileImportance,
   serializeFileImportanceMap,
 } from "./file-importance-ranker";
 import {
@@ -11,20 +15,51 @@ import {
   createInitialMemoryGraphNodes,
   serializeMemoryGraphEdges,
   serializeMemoryGraphNodes,
+  updateMemoryGraphForTransition,
 } from "./memory-graph-manager";
 import { getBrainPaths, toWorkspaceRelativePath } from "./paths";
-import { buildInitialRepoMapMarkdown, readRepositorySummarySource } from "./repo-mapper";
+import {
+  buildInitialRepoMapMarkdown,
+  readRepositorySummarySource,
+  updateRepoMapWithTouchedFiles,
+} from "./repo-mapper";
 import {
   createInitialCompletedTasks,
   serializeCompletedTasks,
   serializeCurrentPlan,
 } from "./task-planner";
-import { createInitialCurrentPlan, createInitialWorkingMemory } from "./types";
+import {
+  createInitialCurrentPlan,
+  createInitialWorkingMemory,
+  currentPlanSchema,
+  workingMemorySchema,
+} from "./types";
 
 export type BrainBootstrapResult = {
   createdDirectories: string[];
   createdFiles: string[];
   paths: BrainPaths;
+};
+
+type PlannerTransitionInput = {
+  action: "ask_user" | "blocked" | "complete" | "continue";
+  contextFilePaths?: string[];
+  planReasoning: string;
+  planState?: PlannerPlanState;
+  sessionId?: string;
+  task: string;
+  workspaceRoot?: string;
+};
+
+type ToolTransitionInput = {
+  changedFiles: string[];
+  contextFilePaths?: string[];
+  planReasoning: string;
+  sessionId?: string;
+  task: string;
+  toolName: string;
+  toolResult: ToolResult;
+  workspaceRoot?: string;
 };
 
 function buildIdentityMemoryMarkdown(input: {
@@ -142,6 +177,124 @@ async function readExistingFile(pathValue: string): Promise<string | undefined> 
   }
 }
 
+async function parseJsonFile<T>(
+  pathValue: string,
+  safeParse: (value: unknown) => {
+    data: T;
+    success: boolean;
+  },
+  fallback: T
+): Promise<T> {
+  try {
+    const content = await fsReadFile(pathValue, "utf8");
+    const parsed = JSON.parse(content) as unknown;
+    const validated = safeParse(parsed);
+    return validated.success ? validated.data : fallback;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return fallback;
+    }
+
+    return fallback;
+  }
+}
+
+function appendRecentDecision(recentDecisions: string[], reasoning: string): string[] {
+  if (!/\b(decision|decide|architecture|architectural|convention|policy|standardize|switch)\b/iu.test(reasoning)) {
+    return recentDecisions;
+  }
+
+  const normalizedDecision = clipText(reasoning, 160);
+  return Array.from(new Set([...recentDecisions, normalizedDecision])).slice(-5);
+}
+
+function clipText(value: string, maxLength = 160): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 16).trimEnd()}...[truncated]`;
+}
+
+function deduplicatePaths(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function deriveRelevantFilesFromCurrentPlan(currentPlan: CurrentPlan): string[] {
+  if (currentPlan.currentStepId) {
+    const currentStep = currentPlan.steps.find((step) => step.id === currentPlan.currentStepId);
+    if (currentStep) {
+      return currentStep.relevantFiles;
+    }
+  }
+
+  return currentPlan.steps.flatMap((step) => step.relevantFiles);
+}
+
+function normalizeWorkspacePaths(workspaceRoot: string, values: string[]): string[] {
+  return deduplicatePaths(
+    values.map((value) => {
+      if (!value) {
+        return "";
+      }
+
+      return value.startsWith("/")
+        ? toWorkspaceRelativePath(workspaceRoot, value)
+        : value.replace(/\\/gu, "/");
+    })
+  );
+}
+
+async function readCurrentPlan(paths: BrainPaths): Promise<CurrentPlan> {
+  return await parseJsonFile(
+    paths.currentPlanFile,
+    (value) => currentPlanSchema.safeParse(value),
+    createInitialCurrentPlan()
+  );
+}
+
+async function readWorkingMemory(paths: BrainPaths): Promise<WorkingMemory> {
+  return await parseJsonFile(
+    paths.workingMemoryFile,
+    (value) => workingMemorySchema.safeParse(value),
+    createInitialWorkingMemory()
+  );
+}
+
+async function writeWorkingMemory(paths: BrainPaths, workingMemory: WorkingMemory): Promise<void> {
+  await fsWriteFile(paths.workingMemoryFile, `${JSON.stringify(workingMemory, null, 2)}\n`, "utf8");
+}
+
+function buildPlannerCurrentStep(input: {
+  action: PlannerTransitionInput["action"];
+  currentPlan: CurrentPlan;
+  planReasoning: string;
+}): string {
+  if (input.action === "complete") {
+    return "Plan complete";
+  }
+
+  const activeStep = input.currentPlan.currentStepId
+    ? input.currentPlan.steps.find((step) => step.id === input.currentPlan.currentStepId)
+    : undefined;
+
+  return clipText(activeStep?.title ?? input.planReasoning, 120);
+}
+
+function buildToolCurrentStep(input: {
+  currentPlan: CurrentPlan;
+  toolName: string;
+  toolResult: ToolResult;
+}): string {
+  const activeStep = input.currentPlan.currentStepId
+    ? input.currentPlan.steps.find((step) => step.id === input.currentPlan.currentStepId)
+    : undefined;
+  const toolStatus = input.toolResult.success ? "succeeded" : "failed";
+  const detail = activeStep?.title ?? `${input.toolName} ${toolStatus}`;
+  return clipText(detail, 120);
+}
+
 async function ensureDirectory(
   pathValue: string,
   createdDirectories: string[],
@@ -253,4 +406,129 @@ export async function ensureBrainStructure(input?: {
     createdFiles,
     paths,
   };
+}
+
+export async function initializeTurnWorkingMemory(input: {
+  sessionId?: string;
+  task: string;
+  workspaceRoot?: string;
+}): Promise<WorkingMemory> {
+  const workspaceRoot = input.workspaceRoot ?? process.cwd();
+  const paths = getBrainPaths(workspaceRoot);
+  const [currentPlan, existingWorkingMemory] = await Promise.all([
+    readCurrentPlan(paths),
+    readWorkingMemory(paths),
+  ]);
+  const relevantFiles = deduplicatePaths([
+    ...existingWorkingMemory.relevantFiles,
+    ...deriveRelevantFilesFromCurrentPlan(currentPlan),
+  ]);
+  const nextWorkingMemory: WorkingMemory = {
+    activePlanStepId: currentPlan.currentStepId,
+    currentStep: existingWorkingMemory.currentStep ?? "startup",
+    goal: input.task,
+    lastUpdatedAt: new Date().toISOString(),
+    recentDecisions: existingWorkingMemory.recentDecisions,
+    relevantFiles,
+    sessionId: input.sessionId ?? existingWorkingMemory.sessionId,
+  };
+
+  await writeWorkingMemory(paths, nextWorkingMemory);
+  return nextWorkingMemory;
+}
+
+export async function recordPlannerTransition(
+  input: PlannerTransitionInput
+): Promise<WorkingMemory> {
+  const workspaceRoot = input.workspaceRoot ?? process.cwd();
+  const paths = getBrainPaths(workspaceRoot);
+  const [currentPlan, existingWorkingMemory] = await Promise.all([
+    readCurrentPlan(paths),
+    readWorkingMemory(paths),
+  ]);
+  const planStateRelevantFiles = input.planState
+    ? input.planState.steps.flatMap((step) => step.relevantFiles ?? [])
+    : [];
+  const relevantFiles = deduplicatePaths([
+    ...existingWorkingMemory.relevantFiles,
+    ...(input.contextFilePaths ?? []),
+    ...deriveRelevantFilesFromCurrentPlan(currentPlan),
+    ...planStateRelevantFiles,
+  ]);
+  const nextWorkingMemory: WorkingMemory = {
+    activePlanStepId: currentPlan.currentStepId ?? input.planState?.currentStepId ?? null,
+    currentStep: buildPlannerCurrentStep({
+      action: input.action,
+      currentPlan,
+      planReasoning: input.planReasoning,
+    }),
+    goal: currentPlan.goal ?? input.planState?.goal ?? input.task,
+    lastUpdatedAt: new Date().toISOString(),
+    recentDecisions: appendRecentDecision(existingWorkingMemory.recentDecisions, input.planReasoning),
+    relevantFiles,
+    sessionId: input.sessionId ?? existingWorkingMemory.sessionId,
+  };
+
+  await writeWorkingMemory(paths, nextWorkingMemory);
+  return nextWorkingMemory;
+}
+
+export async function recordToolTransition(input: ToolTransitionInput): Promise<WorkingMemory> {
+  const workspaceRoot = input.workspaceRoot ?? process.cwd();
+  const paths = getBrainPaths(workspaceRoot);
+  const [currentPlan, existingWorkingMemory] = await Promise.all([
+    readCurrentPlan(paths),
+    readWorkingMemory(paths),
+  ]);
+  const changedFiles = normalizeWorkspacePaths(workspaceRoot, input.changedFiles);
+  const touchedFiles = deduplicatePaths([
+    ...deriveRelevantFilesFromCurrentPlan(currentPlan),
+    ...normalizeWorkspacePaths(workspaceRoot, input.contextFilePaths ?? []),
+    ...changedFiles,
+  ]);
+  const nextWorkingMemory: WorkingMemory = {
+    activePlanStepId: currentPlan.currentStepId,
+    currentStep: buildToolCurrentStep({
+      currentPlan,
+      toolName: input.toolName,
+      toolResult: input.toolResult,
+    }),
+    goal: currentPlan.goal ?? input.task,
+    lastUpdatedAt: new Date().toISOString(),
+    recentDecisions: appendRecentDecision(existingWorkingMemory.recentDecisions, input.planReasoning),
+    relevantFiles: deduplicatePaths([
+      ...existingWorkingMemory.relevantFiles,
+      ...touchedFiles,
+    ]),
+    sessionId: input.sessionId ?? existingWorkingMemory.sessionId,
+  };
+
+  await writeWorkingMemory(paths, nextWorkingMemory);
+
+  if (touchedFiles.length === 0) {
+    return nextWorkingMemory;
+  }
+
+  const graphState = await updateMemoryGraphForTransition({
+    changedFiles,
+    reasoning: input.planReasoning,
+    sessionId: input.sessionId,
+    task: input.task,
+    touchedFiles,
+    workspaceRoot,
+  });
+  await updateRepoMapWithTouchedFiles({
+    changedFiles,
+    touchedFiles,
+    workspaceRoot,
+  });
+  await recomputeTouchedFileImportance({
+    changedFiles,
+    graphEdges: graphState.edges,
+    graphNodes: graphState.nodes,
+    touchedFiles,
+    workspaceRoot,
+  });
+
+  return nextWorkingMemory;
 }

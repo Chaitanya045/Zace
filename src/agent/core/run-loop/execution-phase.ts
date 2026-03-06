@@ -15,6 +15,7 @@ import type {
   ToolCallLike,
 } from "./types";
 
+import { recordToolTransition } from "../../../brain";
 import { createLlmStreamCallbacks } from "../../../llm/stream-adapter";
 import { AgentError } from "../../../utils/errors";
 import { logError, logStep } from "../../../utils/logger";
@@ -841,6 +842,15 @@ export async function handleExecutionPhase<TResult>(input: {
         arguments: plannedToolCallArguments,
         name: plannedToolCallName,
       },
+      toolResult,
+    });
+    await recordToolTransition({
+      changedFiles: toolResult.artifacts?.changedFiles ?? [],
+      contextFilePaths: Array.from(input.state.context.fileSummaries.keys()),
+      planReasoning: input.planResult.reasoning,
+      sessionId: input.sessionId,
+      task: input.state.context.task,
+      toolName: plannedToolCallName,
       toolResult,
     });
     input.state.toolCallSignatureHistory.push(plannedToolCallSignature);
