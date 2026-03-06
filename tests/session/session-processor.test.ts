@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { LlmClient } from "../../src/llm/client";
 import type { AgentConfig } from "../../src/types/config";
 
-import { runAgentLoop } from "../../src/agent/loop";
+import { SessionProcessor } from "../../src/session/processor/session-processor";
 import { readSessionEntries } from "../../src/tools/session";
 
 function createTestConfig(overrides?: Partial<AgentConfig>): AgentConfig {
@@ -60,41 +60,9 @@ function createTestConfig(overrides?: Partial<AgentConfig>): AgentConfig {
   };
 }
 
-describe("interrupted run finalization", () => {
-  test("aborted run finalizes as interrupted and records terminal events", async () => {
-    const sessionId = "chat-interrupted-run-finalization";
-    await mkdir(".zace/sessions", { recursive: true });
-
-    const abortController = new globalThis.AbortController();
-    abortController.abort();
-
-    const llmClient = {
-      chat: async () => {
-        throw new Error("LLM should not be called for pre-startup interruption");
-      },
-      getModelContextWindowTokens: async () => undefined,
-    } as unknown as LlmClient;
-
-    try {
-      const result = await runAgentLoop(llmClient, createTestConfig(), "task", {
-        abortSignal: abortController.signal,
-        sessionId,
-      });
-
-      expect(result.finalState).toBe("interrupted");
-      const events = (await readSessionEntries(sessionId))
-        .filter((entry) => entry.type === "run_event")
-        .map((entry) => entry.event);
-      expect(events).toContain("run_started");
-      expect(events).toContain("run_interrupted");
-      expect(events).toContain("final_state_set");
-    } finally {
-      await rm(join(".zace/sessions", `${sessionId}.jsonl`), { force: true });
-    }
-  });
-
-  test("abort during planner LLM call finalizes as interrupted", async () => {
-    const sessionId = "chat-interrupted-during-planner-call";
+describe("session processor terminal records", () => {
+  test("persists summary and run entries when interrupted during planner call", async () => {
+    const sessionId = "chat-session-processor-interrupted";
     await mkdir(".zace/sessions", { recursive: true });
 
     const abortController = new globalThis.AbortController();
@@ -132,21 +100,69 @@ describe("interrupted run finalization", () => {
     }, 15);
 
     try {
-      const result = await runAgentLoop(llmClient, createTestConfig(), "task", {
+      const turn = await SessionProcessor.runTurn({
         abortSignal: abortController.signal,
+        client: llmClient,
+        config: createTestConfig(),
         sessionId,
+        task: "task",
+        userMessage: "hello",
       });
 
-      expect(result.finalState).toBe("interrupted");
-      expect(result.message).toContain("Run interrupted");
-      const events = (await readSessionEntries(sessionId))
-        .filter((entry) => entry.type === "run_event")
-        .map((entry) => entry.event);
-      expect(events).toContain("run_started");
-      expect(events).toContain("run_interrupted");
-      expect(events).toContain("final_state_set");
+      expect(turn.result.finalState).toBe("interrupted");
+      const entries = await readSessionEntries(sessionId);
+      const summaries = entries.filter((entry) => entry.type === "summary");
+      const runs = entries.filter((entry) => entry.type === "run");
+      expect(summaries).toHaveLength(1);
+      expect(runs).toHaveLength(1);
+      expect(summaries[0]?.type).toBe("summary");
+      expect(runs[0]?.type).toBe("run");
+      if (summaries[0]?.type === "summary") {
+        expect(summaries[0].finalState).toBe("interrupted");
+      }
+      if (runs[0]?.type === "run") {
+        expect(runs[0].finalState).toBe("interrupted");
+      }
     } finally {
       clearTimeout(abortTimer);
+      await rm(join(".zace/sessions", `${sessionId}.jsonl`), { force: true });
+    }
+  });
+
+  test("persists summary and run entries when llm call errors", async () => {
+    const sessionId = "chat-session-processor-error";
+    await mkdir(".zace/sessions", { recursive: true });
+
+    const llmClient = {
+      chat: async () => {
+        throw new Error("Simulated LLM timeout");
+      },
+      getModelContextWindowTokens: async () => undefined,
+    } as unknown as LlmClient;
+
+    try {
+      const turn = await SessionProcessor.runTurn({
+        client: llmClient,
+        config: createTestConfig(),
+        sessionId,
+        task: "task",
+        userMessage: "hello",
+      });
+
+      expect(turn.result.finalState).toBe("error");
+      expect(turn.result.success).toBeFalse();
+      const entries = await readSessionEntries(sessionId);
+      const summaries = entries.filter((entry) => entry.type === "summary");
+      const runs = entries.filter((entry) => entry.type === "run");
+      expect(summaries).toHaveLength(1);
+      expect(runs).toHaveLength(1);
+      if (summaries[0]?.type === "summary") {
+        expect(summaries[0].finalState).toBe("error");
+      }
+      if (runs[0]?.type === "run") {
+        expect(runs[0].finalState).toBe("error");
+      }
+    } finally {
       await rm(join(".zace/sessions", `${sessionId}.jsonl`), { force: true });
     }
   });

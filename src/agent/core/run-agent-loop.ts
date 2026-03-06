@@ -544,6 +544,13 @@ export async function runAgentLoop(
       success: false,
     }, loopState.context.currentStep, "max_steps_reached");
   } catch (error) {
+    if (abortSignal?.aborted) {
+      return await finalizeInterrupted({
+        reason: "abort_signal_caught_error",
+        step: Math.min(loopState.context.maxSteps, loopState.context.currentStep + 1),
+      });
+    }
+
     logError("Agent loop failed", error);
     observer?.onError?.({
       message: error instanceof Error ? error.message : "Unknown error occurred",
