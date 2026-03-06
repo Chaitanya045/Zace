@@ -16,6 +16,64 @@ function createControllerConfig(): AgentConfig {
   } as AgentConfig;
 }
 
+function createRuntimeControllerConfig(overrides?: Partial<AgentConfig>): AgentConfig {
+  return {
+    approvalMemoryEnabled: false,
+    approvalRulesPath: ".zace/runtime/policy/approvals.json",
+    commandAllowPatterns: [],
+    commandDenyPatterns: [],
+    compactionEnabled: false,
+    compactionPreserveRecentMessages: 12,
+    compactionTriggerRatio: 0.8,
+    completionRequireDiscoveredGates: true,
+    completionRequireLsp: false,
+    completionValidationMode: "strict",
+    contextWindowTokens: undefined,
+    docContextMaxChars: 6000,
+    docContextMaxFiles: 3,
+    docContextMode: "off",
+    doomLoopThreshold: 3,
+    executorAnalysis: "never",
+    gateDisallowMasking: true,
+    interruptedRunRecoveryEnabled: true,
+    llmApiKey: "test",
+    llmCompatNormalizeToolRole: true,
+    llmModel: "test-model",
+    llmProvider: "openrouter",
+    lspAutoProvision: true,
+    lspBootstrapBlockOnFailed: true,
+    lspEnabled: false,
+    lspMaxDiagnosticsPerFile: 20,
+    lspMaxFilesInOutput: 5,
+    lspProvisionMaxAttempts: 2,
+    lspServerConfigPath: ".zace/runtime/lsp/servers.json",
+    lspWaitForDiagnosticsMs: 500,
+    maxSteps: 2,
+    pendingActionMaxAgeMs: 3_600_000,
+    plannerMaxInvalidArtifactChars: 4000,
+    plannerOutputMode: "auto",
+    plannerParseMaxRepairs: 1,
+    plannerParseRetryOnFailure: true,
+    plannerSchemaStrict: true,
+    readonlyStagnationWindow: 4,
+    requireRiskyConfirmation: false,
+    riskyConfirmationToken: "ZACE_APPROVE_RISKY",
+    stagnationWindow: 3,
+    stream: false,
+    transientRetryMaxAttempts: 1,
+    transientRetryMaxDelayMs: 1000,
+    verbose: false,
+    writeRegressionErrorSpike: 40,
+    ...overrides,
+  };
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
 describe("BridgeController command orchestration", () => {
   test("returns shouldExit for exit command", async () => {
     const events: BridgeEvent[] = [];
@@ -323,6 +381,194 @@ describe("BridgeController command orchestration", () => {
       if (newSessionPath) {
         await unlink(newSessionPath).catch(() => undefined);
       }
+    }
+  });
+
+  test("isBusy resets after aborting an in-flight llm request", async () => {
+    const sessionId = `bridge-abort-${Math.random().toString(36).slice(2, 10)}`;
+    const sessionPath = getSessionFilePath(sessionId);
+    const sessionMetaPath = sessionPath.replace(/\.jsonl$/u, ".meta.json");
+    const events: BridgeEvent[] = [];
+    let callCount = 0;
+
+    const controller = new BridgeController({
+      client: {
+        chat: async (
+          _request: unknown,
+          options?: {
+            abortSignal?: globalThis.AbortSignal;
+          }
+        ) => {
+          callCount += 1;
+          if (callCount === 1) {
+            return await new Promise<{ content: string }>((_resolve, reject) => {
+              const signal = options?.abortSignal;
+              if (!signal) {
+                reject(new Error("Missing abort signal"));
+                return;
+              }
+              if (signal.aborted) {
+                reject(signal.reason ?? new Error("aborted"));
+                return;
+              }
+              const onAbort = () => {
+                signal.removeEventListener("abort", onAbort);
+                reject(signal.reason ?? new Error("aborted"));
+              };
+              signal.addEventListener("abort", onAbort, { once: true });
+            });
+          }
+
+          return {
+            content: `{"titles":[{"sessionId":"${sessionId}","title":"Abort test title"}]}`,
+          };
+        },
+      } as unknown as LlmClient,
+      config: createRuntimeControllerConfig(),
+      emitEvent: (event) => {
+        events.push(event);
+      },
+      sessionFilePath: sessionPath,
+      sessionId,
+    });
+
+    try {
+      const submitPromise = controller.submit({
+        kind: "message",
+        text: "hello",
+      });
+      await delay(20);
+      const stateDuringRun = (controller as unknown as { state: { isBusy: boolean } }).state;
+      expect(stateDuringRun.isBusy).toBeTrue();
+
+      const interruptResult = await controller.interrupt();
+      expect(interruptResult.status).toBe("requested");
+      await submitPromise;
+
+      const finalState = (controller as unknown as { state: { isBusy: boolean; runState: string } }).state;
+      expect(finalState.isBusy).toBeFalse();
+      expect(finalState.runState).toBe("interrupted");
+
+      const stateUpdates = events
+        .filter((event): event is Extract<BridgeEvent, { type: "state_update" }> => event.type === "state_update")
+        .map((event) => event.state.isBusy);
+      expect(stateUpdates).toContain(true);
+      expect(stateUpdates[stateUpdates.length - 1]).toBe(false);
+    } finally {
+      await unlink(sessionPath).catch(() => undefined);
+      await unlink(sessionMetaPath).catch(() => undefined);
+    }
+  });
+
+  test("isBusy resets after llm timeout-like failure", async () => {
+    const sessionId = `bridge-timeout-${Math.random().toString(36).slice(2, 10)}`;
+    const sessionPath = getSessionFilePath(sessionId);
+    const sessionMetaPath = sessionPath.replace(/\.jsonl$/u, ".meta.json");
+    const events: BridgeEvent[] = [];
+    let callCount = 0;
+
+    const controller = new BridgeController({
+      client: {
+        chat: async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            await delay(20);
+            throw new Error("Failed to call LLM: timeout");
+          }
+
+          return {
+            content: `{"titles":[{"sessionId":"${sessionId}","title":"Timeout test title"}]}`,
+          };
+        },
+      } as unknown as LlmClient,
+      config: createRuntimeControllerConfig(),
+      emitEvent: (event) => {
+        events.push(event);
+      },
+      sessionFilePath: sessionPath,
+      sessionId,
+    });
+
+    try {
+      await controller.submit({
+        kind: "message",
+        text: "hello",
+      });
+
+      const finalState = (controller as unknown as { state: { isBusy: boolean; runState: string } }).state;
+      expect(finalState.isBusy).toBeFalse();
+      expect(finalState.runState).toBe("error");
+
+      const stateUpdates = events
+        .filter((event): event is Extract<BridgeEvent, { type: "state_update" }> => event.type === "state_update")
+        .map((event) => event.state.isBusy);
+      expect(stateUpdates).toContain(true);
+      expect(stateUpdates[stateUpdates.length - 1]).toBe(false);
+    } finally {
+      await unlink(sessionPath).catch(() => undefined);
+      await unlink(sessionMetaPath).catch(() => undefined);
+    }
+  });
+
+  test("background title generation is non-blocking for first-turn submit", async () => {
+    const sessionId = `bridge-title-non-blocking-${Math.random().toString(36).slice(2, 10)}`;
+    const sessionPath = getSessionFilePath(sessionId);
+    const sessionMetaPath = sessionPath.replace(/\.jsonl$/u, ".meta.json");
+    let callCount = 0;
+    let releaseTitleCall: () => void = () => {
+      // no-op default
+    };
+    const titleCallGate = new Promise<void>((resolve) => {
+      releaseTitleCall = resolve;
+    });
+
+    const controller = new BridgeController({
+      client: {
+        chat: async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            return {
+              content: JSON.stringify({
+                action: "ask_user",
+                reasoning: "Need clarification.",
+                userMessage: "Which file should I edit?",
+              }),
+            };
+          }
+
+          await titleCallGate;
+          return {
+            content: `{"titles":[{"sessionId":"${sessionId}","title":"Async first turn title"}]}`,
+          };
+        },
+      } as unknown as LlmClient,
+      config: createRuntimeControllerConfig(),
+      emitEvent: () => {
+        // no-op
+      },
+      sessionFilePath: sessionPath,
+      sessionId,
+    });
+
+    try {
+      const submitPromise = controller.submit({
+        kind: "message",
+        text: "please help",
+      });
+      const submitResult = await Promise.race([
+        submitPromise.then(() => "resolved" as const),
+        delay(200).then(() => "pending" as const),
+      ]);
+
+      expect(submitResult).toBe("resolved");
+      expect(callCount).toBeGreaterThanOrEqual(2);
+      const stateAfterSubmit = (controller as unknown as { state: { isBusy: boolean } }).state;
+      expect(stateAfterSubmit.isBusy).toBeFalse();
+    } finally {
+      releaseTitleCall();
+      await delay(10);
+      await unlink(sessionPath).catch(() => undefined);
+      await unlink(sessionMetaPath).catch(() => undefined);
     }
   });
 });

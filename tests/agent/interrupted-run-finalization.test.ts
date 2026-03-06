@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { LlmClient } from "../../src/llm/client";
 import type { AgentConfig } from "../../src/types/config";
 
 import { runAgentLoop } from "../../src/agent/loop";
+import { LlmClient } from "../../src/llm/client";
 import { readSessionEntries } from "../../src/tools/session";
 
 function createTestConfig(overrides?: Partial<AgentConfig>): AgentConfig {
@@ -58,6 +58,33 @@ function createTestConfig(overrides?: Partial<AgentConfig>): AgentConfig {
     writeRegressionErrorSpike: 40,
     ...overrides,
   };
+}
+
+function createAbortAwareHangingFetch(
+  signalCollector: globalThis.AbortSignal[]
+): typeof fetch {
+  return (async (...args: Parameters<typeof fetch>): Promise<globalThis.Response> => {
+    const init = args[1];
+    const signal = init?.signal;
+    if (!(signal instanceof globalThis.AbortSignal)) {
+      throw new Error("Missing fetch signal");
+    }
+
+    signalCollector.push(signal);
+
+    return await new Promise<globalThis.Response>((_resolve, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason ?? new Error("aborted"));
+        return;
+      }
+
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        reject(signal.reason ?? new Error("aborted"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }) as typeof fetch;
 }
 
 describe("interrupted run finalization", () => {
@@ -147,6 +174,39 @@ describe("interrupted run finalization", () => {
       expect(events).toContain("final_state_set");
     } finally {
       clearTimeout(abortTimer);
+      await rm(join(".zace/sessions", `${sessionId}.jsonl`), { force: true });
+    }
+  });
+
+  test("hanging llm request times out and finalizes with terminal error state", async () => {
+    const sessionId = "chat-timeout-terminal-state";
+    await mkdir(".zace/sessions", { recursive: true });
+
+    const originalFetch = globalThis.fetch;
+    const seenSignals: globalThis.AbortSignal[] = [];
+    globalThis.fetch = createAbortAwareHangingFetch(seenSignals);
+
+    try {
+      const config = createTestConfig({
+        llmRequestTimeoutMs: 20,
+        llmStreamIdleTimeoutMs: 20,
+      });
+      const llmClient = new LlmClient(config);
+      const result = await runAgentLoop(llmClient, config, "task", {
+        sessionId,
+      });
+
+      expect(result.finalState).toBe("error");
+      expect(result.success).toBeFalse();
+      expect(result.message).toContain("Failed to call LLM");
+      expect(seenSignals.length).toBeGreaterThan(0);
+      const events = (await readSessionEntries(sessionId))
+        .filter((entry) => entry.type === "run_event")
+        .map((entry) => entry.event);
+      expect(events).toContain("run_started");
+      expect(events).toContain("final_state_set");
+    } finally {
+      globalThis.fetch = originalFetch;
       await rm(join(".zace/sessions", `${sessionId}.jsonl`), { force: true });
     }
   });
