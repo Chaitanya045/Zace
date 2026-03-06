@@ -61,14 +61,14 @@ function createTestConfig(overrides?: Partial<AgentConfig>): AgentConfig {
 describe("run loop LLM abort propagation", () => {
   test("passes run abort signal to planner and executor calls", async () => {
     const abortController = new globalThis.AbortController();
-    const plannerSignals: Array<AbortSignal | undefined> = [];
-    const executorSignals: Array<AbortSignal | undefined> = [];
+    const plannerSignals: Array<globalThis.AbortSignal | undefined> = [];
+    const executorSignals: Array<globalThis.AbortSignal | undefined> = [];
 
     const llmClient = {
       chat: async (
         request: { callKind?: string },
         options?: {
-          abortSignal?: AbortSignal;
+          abortSignal?: globalThis.AbortSignal;
         }
       ) => {
         if (request.callKind === "planner") {

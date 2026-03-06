@@ -33,6 +33,7 @@ import { resolvePendingPermissionAction } from "../../permission/pending";
 import { findOpenPendingPermission, resolvePendingPermissionFromUserMessage } from "../../permission/resolve";
 import { storePermissionRule } from "../../permission/store";
 import { SessionProcessor } from "../../session/processor/session-processor";
+import { scheduleSessionTitleFromFirstUserMessage } from "../../session/session-title";
 import {
   appendSessionApprovalRule,
   getSessionFilePath,
@@ -685,6 +686,7 @@ export class BridgeController {
     const abortController = new globalThis.AbortController();
     this.activeAbortController = abortController;
     this.interruptRequested = false;
+    const isFirstTurn = this.turns.length === 0;
 
     try {
       const turn = await SessionProcessor.runTurn({
@@ -693,7 +695,7 @@ export class BridgeController {
         approvedPermissionsOnce: this.consumeApprovedPermissionsOnce(),
         client: this.client,
         config: this.config,
-        isFirstTurn: this.turns.length === 0,
+        isFirstTurn: false,
         observer,
         sessionId: this.sessionId,
         task,
@@ -701,6 +703,13 @@ export class BridgeController {
       });
 
       const result = turn.result;
+      if (isFirstTurn) {
+        void scheduleSessionTitleFromFirstUserMessage({
+          client: this.client,
+          sessionId: this.sessionId,
+          userMessage: message,
+        });
+      }
       this.turns.push({
         assistant: result.message,
         finalState: result.finalState,

@@ -100,7 +100,7 @@ export async function analyzeToolResult(
     options.onStreamStart?.();
   }
   const abortChatOptions = options?.abortSignal
-    ? { abortSignal: options.abortSignal as AbortSignal }
+    ? { abortSignal: options.abortSignal as globalThis.AbortSignal }
     : undefined;
   let response: Awaited<ReturnType<LlmClient["chat"]>>;
   try {

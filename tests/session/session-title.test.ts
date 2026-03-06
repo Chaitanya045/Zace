@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   assignSessionTitleFromFirstUserMessage,
   backfillMissingSessionTitles,
+  scheduleSessionTitleFromFirstUserMessage,
   sanitizeSessionTitle,
 } from "../../src/session/session-title";
 import { appendSessionEntries, readSessionCatalogMetadata, readSessionEntries } from "../../src/tools/session";
@@ -147,6 +148,112 @@ describe("session title generation", () => {
 
       expect(title).toBe("investigate flaky websocket reconnect handlin...");
       const metadata = await readSessionCatalogMetadata("fallback-first-turn");
+      expect(metadata?.title).toBe("investigate flaky websocket reconnect handlin...");
+    } finally {
+      process.chdir(originalCwd);
+      await rm(baseDir, { force: true, recursive: true });
+    }
+  });
+
+  test("schedules first-turn title generation in background with per-session dedupe", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "zace-session-title-schedule-dedupe-"));
+    const originalCwd = process.cwd();
+    let chatCalls = 0;
+
+    try {
+      process.chdir(baseDir);
+
+      const firstJob = scheduleSessionTitleFromFirstUserMessage({
+        client: {
+          chat: async () => {
+            chatCalls += 1;
+            await new Promise((resolve) => {
+              setTimeout(resolve, 30);
+            });
+            return {
+              content:
+                '{"titles":[{"sessionId":"scheduled-dedupe","title":"Background generated title"}]}',
+            };
+          },
+        },
+        sessionId: "scheduled-dedupe",
+        userMessage: "optimize switch session loading performance",
+      });
+      const secondJob = scheduleSessionTitleFromFirstUserMessage({
+        client: {
+          chat: async () => {
+            throw new Error("unexpected duplicate call");
+          },
+        },
+        sessionId: "scheduled-dedupe",
+        userMessage: "optimize switch session loading performance",
+      });
+
+      await Promise.all([firstJob, secondJob]);
+      expect(chatCalls).toBe(1);
+      const metadata = await readSessionCatalogMetadata("scheduled-dedupe");
+      expect(metadata?.title).toBe("Background generated title");
+    } finally {
+      process.chdir(originalCwd);
+      await rm(baseDir, { force: true, recursive: true });
+    }
+  });
+
+  test("retries background first-turn title generation and persists success", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "zace-session-title-schedule-retry-"));
+    const originalCwd = process.cwd();
+    let chatCalls = 0;
+
+    try {
+      process.chdir(baseDir);
+
+      await scheduleSessionTitleFromFirstUserMessage({
+        client: {
+          chat: async () => {
+            chatCalls += 1;
+            if (chatCalls === 1) {
+              throw new Error("transient provider issue");
+            }
+            return {
+              content:
+                '{"titles":[{"sessionId":"scheduled-retry","title":"Recovered title after retry"}]}',
+            };
+          },
+        },
+        sessionId: "scheduled-retry",
+        userMessage: "fix interrupted run recovery validation flow",
+      });
+
+      expect(chatCalls).toBe(2);
+      const metadata = await readSessionCatalogMetadata("scheduled-retry");
+      expect(metadata?.title).toBe("Recovered title after retry");
+    } finally {
+      process.chdir(originalCwd);
+      await rm(baseDir, { force: true, recursive: true });
+    }
+  });
+
+  test("persists fallback title when background generation exhausts retries", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "zace-session-title-schedule-fallback-"));
+    const originalCwd = process.cwd();
+    let chatCalls = 0;
+
+    try {
+      process.chdir(baseDir);
+
+      await scheduleSessionTitleFromFirstUserMessage({
+        client: {
+          chat: async () => {
+            chatCalls += 1;
+            throw new Error("provider unavailable");
+          },
+        },
+        sessionId: "scheduled-fallback",
+        userMessage: "investigate flaky websocket reconnect handling in the notification dispatcher",
+      });
+
+      expect(chatCalls).toBe(2);
+      const metadata = await readSessionCatalogMetadata("scheduled-fallback");
       expect(metadata?.title).toBe("investigate flaky websocket reconnect handlin...");
     } finally {
       process.chdir(originalCwd);

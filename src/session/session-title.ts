@@ -5,11 +5,16 @@ import type { SessionCatalogItem } from "../tools/session";
 
 import { buildSessionTitlePrompt, SESSION_TITLE_SYSTEM_PROMPT } from "../prompts/session-title";
 import { appendSessionMetaTitle } from "../tools/session";
+import { logError } from "../utils/logger";
 
 const DEFAULT_TITLE_CHUNK_SIZE = 12;
 const FIRST_MESSAGE_PROMPT_LIMIT_CHARS = 240;
+const SESSION_TITLE_BACKGROUND_MAX_ATTEMPTS = 2;
+const SESSION_TITLE_BACKGROUND_RETRY_DELAY_MS = 250;
+const SESSION_TITLE_BACKGROUND_TIMEOUT_MS = 12_000;
 const SESSION_TITLE_MAX_CHARS = 60;
 const SESSION_FALLBACK_TITLE_MAX_CHARS = 48;
+const titleGenerationJobsBySessionId = new Map<string, Promise<void>>();
 
 const sessionTitleResponseSchema = z.object({
   titles: z.array(
@@ -67,6 +72,12 @@ function truncateWithEllipsis(value: string, maxChars: number): string {
   return `${value.slice(0, maxChars - 3)}...`;
 }
 
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
 export function sanitizeSessionTitle(rawTitle: string): string {
   const normalized = normalizeWhitespace(rawTitle).replace(/^["']+|["']+$/gu, "");
   return truncateWithEllipsis(normalized, SESSION_TITLE_MAX_CHARS);
@@ -81,6 +92,7 @@ export function buildFallbackSessionTitle(firstUserMessage: string | undefined, 
 }
 
 export async function assignSessionTitleFromFirstUserMessage(input: {
+  abortSignal?: globalThis.AbortSignal;
   client: Pick<LlmClient, "chat">;
   sessionId: string;
   userMessage: string;
@@ -89,19 +101,12 @@ export async function assignSessionTitleFromFirstUserMessage(input: {
   let resolvedTitle = fallbackTitle;
 
   try {
-    const generated = await generateSessionTitlesForChunk({
+    resolvedTitle = await generateTitleFromFirstUserMessage({
+      abortSignal: input.abortSignal,
       client: input.client,
-      sessions: [
-        {
-          firstUserMessage: input.userMessage,
-          sessionId: input.sessionId,
-        },
-      ],
+      sessionId: input.sessionId,
+      userMessage: input.userMessage,
     });
-    const generatedTitle = generated.get(input.sessionId);
-    if (generatedTitle && generatedTitle.trim().length > 0) {
-      resolvedTitle = generatedTitle;
-    }
   } catch {
     resolvedTitle = fallbackTitle;
   }
@@ -113,6 +118,98 @@ export async function assignSessionTitleFromFirstUserMessage(input: {
   }
 
   return resolvedTitle;
+}
+
+async function generateTitleFromFirstUserMessage(input: {
+  abortSignal?: globalThis.AbortSignal;
+  client: Pick<LlmClient, "chat">;
+  sessionId: string;
+  userMessage: string;
+}): Promise<string> {
+  const generated = await generateSessionTitlesForChunk({
+    abortSignal: input.abortSignal,
+    client: input.client,
+    sessions: [
+      {
+        firstUserMessage: input.userMessage,
+        sessionId: input.sessionId,
+      },
+    ],
+  });
+  const generatedTitle = generated.get(input.sessionId);
+  if (!generatedTitle || generatedTitle.trim().length === 0) {
+    throw new Error("Session title generation returned no title.");
+  }
+
+  return generatedTitle;
+}
+
+export function scheduleSessionTitleFromFirstUserMessage(input: {
+  client: Pick<LlmClient, "chat">;
+  sessionId: string;
+  userMessage: string;
+}): Promise<void> {
+  const existing = titleGenerationJobsBySessionId.get(input.sessionId);
+  if (existing) {
+    return existing;
+  }
+
+  const job = (async () => {
+    const fallbackTitle = buildFallbackSessionTitle(input.userMessage, input.sessionId);
+    let resolvedTitle = fallbackTitle;
+    let generatedTitle = false;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= SESSION_TITLE_BACKGROUND_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        resolvedTitle = await generateTitleFromFirstUserMessage({
+          abortSignal: globalThis.AbortSignal.timeout(SESSION_TITLE_BACKGROUND_TIMEOUT_MS),
+          client: input.client,
+          sessionId: input.sessionId,
+          userMessage: input.userMessage,
+        });
+        generatedTitle = true;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < SESSION_TITLE_BACKGROUND_MAX_ATTEMPTS) {
+          await sleep(SESSION_TITLE_BACKGROUND_RETRY_DELAY_MS);
+        }
+      }
+    }
+
+    try {
+      await appendSessionMetaTitle(input.sessionId, { title: resolvedTitle });
+    } catch (error) {
+      if (generatedTitle) {
+        logError(
+          `Background session title persistence failed for session ${input.sessionId}.`,
+          error
+        );
+      } else {
+        lastError = lastError ?? error;
+      }
+    }
+
+    if (!generatedTitle && lastError) {
+      logError(
+        `Background session title generation failed for session ${input.sessionId}; persisted fallback title.`,
+        lastError
+      );
+    }
+  })()
+    .catch((error) => {
+      logError(
+        `Unexpected background session title scheduling failure for session ${input.sessionId}.`,
+        error
+      );
+    })
+    .finally(() => {
+      titleGenerationJobsBySessionId.delete(input.sessionId);
+    });
+
+  titleGenerationJobsBySessionId.set(input.sessionId, job);
+  return job;
 }
 
 function chunkBySize<T>(values: T[], size: number): T[][] {
@@ -128,33 +225,41 @@ function chunkBySize<T>(values: T[], size: number): T[][] {
 }
 
 async function generateSessionTitlesForChunk(input: {
+  abortSignal?: globalThis.AbortSignal;
   client: Pick<LlmClient, "chat">;
   sessions: Array<{
     firstUserMessage: string;
     sessionId: string;
   }>;
 }): Promise<Map<string, string>> {
-  const response = await input.client.chat({
-    callKind: "planner",
-    messages: [
-      {
-        content: SESSION_TITLE_SYSTEM_PROMPT,
-        role: "system",
-      },
-      {
-        content: buildSessionTitlePrompt({
-          sessions: input.sessions.map((session) => ({
-            firstUserMessage: truncateWithEllipsis(
-              normalizeWhitespace(session.firstUserMessage),
-              FIRST_MESSAGE_PROMPT_LIMIT_CHARS
-            ),
-            sessionId: session.sessionId,
-          })),
-        }),
-        role: "user",
-      },
-    ],
-  });
+  const response = await input.client.chat(
+    {
+      callKind: "planner",
+      messages: [
+        {
+          content: SESSION_TITLE_SYSTEM_PROMPT,
+          role: "system",
+        },
+        {
+          content: buildSessionTitlePrompt({
+            sessions: input.sessions.map((session) => ({
+              firstUserMessage: truncateWithEllipsis(
+                normalizeWhitespace(session.firstUserMessage),
+                FIRST_MESSAGE_PROMPT_LIMIT_CHARS
+              ),
+              sessionId: session.sessionId,
+            })),
+          }),
+          role: "user",
+        },
+      ],
+    },
+    input.abortSignal
+      ? {
+          abortSignal: input.abortSignal,
+        }
+      : undefined
+  );
 
   const parsed = parseJsonPayload(response.content);
   if (!parsed) {

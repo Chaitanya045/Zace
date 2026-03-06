@@ -6,7 +6,7 @@ import { log } from "../utils/logger";
 import { classifyProviderError, normalizeMessagesForTransport } from "./compat";
 
 type ChatOptions = {
-  abortSignal?: AbortSignal;
+  abortSignal?: globalThis.AbortSignal;
   onToken?: (token: string) => void;
   stream?: boolean;
 };
@@ -343,9 +343,9 @@ export class LlmClient {
   private async chatStream(
     request: LlmRequest,
     onToken?: (token: string) => void,
-    abortSignal?: AbortSignal
+    abortSignal?: globalThis.AbortSignal
   ): Promise<LlmResponse> {
-    const streamAbortController = new AbortController();
+    const streamAbortController = new globalThis.AbortController();
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       body: JSON.stringify(buildChatRequestBody(this.model, request, { stream: true })),
       headers: this.getRequestHeaders(),
@@ -442,23 +442,23 @@ export class LlmClient {
 
   private composeRequestSignal(
     timeoutMs: number,
-    ...inputSignals: Array<AbortSignal | undefined>
-  ): AbortSignal {
-    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    ...inputSignals: Array<globalThis.AbortSignal | undefined>
+  ): globalThis.AbortSignal {
+    const timeoutSignal = globalThis.AbortSignal.timeout(timeoutMs);
     const activeSignals = inputSignals.filter(
-      (signal): signal is AbortSignal => signal !== undefined
+      (signal): signal is globalThis.AbortSignal => signal !== undefined
     );
     if (activeSignals.length === 0) {
       return timeoutSignal;
     }
 
-    return AbortSignal.any([timeoutSignal, ...activeSignals]);
+    return globalThis.AbortSignal.any([timeoutSignal, ...activeSignals]);
   }
 
   private async readStreamChunkWithIdleTimeout(
-    reader: ReadableStreamDefaultReader<Uint8Array>,
-    streamAbortController: AbortController
-  ): Promise<ReadableStreamReadResult<Uint8Array>> {
+    reader: globalThis.ReadableStreamDefaultReader<Uint8Array>,
+    streamAbortController: globalThis.AbortController
+  ): Promise<globalThis.ReadableStreamReadResult<Uint8Array>> {
     return new Promise((resolve, reject) => {
       const timeoutHandle = setTimeout(() => {
         const timeoutError = new Error(

@@ -16,16 +16,19 @@ function createClient(overrides?: Partial<AgentConfig>): LlmClient {
   } as AgentConfig);
 }
 
-function createAbortAwareHangingFetch(signalCollector: AbortSignal[]): typeof fetch {
-  return (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+function createAbortAwareHangingFetch(
+  signalCollector: globalThis.AbortSignal[]
+): typeof fetch {
+  return (async (...args: Parameters<typeof fetch>): Promise<globalThis.Response> => {
+    const init = args[1];
     const signal = init?.signal;
-    if (!(signal instanceof AbortSignal)) {
+    if (!(signal instanceof globalThis.AbortSignal)) {
       throw new Error("Missing fetch signal");
     }
 
     signalCollector.push(signal);
 
-    return await new Promise<Response>((_resolve, reject) => {
+    return await new Promise<globalThis.Response>((_resolve, reject) => {
       if (signal.aborted) {
         reject(signal.reason ?? new Error("aborted"));
         return;
@@ -52,12 +55,12 @@ const BASE_REQUEST: LlmRequest = {
 describe("llm client timeout guardrails", () => {
   test("aborts hanging non-stream request when caller signal aborts", async () => {
     const originalFetch = globalThis.fetch;
-    const seenSignals: AbortSignal[] = [];
+    const seenSignals: globalThis.AbortSignal[] = [];
     globalThis.fetch = createAbortAwareHangingFetch(seenSignals);
 
     try {
       const client = createClient({ llmRequestTimeoutMs: 60_000 });
-      const abortController = new AbortController();
+      const abortController = new globalThis.AbortController();
       const requestPromise = client.chat(BASE_REQUEST, {
         abortSignal: abortController.signal,
         stream: false,
@@ -74,7 +77,7 @@ describe("llm client timeout guardrails", () => {
 
   test("times out hanging non-stream request and passes fetch signal", async () => {
     const originalFetch = globalThis.fetch;
-    const seenSignals: AbortSignal[] = [];
+    const seenSignals: globalThis.AbortSignal[] = [];
     globalThis.fetch = createAbortAwareHangingFetch(seenSignals);
 
     try {
@@ -89,7 +92,7 @@ describe("llm client timeout guardrails", () => {
 
   test("times out hanging stream request before body and passes fetch signal", async () => {
     const originalFetch = globalThis.fetch;
-    const seenSignals: AbortSignal[] = [];
+    const seenSignals: globalThis.AbortSignal[] = [];
     globalThis.fetch = createAbortAwareHangingFetch(seenSignals);
 
     try {

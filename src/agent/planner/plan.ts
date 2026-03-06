@@ -91,7 +91,7 @@ export async function plan(
   const maxRepairs = Math.max(0, options?.plannerParseMaxRepairs ?? 2);
   const retryOnFailure = options?.plannerParseRetryOnFailure ?? true;
   const abortChatOptions = options?.abortSignal
-    ? { abortSignal: options.abortSignal as AbortSignal }
+    ? { abortSignal: options.abortSignal as globalThis.AbortSignal }
     : undefined;
 
   let usage: LlmUsage | undefined;
