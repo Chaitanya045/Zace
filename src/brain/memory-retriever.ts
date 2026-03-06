@@ -342,7 +342,7 @@ async function listMarkdownFiles(
 async function parseJsonFile<T>(
   pathValue: string,
   safeParse: (value: unknown) => {
-    data: T;
+    data?: T;
     success: boolean;
   },
   fallback: T
@@ -351,7 +351,7 @@ async function parseJsonFile<T>(
     const content = await fsReadFile(pathValue, "utf8");
     const parsed = JSON.parse(content) as unknown;
     const validated = safeParse(parsed);
-    return validated.success ? validated.data : fallback;
+    return validated.success && validated.data !== undefined ? validated.data : fallback;
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return fallback;
@@ -577,34 +577,30 @@ async function searchMarkdownMemories(
     timestampCache.set(filePath, pending);
     return pending;
   };
-  const snippets = await Promise.all(
-    matches.map(async (match) => {
-      const matchKey = `${match.filePath}:${String(match.lineNumber)}`;
-      if (seenMatchKeys.has(matchKey)) {
-        return undefined;
-      }
-      seenMatchKeys.add(matchKey);
+  const snippets: RankedMemorySnippet[] = [];
+  for (const match of matches) {
+    const matchKey = `${match.filePath}:${String(match.lineNumber)}`;
+    if (seenMatchKeys.has(matchKey)) {
+      continue;
+    }
+    seenMatchKeys.add(matchKey);
 
-      const relativeSourcePath = toWorkspaceRelativePath(input.workspaceRoot, match.filePath);
-      const keywordMatches = countKeywordMatches(match.text, input.keywords);
-      return {
-        content: clipSnippet(match.text),
-        lineNumber: match.lineNumber,
-        score:
-          keywordMatches * 10 +
-          computeRecencyBonus(await getCachedTimestamp(match.filePath)) +
-          (pathMatchesContext(relativeSourcePath, input.relevantFiles) ? 2 : 0) +
-          computeFileImportanceBonus(match.text, input.importantFiles, match.filePath, input.workspaceRoot),
-        sourcePath: relativeSourcePath,
-        sourceType: sourceTypeByPath.get(match.filePath) ?? "memory_markdown",
-      } satisfies RankedMemorySnippet;
-    })
-  );
+    const relativeSourcePath = toWorkspaceRelativePath(input.workspaceRoot, match.filePath);
+    const keywordMatches = countKeywordMatches(match.text, input.keywords);
+    snippets.push({
+      content: clipSnippet(match.text),
+      lineNumber: match.lineNumber,
+      score:
+        keywordMatches * 10 +
+        computeRecencyBonus(await getCachedTimestamp(match.filePath)) +
+        (pathMatchesContext(relativeSourcePath, input.relevantFiles) ? 2 : 0) +
+        computeFileImportanceBonus(match.text, input.importantFiles, match.filePath, input.workspaceRoot),
+      sourcePath: relativeSourcePath,
+      sourceType: sourceTypeByPath.get(match.filePath) ?? "memory_markdown",
+    });
+  }
 
-  return snippets
-    .filter((snippet): snippet is RankedMemorySnippet => Boolean(snippet))
-    .sort((left, right) => right.score - left.score)
-    .slice(0, input.maxSnippets);
+  return snippets.sort((left, right) => right.score - left.score).slice(0, input.maxSnippets);
 }
 
 async function searchGraphMemories(

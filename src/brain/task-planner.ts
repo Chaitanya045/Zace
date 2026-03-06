@@ -55,7 +55,7 @@ function deriveCurrentStepId(
 async function parseJsonFile<T>(
   pathValue: string,
   safeParse: (value: unknown) => {
-    data: T;
+    data?: T;
     success: boolean;
   },
   fallback: T
@@ -64,7 +64,7 @@ async function parseJsonFile<T>(
     const content = await fsReadFile(pathValue, "utf8");
     const parsed = JSON.parse(content) as unknown;
     const validated = safeParse(parsed);
-    return validated.success ? validated.data : fallback;
+    return validated.success && validated.data !== undefined ? validated.data : fallback;
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return fallback;

@@ -36,6 +36,15 @@ type ParsedProviderError = {
   responseFormatUnsupported: boolean;
 };
 
+type StreamChunkReadResult = {
+  done: boolean;
+  value?: Uint8Array;
+};
+
+type StreamChunkReader = {
+  read(): Promise<StreamChunkReadResult>;
+};
+
 const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 45_000;
 const DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS = 20_000;
 
@@ -379,7 +388,7 @@ export class LlmClient {
       throw new LlmError("LLM streaming response missing body");
     }
 
-    const reader = body.getReader();
+    const reader: StreamChunkReader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let content = "";
@@ -456,9 +465,9 @@ export class LlmClient {
   }
 
   private async readStreamChunkWithIdleTimeout(
-    reader: globalThis.ReadableStreamDefaultReader<Uint8Array>,
+    reader: StreamChunkReader,
     streamAbortController: globalThis.AbortController
-  ): Promise<globalThis.ReadableStreamReadResult<Uint8Array>> {
+  ): Promise<StreamChunkReadResult> {
     return new Promise((resolve, reject) => {
       const timeoutHandle = setTimeout(() => {
         const timeoutError = new Error(
