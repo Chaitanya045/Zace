@@ -97,6 +97,22 @@ INSTRUCTIONS:
 16. If user clarification is required, choose action "ask_user" with one clear question.
     - "reasoning" is internal summary for agent memory.
     - "userMessage" is the exact text shown to the user and should be concise, direct, and human-friendly.
+16b. Maintain planner memory with "planState" when needed.
+    - "planState" is optional overall, but include it on the first response for a new goal and whenever the plan materially changes.
+    - If the current plan is unchanged, you may omit "planState".
+    - "planState" shape:
+      {
+        "goal": "overall goal or null",
+        "currentStepId": "active step id or null",
+        "steps": [
+          {
+            "id": "step id",
+            "title": "short step title",
+            "status": "pending" | "in_progress" | "completed",
+            "relevantFiles": ["optional/path.ts"]
+          }
+        ]
+      }
 17. Destructive shell commands require explicit user confirmation before execution.
 18. Do not choose "complete" unless completion gates pass.
 19. If completion gates are missing and validation should run, include project-specific commands in complete response.
@@ -136,6 +152,18 @@ JSON SCHEMA:
   "action": "continue" | "ask_user" | "blocked" | "complete",
   "reasoning": "short explicit reasoning",
   "userMessage": "user-facing text shown in chat",
+  "planState": {
+    "goal": "overall goal or null",
+    "currentStepId": "active step id or null",
+    "steps": [
+      {
+        "id": "step id",
+        "title": "short step title",
+        "status": "pending" | "in_progress" | "completed",
+        "relevantFiles": ["optional/path.ts"]
+      }
+    ]
+  },
   "toolCall": {
     "name": "tool_name",
     "arguments": {}
@@ -147,6 +175,7 @@ Notes:
 - Provide "toolCall" only when action is "continue".
 - Provide "gates" only when action is "complete".
 - For "ask_user", always provide "userMessage" as a direct question.
+- Provide "planState" on the first response for a new goal and whenever the plan changes materially.
 - If no validation gates are required, set "gates": "none".`;
 
 }

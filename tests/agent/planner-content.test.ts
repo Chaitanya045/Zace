@@ -11,6 +11,17 @@ describe("planner response parsing", () => {
     const parsed = parsePlannerContent(
       JSON.stringify({
         action: "continue",
+        planState: {
+          currentStepId: "step-1",
+          goal: "Implement BST",
+          steps: [
+            {
+              id: "step-1",
+              status: "in_progress",
+              title: "Inspect existing files",
+            },
+          ],
+        },
         reasoning: "Inspect repository files first",
         toolCall: {
           arguments: {
@@ -26,6 +37,8 @@ describe("planner response parsing", () => {
       throw new Error("Expected continue action");
     }
     expect(parsed.toolCall?.name).toBe("execute_command");
+    expect(parsed.planState?.goal).toBe("Implement BST");
+    expect(parsed.planState?.steps[0]?.id).toBe("step-1");
   });
 
   test("rejects execute_command continue payload when command is missing", () => {
@@ -116,6 +129,17 @@ describe("planner response parsing", () => {
         return {
           content: JSON.stringify({
             action: "continue",
+            planState: {
+              currentStepId: "step-1",
+              goal: "create a file and implement bst",
+              steps: [
+                {
+                  id: "step-1",
+                  status: "in_progress",
+                  title: "Inspect repository files first",
+                },
+              ],
+            },
             reasoning: "Inspect repository files first",
             toolCall: {
               arguments: {
@@ -147,5 +171,6 @@ describe("planner response parsing", () => {
 
     expect(chatCalls).toBe(2);
     expect(result.action).toBe("continue");
+    expect(result.planState?.currentStepId).toBe("step-1");
   });
 });

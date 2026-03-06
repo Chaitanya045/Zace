@@ -9,7 +9,7 @@ import type { AgentObserver } from "../observer";
 import type { AgentProcessorEvent } from "../stream-events";
 import type { CommandApprovalResult, RunLoopMutableState, ToolCallLike } from "./run-loop/types";
 
-import { ensureBrainStructure } from "../../brain";
+import { ensureBrainStructure, persistPlannerState } from "../../brain";
 import { createLlmStreamCallbacks } from "../../llm/stream-adapter";
 import { createPermissionMemory } from "../../permission/memory";
 import { loadPermissionRuleset } from "../../permission/store";
@@ -459,6 +459,10 @@ export async function runAgentLoop(
         runId,
         sessionId,
         stepNumber,
+      });
+      await persistPlannerState({
+        action: planResult.action,
+        planState: planResult.planState,
       });
 
       memory.addMessage("assistant", `Planning: ${planResult.reasoning}`);

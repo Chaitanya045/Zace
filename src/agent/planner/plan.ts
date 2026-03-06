@@ -3,6 +3,7 @@ import type { LlmClient } from "../../llm/client";
 import type { LlmMessage, LlmUsage } from "../../llm/types";
 import type { AgentContext } from "../../types/agent";
 import type { AbortSignalLike } from "../../types/tool";
+import type { PlannerPlanState } from "./schema";
 
 import { buildBrainContextMessage, injectSystemContextMessage } from "../../brain";
 import { buildPlannerPrompt } from "../../prompts/planner";
@@ -31,6 +32,7 @@ export interface PlanResult {
   parseAttempts: number;
   parseMode: PlannerParseMode;
   plannerFallbackPromptMode?: boolean;
+  planState?: PlannerPlanState;
   rawInvalidCount: number;
   reasoning: string;
   schemaUnsupportedReason?: string;

@@ -1,6 +1,7 @@
 import {
   plannerResponseSchema,
   plannerToolCallSchema,
+  type PlannerPlanState,
   type PlannerStructuredResponse,
 } from "./schema";
 
@@ -8,6 +9,7 @@ export type ParsedPlanResult = {
   action: "ask_user" | "blocked" | "complete" | "continue";
   completionGateCommands?: string[];
   completionGatesDeclaredNone?: boolean;
+  planState?: PlannerPlanState;
   reasoning: string;
   toolCall?: { arguments: Record<string, unknown>; name: string };
   userMessage?: string;
@@ -131,6 +133,7 @@ function toPlanResultFromParsedJson(parsed: PlannerStructuredResponse): ParsedPl
   if (parsed.action === "continue") {
     return {
       action: "continue",
+      planState: parsed.planState,
       reasoning: parsed.reasoning,
       toolCall: {
         arguments: parsed.toolCall.arguments,
@@ -142,6 +145,7 @@ function toPlanResultFromParsedJson(parsed: PlannerStructuredResponse): ParsedPl
   if (parsed.action === "ask_user") {
     return {
       action: "ask_user",
+      planState: parsed.planState,
       reasoning: parsed.reasoning,
       userMessage: parsed.userMessage,
     };
@@ -150,6 +154,7 @@ function toPlanResultFromParsedJson(parsed: PlannerStructuredResponse): ParsedPl
   if (parsed.action === "blocked") {
     return {
       action: "blocked",
+      planState: parsed.planState,
       reasoning: parsed.reasoning,
       userMessage: parsed.userMessage,
     };
@@ -160,6 +165,7 @@ function toPlanResultFromParsedJson(parsed: PlannerStructuredResponse): ParsedPl
       action: "complete",
       completionGateCommands: [],
       completionGatesDeclaredNone: true,
+      planState: parsed.planState,
       reasoning: parsed.reasoning,
       userMessage: parsed.userMessage,
     };
@@ -169,6 +175,7 @@ function toPlanResultFromParsedJson(parsed: PlannerStructuredResponse): ParsedPl
     action: "complete",
     completionGateCommands: parsed.gates ?? [],
     completionGatesDeclaredNone: false,
+    planState: parsed.planState,
     reasoning: parsed.reasoning,
     userMessage: parsed.userMessage,
   };
