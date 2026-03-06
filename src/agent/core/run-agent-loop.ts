@@ -9,6 +9,7 @@ import type { AgentObserver } from "../observer";
 import type { AgentProcessorEvent } from "../stream-events";
 import type { CommandApprovalResult, RunLoopMutableState, ToolCallLike } from "./run-loop/types";
 
+import { ensureBrainStructure } from "../../brain";
 import { createLlmStreamCallbacks } from "../../llm/stream-adapter";
 import { createPermissionMemory } from "../../permission/memory";
 import { loadPermissionRuleset } from "../../permission/store";
@@ -87,6 +88,7 @@ export async function runAgentLoop(
   options?: RunAgentLoopOptions
 ): Promise<AgentResult> {
   log(`Starting agent loop for task: ${task}`);
+  await ensureBrainStructure();
 
   const observer = options?.observer;
   const sessionId = options?.sessionId;
