@@ -77,6 +77,46 @@ describe("BridgeController command orchestration", () => {
     expect(result.status).toBe("not_running");
   });
 
+  test("listSessions does not call llm title generation", async () => {
+    const sessionId = `bridge-list-${Math.random().toString(36).slice(2, 10)}`;
+    const sessionPath = getSessionFilePath(sessionId);
+    let chatCalls = 0;
+
+    try {
+      await appendSessionEntries(sessionId, [
+        {
+          content: "hello",
+          role: "user",
+          timestamp: new Date("2026-03-04T09:00:00.000Z").toISOString(),
+          type: "message",
+        },
+      ]);
+
+      const controller = new BridgeController({
+        client: {
+          chat: async () => {
+            chatCalls += 1;
+            return {
+              content: '{"titles":[]}',
+            };
+          },
+        } as unknown as LlmClient,
+        config: createControllerConfig(),
+        emitEvent: () => {
+          // no-op
+        },
+        sessionFilePath: sessionPath,
+        sessionId,
+      });
+
+      const result = await controller.listSessions();
+      expect(result.sessions.some((session) => session.sessionId === sessionId)).toBeTrue();
+      expect(chatCalls).toBe(0);
+    } finally {
+      await unlink(sessionPath).catch(() => undefined);
+    }
+  });
+
   test("switch_session blocks while run is active", async () => {
     const controller = new BridgeController({
       client: {} as LlmClient,

@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, utimes } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   appendSessionEntries,
+  appendSessionMetaTitle,
   formatRelativeSessionTime,
   getSessionFilePath,
   listSessionCatalog,
@@ -95,6 +96,8 @@ describe("session catalog", () => {
           userMessage: "newer first message",
         },
       ]);
+      await appendSessionMetaTitle("older-session", { title: "Older Session Title" });
+      await appendSessionMetaTitle("newer-session", { title: "Newer Session Title" });
 
       const olderPath = getSessionFilePath("older-session");
       const newerPath = getSessionFilePath("newer-session");
@@ -109,8 +112,37 @@ describe("session catalog", () => {
       ]);
       expect(catalog[0]?.lastInteractedAgo).toBe("1h ago");
       expect(catalog[1]?.lastInteractedAgo).toBe("2d ago");
-      expect(catalog[0]?.firstUserMessage).toBe("newer first message");
-      expect(catalog[1]?.firstUserMessage).toBe("older first message");
+      expect(catalog[0]?.title).toBe("Newer Session Title");
+      expect(catalog[1]?.title).toBe("Older Session Title");
+      expect(catalog[0]?.firstUserMessage).toBeUndefined();
+      expect(catalog[1]?.firstUserMessage).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      await rm(baseDir, { force: true, recursive: true });
+    }
+  });
+
+  test("lists session even when session jsonl contains invalid content", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "zace-session-catalog-invalid-"));
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(baseDir);
+      await appendSessionEntries("broken-session", [
+        {
+          content: "seed content",
+          role: "user",
+          timestamp: new Date("2026-03-04T12:00:00.000Z").toISOString(),
+          type: "message",
+        },
+      ]);
+      await appendFile(getSessionFilePath("broken-session"), "{not-json}\n", "utf8");
+
+      const catalog = await listSessionCatalog({
+        now: new Date("2026-03-04T13:00:00.000Z"),
+      });
+
+      expect(catalog.some((session) => session.sessionId === "broken-session")).toBeTrue();
     } finally {
       process.chdir(originalCwd);
       await rm(baseDir, { force: true, recursive: true });

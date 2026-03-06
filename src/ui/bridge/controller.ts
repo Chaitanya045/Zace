@@ -33,13 +33,13 @@ import { resolvePendingPermissionAction } from "../../permission/pending";
 import { findOpenPendingPermission, resolvePendingPermissionFromUserMessage } from "../../permission/resolve";
 import { storePermissionRule } from "../../permission/store";
 import { SessionProcessor } from "../../session/processor/session-processor";
-import { backfillMissingSessionTitles } from "../../session/session-title";
 import {
   appendSessionApprovalRule,
   getSessionFilePath,
   listSessionCatalog,
   normalizeSessionId,
 } from "../../tools/session";
+import { fsStat } from "../../tools/system/fs";
 
 const HELP_TEXT = [
   "Keyboard shortcuts:",
@@ -135,18 +135,8 @@ export class BridgeController {
 
   async listSessions(): Promise<ListSessionsResult> {
     const catalog = await listSessionCatalog();
-    let titledCatalog = catalog;
-    try {
-      titledCatalog = await backfillMissingSessionTitles({
-        client: this.client,
-        sessions: catalog,
-      });
-    } catch {
-      // Keep list operation resilient if title generation fails.
-    }
-
     return {
-      sessions: titledCatalog.map((session) => ({
+      sessions: catalog.map((session) => ({
         ...session,
         title:
           typeof session.title === "string" && session.title.trim().length > 0
@@ -162,16 +152,18 @@ export class BridgeController {
     }
 
     const normalizedSessionId = normalizeSessionId(sessionId);
-    const catalog = await listSessionCatalog();
-    const hasSessionInCurrentDirectory = catalog.some(
-      (session) => session.sessionId === normalizedSessionId
-    );
-    if (!hasSessionInCurrentDirectory) {
+    const nextSessionPath = getSessionFilePath(normalizedSessionId);
+    try {
+      const fileStat = await fsStat(nextSessionPath);
+      if (!fileStat.isFile()) {
+        throw new Error("Session path is not a file.");
+      }
+    } catch {
       throw new Error("Session not found in current directory.");
     }
 
     this.sessionId = normalizedSessionId;
-    this.sessionFilePath = getSessionFilePath(normalizedSessionId);
+    this.sessionFilePath = nextSessionPath;
     this.resetSessionRuntimeState();
     return this.loadActiveSession();
   }
@@ -701,6 +693,7 @@ export class BridgeController {
         approvedPermissionsOnce: this.consumeApprovedPermissionsOnce(),
         client: this.client,
         config: this.config,
+        isFirstTurn: this.turns.length === 0,
         observer,
         sessionId: this.sessionId,
         task,

@@ -14,6 +14,7 @@ import {
   type ChatTurn,
 } from "../cli/chat-session";
 import { findOpenPendingPermission, resolvePendingPermissionFromUserMessage } from "../permission/resolve";
+import { assignSessionTitleFromFirstUserMessage } from "../session/session-title";
 import { getSessionFilePath } from "../tools/session";
 
 function createPlainStreamObserver(config: AgentConfig): AgentObserver | undefined {
@@ -241,7 +242,15 @@ export async function runPlainChatMode(
       console.log(`Steps executed: ${result.context.steps.length}`);
       console.log(`Final state: ${result.finalState}\n`);
 
+      const isFirstTurn = turns.length === 0;
       await persistSessionTurn(sessionId, message, task, result, startedAt, endedAt);
+      if (isFirstTurn) {
+        await assignSessionTitleFromFirstUserMessage({
+          client,
+          sessionId,
+          userMessage: message,
+        });
+      }
 
       if (result.finalState === "waiting_for_user") {
         const refreshedSessionState = await loadSessionState(

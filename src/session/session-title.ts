@@ -80,6 +80,41 @@ export function buildFallbackSessionTitle(firstUserMessage: string | undefined, 
   return truncateWithEllipsis(normalizeWhitespace(firstUserMessage), SESSION_FALLBACK_TITLE_MAX_CHARS);
 }
 
+export async function assignSessionTitleFromFirstUserMessage(input: {
+  client: Pick<LlmClient, "chat">;
+  sessionId: string;
+  userMessage: string;
+}): Promise<string> {
+  const fallbackTitle = buildFallbackSessionTitle(input.userMessage, input.sessionId);
+  let resolvedTitle = fallbackTitle;
+
+  try {
+    const generated = await generateSessionTitlesForChunk({
+      client: input.client,
+      sessions: [
+        {
+          firstUserMessage: input.userMessage,
+          sessionId: input.sessionId,
+        },
+      ],
+    });
+    const generatedTitle = generated.get(input.sessionId);
+    if (generatedTitle && generatedTitle.trim().length > 0) {
+      resolvedTitle = generatedTitle;
+    }
+  } catch {
+    resolvedTitle = fallbackTitle;
+  }
+
+  try {
+    await appendSessionMetaTitle(input.sessionId, { title: resolvedTitle });
+  } catch {
+    // Keep turn processing resilient even if title persistence fails.
+  }
+
+  return resolvedTitle;
+}
+
 function chunkBySize<T>(values: T[], size: number): T[][] {
   if (values.length === 0) {
     return [];

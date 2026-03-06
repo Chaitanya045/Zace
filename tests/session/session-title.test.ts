@@ -3,8 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { backfillMissingSessionTitles, sanitizeSessionTitle } from "../../src/session/session-title";
-import { appendSessionEntries, readSessionEntries } from "../../src/tools/session";
+import {
+  assignSessionTitleFromFirstUserMessage,
+  backfillMissingSessionTitles,
+  sanitizeSessionTitle,
+} from "../../src/session/session-title";
+import { appendSessionEntries, readSessionCatalogMetadata, readSessionEntries } from "../../src/tools/session";
 
 describe("session title generation", () => {
   test("backfills missing titles and persists session_meta entries", async () => {
@@ -57,6 +61,93 @@ describe("session title generation", () => {
       if (metaEntries[0]?.type === "session_meta") {
         expect(metaEntries[0].title).toBe("Fix auth middleware login bug");
       }
+      const metadata = await readSessionCatalogMetadata("session-one");
+      expect(metadata?.title).toBe("Fix auth middleware login bug");
+    } finally {
+      process.chdir(originalCwd);
+      await rm(baseDir, { force: true, recursive: true });
+    }
+  });
+
+  test("assigns first-turn session title from llm and persists metadata", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "zace-session-title-assign-"));
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(baseDir);
+      await appendSessionEntries("fresh-session", [
+        {
+          assistantMessage: "Assistant response",
+          durationMs: 1200,
+          endedAt: new Date("2026-03-04T11:00:01.000Z").toISOString(),
+          finalState: "completed",
+          sessionId: "fresh-session",
+          startedAt: new Date("2026-03-04T11:00:00.000Z").toISOString(),
+          steps: 2,
+          success: true,
+          summary: "done",
+          task: "task",
+          type: "run",
+          userMessage: "add caching to switch session listing",
+        },
+      ]);
+
+      const title = await assignSessionTitleFromFirstUserMessage({
+        client: {
+          chat: async () => ({
+            content:
+              '{"titles":[{"sessionId":"fresh-session","title":"Add caching for session list"}]}',
+          }),
+        },
+        sessionId: "fresh-session",
+        userMessage: "add caching to switch session listing",
+      });
+
+      expect(title).toBe("Add caching for session list");
+      const metadata = await readSessionCatalogMetadata("fresh-session");
+      expect(metadata?.title).toBe("Add caching for session list");
+    } finally {
+      process.chdir(originalCwd);
+      await rm(baseDir, { force: true, recursive: true });
+    }
+  });
+
+  test("falls back to deterministic title when first-turn llm title fails", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "zace-session-title-fallback-"));
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(baseDir);
+      await appendSessionEntries("fallback-first-turn", [
+        {
+          assistantMessage: "Assistant response",
+          durationMs: 1200,
+          endedAt: new Date("2026-03-04T11:00:01.000Z").toISOString(),
+          finalState: "completed",
+          sessionId: "fallback-first-turn",
+          startedAt: new Date("2026-03-04T11:00:00.000Z").toISOString(),
+          steps: 2,
+          success: true,
+          summary: "done",
+          task: "task",
+          type: "run",
+          userMessage: "investigate flaky websocket reconnect handling in the notification dispatcher",
+        },
+      ]);
+
+      const title = await assignSessionTitleFromFirstUserMessage({
+        client: {
+          chat: async () => {
+            throw new Error("provider failed");
+          },
+        },
+        sessionId: "fallback-first-turn",
+        userMessage: "investigate flaky websocket reconnect handling in the notification dispatcher",
+      });
+
+      expect(title).toBe("investigate flaky websocket reconnect handlin...");
+      const metadata = await readSessionCatalogMetadata("fallback-first-turn");
+      expect(metadata?.title).toBe("investigate flaky websocket reconnect handlin...");
     } finally {
       process.chdir(originalCwd);
       await rm(baseDir, { force: true, recursive: true });

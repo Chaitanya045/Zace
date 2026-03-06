@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
@@ -42,6 +42,10 @@ const sessionMetaEntrySchema = z.object({
   timestamp: z.string(),
   title: z.string().min(1),
   type: z.literal("session_meta"),
+});
+
+const sessionCatalogMetadataSchema = z.object({
+  title: z.string().min(1).optional(),
 });
 
 const sessionRunEntrySchema = z.object({
@@ -199,6 +203,8 @@ export type SessionCatalogItem = {
   title?: string;
 };
 
+export type SessionCatalogMetadata = z.infer<typeof sessionCatalogMetadataSchema>;
+
 const SESSION_FILENAME_REGEX = /^([A-Za-z0-9][A-Za-z0-9_-]{0,63})\.jsonl$/u;
 const RELATIVE_TIME_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 const RELATIVE_TIME_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
@@ -208,6 +214,10 @@ const RELATIVE_TIME_MINUTE_MS = 60 * 1000;
 
 function sessionIdToPath(sessionId: string): string {
   return join(SESSIONS_DIRECTORY_PATH, `${sessionId}.jsonl`);
+}
+
+function sessionIdToMetadataPath(sessionId: string): string {
+  return join(SESSIONS_DIRECTORY_PATH, `${sessionId}.meta.json`);
 }
 
 export function normalizeSessionId(rawSessionId: string): string {
@@ -223,6 +233,60 @@ export function normalizeSessionId(rawSessionId: string): string {
 
 export function getSessionFilePath(sessionId: string): string {
   return sessionIdToPath(normalizeSessionId(sessionId));
+}
+
+export async function readSessionCatalogMetadata(
+  sessionId: string
+): Promise<SessionCatalogMetadata | undefined> {
+  const path = sessionIdToMetadataPath(normalizeSessionId(sessionId));
+
+  let content: string;
+  try {
+    content = await readFile(path, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+
+    throw error;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+
+  const validated = sessionCatalogMetadataSchema.safeParse(parsed);
+  if (!validated.success) {
+    return undefined;
+  }
+
+  const normalizedTitle = validated.data.title?.trim();
+  if (!normalizedTitle) {
+    return undefined;
+  }
+
+  return {
+    title: normalizedTitle,
+  };
+}
+
+export async function writeSessionCatalogMetadata(
+  sessionId: string,
+  metadata: SessionCatalogMetadata
+): Promise<void> {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const path = sessionIdToMetadataPath(normalizedSessionId);
+  const normalizedTitle = metadata.title?.trim();
+
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(
+    path,
+    `${JSON.stringify(normalizedTitle ? { title: normalizedTitle } : {})}\n`,
+    "utf8"
+  );
 }
 
 export async function readSessionEntries(sessionId: string): Promise<SessionEntry[]> {
@@ -331,14 +395,20 @@ export async function appendSessionMetaTitle(
   sessionId: string,
   meta: SessionMetaTitleWrite
 ): Promise<void> {
+  const normalizedTitle = meta.title.trim();
+  if (normalizedTitle.length === 0) {
+    return;
+  }
+
   const timestamp = meta.timestamp ?? new Date().toISOString();
   await appendSessionEntries(sessionId, [
     {
       timestamp,
-      title: meta.title.trim(),
+      title: normalizedTitle,
       type: "session_meta",
     },
   ]);
+  await writeSessionCatalogMetadata(sessionId, { title: normalizedTitle });
 }
 
 export async function appendSessionRunEvent(
@@ -457,46 +527,6 @@ export async function readSessionMessages(sessionId: string): Promise<SessionMes
   return entries.filter((entry): entry is SessionMessageEntry => entry.type === "message");
 }
 
-function extractSessionTitle(entries: SessionEntry[]): string | undefined {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (!entry) {
-      continue;
-    }
-    if (entry.type !== "session_meta") {
-      continue;
-    }
-    const normalizedTitle = entry.title.trim();
-    if (normalizedTitle.length > 0) {
-      return normalizedTitle;
-    }
-  }
-  return undefined;
-}
-
-function extractFirstUserMessage(entries: SessionEntry[]): string | undefined {
-  const firstRunEntry = entries.find((entry): entry is Extract<SessionEntry, { type: "run" }> => entry.type === "run");
-  if (firstRunEntry) {
-    const normalized = firstRunEntry.userMessage.trim();
-    if (normalized.length > 0) {
-      return normalized;
-    }
-  }
-
-  const firstMessageEntry = entries.find(
-    (entry): entry is SessionMessageEntry => entry.type === "message" && entry.role === "user"
-  );
-  if (!firstMessageEntry) {
-    return undefined;
-  }
-
-  const normalized = firstMessageEntry.content.trim();
-  if (normalized.length === 0) {
-    return undefined;
-  }
-  return normalized;
-}
-
 export function formatRelativeSessionTime(lastInteractedAtIso: string, now: Date = new Date()): string {
   const timestamp = Date.parse(lastInteractedAtIso);
   if (!Number.isFinite(timestamp)) {
@@ -557,22 +587,21 @@ export async function listSessionCatalog(input?: { now?: Date }): Promise<Sessio
       continue;
     }
 
-    let entries: SessionEntry[];
+    let metadata: SessionCatalogMetadata | undefined;
     try {
-      entries = await readSessionEntries(sessionId);
+      metadata = await readSessionCatalogMetadata(sessionId);
     } catch {
-      continue;
+      metadata = undefined;
     }
 
     const lastInteractedAt = fileStat.mtime.toISOString();
     catalog.push({
-      firstUserMessage: extractFirstUserMessage(entries),
       lastInteractedAgo: formatRelativeSessionTime(lastInteractedAt, now),
       lastInteractedAt,
       lastInteractedAtMs: fileStat.mtimeMs,
       sessionFilePath,
       sessionId,
-      title: extractSessionTitle(entries),
+      title: metadata?.title,
     });
   }
 
