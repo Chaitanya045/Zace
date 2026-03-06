@@ -10,23 +10,23 @@ describe("brain bootstrap", () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "zace-brain-bootstrap-"));
 
     try {
-      await mkdir(join(workspaceRoot, "src", "agent"), { recursive: true });
-      await mkdir(join(workspaceRoot, "src", "tools"), { recursive: true });
-      await mkdir(join(workspaceRoot, "src", "ui"), { recursive: true });
-      await writeFile(join(workspaceRoot, "src", "index.ts"), "export {};\n", "utf8");
+      await mkdir(join(workspaceRoot, "apps", "api"), { recursive: true });
+      await mkdir(join(workspaceRoot, "packages", "shared"), { recursive: true });
+      await mkdir(join(workspaceRoot, "tests", "unit"), { recursive: true });
+      await writeFile(join(workspaceRoot, "apps", "api", "index.ts"), "export {};\n", "utf8");
       await writeFile(join(workspaceRoot, "AGENTS.md"), [
         "# AGENTS",
         "",
-        "Zace is a CLI coding agent built with Bun + TypeScript.",
-        "- Planner-executor loop with strict tool boundaries.",
-        "- All side effects go through typed tools.",
+        "Acme Control Plane is a multi-package workspace built with TypeScript.",
+        "- It provides automation services and a shared library.",
+        "- Changes should remain small and reviewable.",
         "",
       ].join("\n"), "utf8");
       await writeFile(join(workspaceRoot, "README.md"), [
         "# README",
         "",
-        "Zace is a CLI coding agent built with Bun + TypeScript.",
-        "- Textual-based Python chat UI with a Bun bridge over stdio JSON-RPC.",
+        "The repository includes an API app, shared packages, and automated tests.",
+        "- It uses a bounded bootstrap scan to map the workspace.",
         "",
       ].join("\n"), "utf8");
 
@@ -38,11 +38,11 @@ describe("brain bootstrap", () => {
 
       const identity = await readFile(join(workspaceRoot, ".zace", "brain", "identity.md"), "utf8");
       expect(identity).toContain("precise, disciplined, and safety-first coding agent");
-      expect(identity).toContain("Zace is a CLI coding agent built with Bun + TypeScript.");
+      expect(identity).toContain("Acme Control Plane is a multi-package workspace built with TypeScript.");
 
       const repoMap = await readFile(join(workspaceRoot, ".zace", "brain", "repo_map.md"), "utf8");
-      expect(repoMap).toContain("`src/agent/` - runtime orchestration and loop phases");
-      expect(repoMap).toContain("`src/tools/` - side-effect boundary and system wrappers");
+      expect(repoMap).toContain("`apps/api/` - backend or service module area");
+      expect(repoMap).toContain("`packages/shared/` - source module area");
 
       const workingMemory = JSON.parse(
         await readFile(join(workspaceRoot, ".zace", "working_memory.json"), "utf8")
@@ -60,6 +60,27 @@ describe("brain bootstrap", () => {
         await readFile(join(workspaceRoot, ".zace", "planner", "completed_tasks.json"), "utf8")
       ) as unknown[];
       expect(completedTasks).toEqual([]);
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  test("uses generic repository-summary fallback when docs are absent", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "zace-brain-generic-summary-"));
+
+    try {
+      await mkdir(join(workspaceRoot, "cmd"), { recursive: true });
+      await mkdir(join(workspaceRoot, "internal", "service"), { recursive: true });
+      await writeFile(join(workspaceRoot, "go.mod"), "module example.com/acme\n", "utf8");
+
+      await ensureBrainStructure({ workspaceRoot });
+
+      const identity = await readFile(join(workspaceRoot, ".zace", "brain", "identity.md"), "utf8");
+      expect(identity).toContain("Detected root manifests: `go.mod`.");
+      expect(identity).toContain("Primary workspace areas:");
+      expect(identity).toContain("`cmd/`");
+      expect(identity).toContain("`internal/`");
+      expect(identity).not.toContain("Zace is a CLI coding agent built with Bun + TypeScript.");
     } finally {
       await rm(workspaceRoot, { force: true, recursive: true });
     }

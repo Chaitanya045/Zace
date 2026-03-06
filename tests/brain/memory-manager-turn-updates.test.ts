@@ -103,7 +103,7 @@ describe("brain turn updates", () => {
       expect(workingMemory.currentStep).toContain("Inspect auth token validation");
       expect(workingMemory.relevantFiles).toContain("src/auth.ts");
       expect(repoMap).toContain("## Incremental Updates");
-      expect(repoMap).toContain("`src/auth.ts` - TypeScript source file; updated during agent execution.");
+      expect(repoMap).toContain("`src/auth.ts` - JavaScript or TypeScript source file; updated during agent execution.");
       expect(nodes.some((node) => node.filePath === "src/auth.ts" && node.type === "file")).toBeTrue();
       expect(nodes.some((node) => node.type === "bug")).toBeTrue();
       expect(edges.some((edge) => edge.type === "modified_in_session")).toBeTrue();

@@ -12,52 +12,147 @@ type SeedQueueItem = {
   absolutePath: string;
   depth: number;
   relativePath: string;
-  topLevelArea: string;
 };
 
-const EXACT_PATH_DESCRIPTIONS = new Map<string, string>([
+type WorkspaceEntry = {
+  isDirectory: boolean;
+  name: string;
+};
+
+const ROOT_FILE_PRIORITIES = new Map<string, number>([
+  ["AGENTS.md", 1],
+  ["CLAUDE.md", 2],
+  ["README.md", 3],
+  ["package.json", 4],
+  ["pyproject.toml", 5],
+  ["Cargo.toml", 6],
+  ["go.mod", 7],
+  ["tsconfig.json", 8],
+  ["Makefile", 9],
+  ["Dockerfile", 10],
+  [".env.example", 11],
+]);
+
+const ROOT_DIRECTORY_PRIORITIES = new Map<string, number>([
+  ["src", 20],
+  ["lib", 21],
+  ["app", 22],
+  ["apps", 23],
+  ["packages", 24],
+  ["pkg", 25],
+  ["internal", 26],
+  ["cmd", 27],
+  ["services", 28],
+  ["service", 29],
+  ["server", 30],
+  ["client", 31],
+  ["web", 32],
+  ["frontend", 33],
+  ["backend", 34],
+  ["ui", 35],
+  ["docs", 36],
+  ["doc", 37],
+  ["scripts", 38],
+  ["tools", 39],
+  ["tests", 40],
+  ["test", 41],
+  ["spec", 42],
+  ["e2e", 43],
+  ["integration", 44],
+  ["python", 45],
+  ["db", 46],
+  ["database", 47],
+  ["migrations", 48],
+]);
+
+const AUTOMATION_DIRECTORY_NAMES = new Set(["script", "scripts", "tool", "tools"]);
+const BACKEND_DIRECTORY_NAMES = new Set(["api", "backend", "server", "service", "services"]);
+const CONFIGURATION_DIRECTORY_NAMES = new Set([".github", ".vscode", "config", "configs"]);
+const DATABASE_DIRECTORY_NAMES = new Set(["data", "database", "db", "migration", "migrations", "schema", "schemas", "sql"]);
+const DOCUMENTATION_DIRECTORY_NAMES = new Set(["doc", "docs", "documentation"]);
+const FRONTEND_DIRECTORY_NAMES = new Set(["client", "frontend", "ui", "web"]);
+const SOURCE_DIRECTORY_NAMES = new Set([
+  "app",
+  "apps",
+  "cmd",
+  "examples",
+  "internal",
+  "lib",
+  "module",
+  "modules",
+  "package",
+  "packages",
+  "pkg",
+  "python",
+  "src",
+]);
+const TEST_DIRECTORY_NAMES = new Set([
+  "__tests__",
+  "e2e",
+  "fixture",
+  "fixtures",
+  "integration",
+  "spec",
+  "specs",
+  "test",
+  "tests",
+]);
+
+const CONFIGURATION_FILE_NAMES = new Map<string, string>([
   [".env.example", "example runtime environment configuration"],
   ["AGENTS.md", "repository operating instructions for coding agents"],
+  ["Cargo.toml", "Rust project manifest"],
+  ["CLAUDE.md", "repository operating instructions for AI agents"],
+  ["Dockerfile", "container build definition"],
+  ["go.mod", "Go module definition"],
+  ["Makefile", "task automation file"],
   ["README.md", "repository overview and usage notes"],
-  ["package.json", "Bun package manifest and scripts"],
-  ["python", "Python UI/runtime support"],
-  ["python/zace_tui", "Textual UI package and rendering logic"],
-  ["src", "main TypeScript source tree"],
-  ["src/agent", "runtime orchestration and loop phases"],
-  ["src/cli", "CLI wiring and command definitions"],
-  ["src/config", "validated boot-time configuration"],
-  ["src/index.ts", "CLI entrypoint"],
-  ["src/llm", "model client and compatibility pipeline"],
-  ["src/lsp", "LSP runtime configuration and clients"],
-  ["src/permission", "permission rules and memory"],
-  ["src/prompts", "versioned planner/executor/system prompts"],
-  ["src/session", "session storage and processing"],
-  ["src/tools", "side-effect boundary and system wrappers"],
-  ["src/types", "shared runtime contracts and schemas"],
-  ["src/ui", "Textual bridge and plain fallback UI"],
-  ["src/utils", "pure utility helpers"],
-  ["tests", "automated test coverage and regression fixtures"],
+  ["package.json", "Node or Bun package manifest and scripts"],
+  ["pyproject.toml", "Python project manifest"],
   ["tsconfig.json", "TypeScript compiler configuration"],
 ]);
 
-const ROOT_ENTRY_PRIORITY = new Map<string, number>([
-  ["AGENTS.md", 1],
-  ["README.md", 2],
-  ["package.json", 3],
-  ["tsconfig.json", 4],
-  [".env.example", 5],
-  ["src", 10],
-  ["tests", 11],
-  ["python", 12],
-  ["docs", 13],
+const INTERESTING_FILE_EXTENSIONS = new Set([
+  ".adoc",
+  ".c",
+  ".cc",
+  ".cpp",
+  ".cs",
+  ".css",
+  ".go",
+  ".h",
+  ".hpp",
+  ".ini",
+  ".java",
+  ".js",
+  ".json",
+  ".jsx",
+  ".kt",
+  ".kts",
+  ".md",
+  ".mjs",
+  ".php",
+  ".py",
+  ".rb",
+  ".rs",
+  ".rst",
+  ".sh",
+  ".sql",
+  ".toml",
+  ".tsx",
+  ".ts",
+  ".txt",
+  ".yaml",
+  ".yml",
 ]);
 
-const ALLOWED_TOP_LEVEL_SCAN_AREAS = new Set(["docs", "python", "scripts", "src", "tests"]);
 const REPO_MAP_MAX_DEPTH = 2;
 const REPO_MAP_MAX_ENTRIES = 48;
 const SKIPPED_DIRECTORY_NAMES = new Set([
   ".git",
   ".next",
+  ".nuxt",
+  ".pnpm-store",
   ".turbo",
   ".venv",
   ".zace",
@@ -72,136 +167,138 @@ const SKIPPED_DIRECTORY_NAMES = new Set([
   "venv",
   "vendor",
 ]);
+const SUMMARY_HINT_PATTERN = /\b(api|application|architecture|backend|built|cache|cli|contains|database|deploy|engine|framework|frontend|implements|library|model|module|monorepo|pipeline|platform|project|provides|queue|repository|runtime|schema|service|stack|storage|test|testing|tool|uses|worker|workspace)\b/iu;
 
-function collectSeedSummaryLines(input: RepoSummarySource): string[] {
-  const candidateLines = [
-    ...findMatchingLines(input.agentsContent, [
-      "Zace is",
-      "planner–executor",
-      "planner-executor",
-      "all side effects",
-      "typed tools",
-    ]),
-    ...findMatchingLines(input.readmeContent, [
-      "Zace is",
-      "planner-executor",
-      "typed tools",
-      "Textual-based Python chat UI",
-      "Runtime LSP diagnostics",
-    ]),
-  ];
-
-  return Array.from(new Set(candidateLines)).slice(0, 5);
+function normalizeRelativePath(pathValue: string): string {
+  return pathValue.replace(/\\/gu, "/").replace(/^\.\/+/, "");
 }
 
-function findMatchingLines(content: string | undefined, matchers: string[]): string[] {
+function getLowercasePathSegments(pathValue: string): string[] {
+  return normalizeRelativePath(pathValue)
+    .replace(/\/$/u, "")
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase());
+}
+
+function getFileExtension(pathValue: string): string {
+  const normalizedPath = normalizeRelativePath(pathValue);
+  const extensionIndex = normalizedPath.lastIndexOf(".");
+  if (extensionIndex < 0) {
+    return "";
+  }
+
+  return normalizedPath.slice(extensionIndex).toLowerCase();
+}
+
+function isLikelyManifestFile(name: string): boolean {
+  return CONFIGURATION_FILE_NAMES.has(name);
+}
+
+function isInterestingRootFile(name: string): boolean {
+  return (
+    ROOT_FILE_PRIORITIES.has(name) ||
+    INTERESTING_FILE_EXTENSIONS.has(getFileExtension(name))
+  );
+}
+
+function isInterestingNestedFile(relativePath: string): boolean {
+  return INTERESTING_FILE_EXTENSIONS.has(getFileExtension(relativePath));
+}
+
+function normalizeSummaryLine(line: string): string {
+  return line
+    .replace(/^#+\s*/u, "")
+    .replace(/^[-*]\s*/u, "")
+    .replace(/`/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function isSummaryCandidate(line: string): boolean {
+  if (line.length < 20 || line.length > 180) {
+    return false;
+  }
+  if (line === "---" || line === "***" || line.startsWith("```")) {
+    return false;
+  }
+  if (/^[A-Z][A-Za-z0-9 _-]+:$/u.test(line)) {
+    return false;
+  }
+
+  return SUMMARY_HINT_PATTERN.test(line) || line.startsWith("- ");
+}
+
+function collectSummaryLinesFromDocument(content: string | undefined): string[] {
   if (!content) {
     return [];
   }
 
-  const lines = content
+  const normalizedLines = content
     .split(/\r?\n/u)
-    .map((line) => line.trim())
+    .map((line) => normalizeSummaryLine(line))
     .filter(Boolean);
+  const summaryCandidates = normalizedLines.filter((line) => isSummaryCandidate(line));
+  const linesToUse = summaryCandidates.length > 0 ? summaryCandidates : normalizedLines;
 
-  return lines
-    .filter((line) =>
-      matchers.some((matcher) => line.toLowerCase().includes(matcher.toLowerCase()))
-    )
-    .map((line) => line.replace(/^[-*]\s*/u, ""))
-    .slice(0, matchers.length);
+  return Array.from(new Set(linesToUse)).slice(0, 5);
 }
 
-async function pathExists(pathValue: string): Promise<boolean> {
-  try {
-    await fsStat(pathValue);
-    return true;
-  } catch {
-    return false;
+function buildWorkspaceFactLines(rootEntries: WorkspaceEntry[]): string[] {
+  const manifestNames = rootEntries
+    .filter((entry) => !entry.isDirectory && isLikelyManifestFile(entry.name))
+    .map((entry) => `\`${entry.name}\``)
+    .slice(0, 4);
+  const primaryAreas = rootEntries
+    .filter((entry) => entry.isDirectory && !shouldSkipDirectory(entry.name))
+    .slice(0, 5)
+    .map((entry) => `\`${entry.name}/\``);
+  const lines: string[] = [];
+
+  if (manifestNames.length > 0) {
+    lines.push(`Detected root manifests: ${manifestNames.join(", ")}.`);
   }
+  if (primaryAreas.length > 0) {
+    lines.push(`Primary workspace areas: ${primaryAreas.join(", ")}.`);
+  }
+
+  return lines;
 }
 
-async function readOptionalWorkspaceFile(pathValue: string): Promise<string | undefined> {
-  if (!(await pathExists(pathValue))) {
-    return undefined;
+function scoreEntryPriority(name: string, isDirectory: boolean, depth: number): number {
+  if (depth > 0) {
+    if (isDirectory) {
+      return ROOT_DIRECTORY_PRIORITIES.get(name.toLowerCase()) ?? 999;
+    }
+
+    return ROOT_FILE_PRIORITIES.get(name) ?? 999;
   }
 
-  return await fsReadFile(pathValue, "utf8");
+  if (isDirectory) {
+    return ROOT_DIRECTORY_PRIORITIES.get(name.toLowerCase()) ?? 200;
+  }
+
+  return ROOT_FILE_PRIORITIES.get(name) ?? 400;
 }
 
 function shouldSkipDirectory(name: string): boolean {
   return SKIPPED_DIRECTORY_NAMES.has(name);
 }
 
-function normalizeRelativePath(pathValue: string): string {
-  return pathValue.replace(/\\/gu, "/").replace(/^\.\/+/u, "");
-}
-
-function describeRepoPath(pathValue: string, isDirectory: boolean): string {
-  const normalizedPath = normalizeRelativePath(pathValue).replace(/\/$/u, "");
-  const exactDescription = EXACT_PATH_DESCRIPTIONS.get(normalizedPath);
-  if (exactDescription) {
-    return exactDescription;
-  }
-
-  if (normalizedPath.startsWith("src/")) {
-    return isDirectory ? "TypeScript source area" : "TypeScript source file";
-  }
-  if (normalizedPath.startsWith("tests/")) {
-    return isDirectory ? "test coverage area" : "test case or fixture";
-  }
-  if (normalizedPath.startsWith("python/")) {
-    return isDirectory ? "Python UI/runtime area" : "Python UI/runtime file";
-  }
-  if (normalizedPath.startsWith("docs/")) {
-    return isDirectory ? "documentation area" : "documentation file";
-  }
-  if (normalizedPath.startsWith("scripts/")) {
-    return isDirectory ? "automation scripts area" : "automation script";
-  }
-  if (normalizedPath.endsWith(".json")) {
-    return "configuration or metadata file";
-  }
-  if (normalizedPath.endsWith(".md")) {
-    return "documentation or project note";
-  }
-  if (normalizedPath.endsWith(".ts") || normalizedPath.endsWith(".tsx")) {
-    return "TypeScript source file";
-  }
-  if (normalizedPath.endsWith(".py")) {
-    return "Python source file";
-  }
-
-  return isDirectory ? "workspace area" : "workspace file";
-}
-
-function shouldIncludeRootFile(name: string): boolean {
-  return Boolean(
-    ROOT_ENTRY_PRIORITY.has(name) ||
-      name.endsWith(".json") ||
-      name.endsWith(".md") ||
-      name.endsWith(".toml") ||
-      name.endsWith(".yml") ||
-      name.endsWith(".yaml")
-  );
+function isHiddenDirectory(name: string): boolean {
+  return name.startsWith(".") && !CONFIGURATION_DIRECTORY_NAMES.has(name);
 }
 
 function shouldIncludeSeedEntry(relativePath: string, isDirectory: boolean, depth: number): boolean {
   if (depth === 0) {
-    return isDirectory || shouldIncludeRootFile(relativePath);
+    return isDirectory || isInterestingRootFile(relativePath);
   }
 
   if (isDirectory) {
     return depth <= REPO_MAP_MAX_DEPTH;
   }
 
-  return (
-    relativePath.endsWith(".json") ||
-    relativePath.endsWith(".md") ||
-    relativePath.endsWith(".py") ||
-    relativePath.endsWith(".ts") ||
-    relativePath.endsWith(".tsx")
-  );
+  return isInterestingNestedFile(relativePath);
 }
 
 function shouldDescendInto(relativePath: string, depth: number): boolean {
@@ -209,8 +306,103 @@ function shouldDescendInto(relativePath: string, depth: number): boolean {
     return false;
   }
 
-  const topLevelArea = relativePath.split("/")[0] ?? relativePath;
-  return ALLOWED_TOP_LEVEL_SCAN_AREAS.has(topLevelArea);
+  const directoryName = getLowercasePathSegments(relativePath).at(-1);
+  if (!directoryName) {
+    return false;
+  }
+
+  return !isHiddenDirectory(directoryName);
+}
+
+function hasAnyPathSegment(pathValue: string, names: Set<string>): boolean {
+  return getLowercasePathSegments(pathValue).some((segment) => names.has(segment));
+}
+
+function describeFilePath(pathValue: string): string {
+  const normalizedPath = normalizeRelativePath(pathValue);
+  const fileName = normalizedPath.split("/").at(-1) ?? normalizedPath;
+  const exactDescription = CONFIGURATION_FILE_NAMES.get(fileName);
+  if (exactDescription) {
+    return exactDescription;
+  }
+
+  const extension = getFileExtension(normalizedPath);
+  if ([".ts", ".tsx", ".js", ".jsx", ".mjs"].includes(extension)) {
+    return "JavaScript or TypeScript source file";
+  }
+  if (extension === ".py") {
+    return "Python source file";
+  }
+  if (extension === ".go") {
+    return "Go source file";
+  }
+  if (extension === ".rs") {
+    return "Rust source file";
+  }
+  if ([".java", ".kt", ".kts", ".cs", ".php", ".rb", ".c", ".cc", ".cpp", ".h", ".hpp"].includes(extension)) {
+    return "application source file";
+  }
+  if ([".json", ".yaml", ".yml", ".toml", ".ini"].includes(extension)) {
+    return "configuration or metadata file";
+  }
+  if ([".md", ".rst", ".adoc", ".txt"].includes(extension)) {
+    return "documentation or project note";
+  }
+  if (extension === ".sql") {
+    return "database schema or query file";
+  }
+  if (extension === ".sh") {
+    return "shell automation script";
+  }
+
+  if (hasAnyPathSegment(normalizedPath, TEST_DIRECTORY_NAMES)) {
+    return "test file or fixture";
+  }
+  if (hasAnyPathSegment(normalizedPath, DOCUMENTATION_DIRECTORY_NAMES)) {
+    return "documentation file";
+  }
+
+  return "workspace file";
+}
+
+function describeDirectoryPath(pathValue: string): string {
+  const normalizedPath = normalizeRelativePath(pathValue).replace(/\/$/u, "");
+  const segments = getLowercasePathSegments(normalizedPath);
+  const directoryName = segments.at(-1) ?? normalizedPath.toLowerCase();
+
+  if (TEST_DIRECTORY_NAMES.has(directoryName) || hasAnyPathSegment(normalizedPath, TEST_DIRECTORY_NAMES)) {
+    return segments.length <= 1 ? "test or fixture area" : "test suite or fixture area";
+  }
+  if (DOCUMENTATION_DIRECTORY_NAMES.has(directoryName) || hasAnyPathSegment(normalizedPath, DOCUMENTATION_DIRECTORY_NAMES)) {
+    return "documentation area";
+  }
+  if (AUTOMATION_DIRECTORY_NAMES.has(directoryName) || hasAnyPathSegment(normalizedPath, AUTOMATION_DIRECTORY_NAMES)) {
+    return "automation or tooling area";
+  }
+  if (CONFIGURATION_DIRECTORY_NAMES.has(directoryName) || hasAnyPathSegment(normalizedPath, CONFIGURATION_DIRECTORY_NAMES)) {
+    return "configuration or integration area";
+  }
+  if (DATABASE_DIRECTORY_NAMES.has(directoryName) || hasAnyPathSegment(normalizedPath, DATABASE_DIRECTORY_NAMES)) {
+    return "database or migration area";
+  }
+  if (FRONTEND_DIRECTORY_NAMES.has(directoryName) || hasAnyPathSegment(normalizedPath, FRONTEND_DIRECTORY_NAMES)) {
+    return segments.length <= 1 ? "frontend or client area" : "frontend or client module area";
+  }
+  if (BACKEND_DIRECTORY_NAMES.has(directoryName) || hasAnyPathSegment(normalizedPath, BACKEND_DIRECTORY_NAMES)) {
+    return segments.length <= 1 ? "backend or service area" : "backend or service module area";
+  }
+  if (directoryName === "python") {
+    return "Python source area";
+  }
+  if (SOURCE_DIRECTORY_NAMES.has(directoryName) || hasAnyPathSegment(normalizedPath, SOURCE_DIRECTORY_NAMES)) {
+    return segments.length <= 1 ? "primary source area" : "source module area";
+  }
+
+  return "workspace area";
+}
+
+function describeRepoPath(pathValue: string, isDirectory: boolean): string {
+  return isDirectory ? describeDirectoryPath(pathValue) : describeFilePath(pathValue);
 }
 
 function formatRepoMapEntry(relativePath: string, isDirectory: boolean): string {
@@ -218,13 +410,10 @@ function formatRepoMapEntry(relativePath: string, isDirectory: boolean): string 
   return `- \`${renderedPath}\` - ${describeRepoPath(relativePath, isDirectory)}`;
 }
 
-function sortDirectoryEntries(
-  entries: Array<{ isDirectory: boolean; name: string }>,
-  depth: number
-): Array<{ isDirectory: boolean; name: string }> {
+function sortDirectoryEntries(entries: WorkspaceEntry[], depth: number): WorkspaceEntry[] {
   return [...entries].sort((left, right) => {
-    const leftPriority = depth === 0 ? ROOT_ENTRY_PRIORITY.get(left.name) ?? 999 : 999;
-    const rightPriority = depth === 0 ? ROOT_ENTRY_PRIORITY.get(right.name) ?? 999 : 999;
+    const leftPriority = scoreEntryPriority(left.name, left.isDirectory, depth);
+    const rightPriority = scoreEntryPriority(right.name, right.isDirectory, depth);
     if (leftPriority !== rightPriority) {
       return leftPriority - rightPriority;
     }
@@ -236,10 +425,7 @@ function sortDirectoryEntries(
   });
 }
 
-async function readDirectoryEntries(directoryPath: string): Promise<Array<{
-  isDirectory: boolean;
-  name: string;
-}>> {
+async function readDirectoryEntries(directoryPath: string): Promise<WorkspaceEntry[]> {
   try {
     const entries = await fsReaddir(directoryPath, { withFileTypes: true });
     return entries.map((entry) => ({
@@ -251,14 +437,18 @@ async function readDirectoryEntries(directoryPath: string): Promise<Array<{
   }
 }
 
+async function readWorkspaceRootEntries(workspaceRoot: string): Promise<WorkspaceEntry[]> {
+  return sortDirectoryEntries(await readDirectoryEntries(workspaceRoot), 0);
+}
+
 async function collectWorkspaceSeedEntries(workspaceRoot: string): Promise<string[]> {
-  const rootEntries = sortDirectoryEntries(await readDirectoryEntries(workspaceRoot), 0);
+  const rootEntries = await readWorkspaceRootEntries(workspaceRoot);
   const lines: string[] = [];
   const seenPaths = new Set<string>();
   const queue: SeedQueueItem[] = [];
 
   for (const entry of rootEntries) {
-    if (entry.isDirectory && shouldSkipDirectory(entry.name)) {
+    if (entry.isDirectory && (shouldSkipDirectory(entry.name) || isHiddenDirectory(entry.name))) {
       continue;
     }
 
@@ -273,7 +463,6 @@ async function collectWorkspaceSeedEntries(workspaceRoot: string): Promise<strin
         absolutePath: join(workspaceRoot, entry.name),
         depth: 1,
         relativePath,
-        topLevelArea: relativePath,
       });
     }
 
@@ -294,7 +483,7 @@ async function collectWorkspaceSeedEntries(workspaceRoot: string): Promise<strin
     );
 
     for (const entry of currentEntries) {
-      if (entry.isDirectory && shouldSkipDirectory(entry.name)) {
+      if (entry.isDirectory && (shouldSkipDirectory(entry.name) || isHiddenDirectory(entry.name))) {
         continue;
       }
 
@@ -309,7 +498,6 @@ async function collectWorkspaceSeedEntries(workspaceRoot: string): Promise<strin
           absolutePath: join(current.absolutePath, entry.name),
           depth: current.depth + 1,
           relativePath,
-          topLevelArea: current.topLevelArea,
         });
       }
 
@@ -320,6 +508,23 @@ async function collectWorkspaceSeedEntries(workspaceRoot: string): Promise<strin
   }
 
   return lines.slice(0, REPO_MAP_MAX_ENTRIES);
+}
+
+async function pathExists(pathValue: string): Promise<boolean> {
+  try {
+    await fsStat(pathValue);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readOptionalWorkspaceFile(pathValue: string): Promise<string | undefined> {
+  if (!(await pathExists(pathValue))) {
+    return undefined;
+  }
+
+  return await fsReadFile(pathValue, "utf8");
 }
 
 export async function readRepositorySummarySource(workspaceRoot: string): Promise<RepoSummarySource> {
@@ -334,9 +539,30 @@ export async function readRepositorySummarySource(workspaceRoot: string): Promis
   };
 }
 
+export async function buildBootstrapRepositorySummaryLines(
+  workspaceRoot: string,
+  summarySource?: RepoSummarySource
+): Promise<string[]> {
+  const resolvedSummarySource = summarySource ?? await readRepositorySummarySource(workspaceRoot);
+  const rootEntries = await readWorkspaceRootEntries(workspaceRoot);
+  const documentLines = Array.from(new Set([
+    ...collectSummaryLinesFromDocument(resolvedSummarySource.agentsContent),
+    ...collectSummaryLinesFromDocument(resolvedSummarySource.readmeContent),
+  ])).slice(0, 5);
+
+  if (documentLines.length >= 3) {
+    return documentLines;
+  }
+
+  return Array.from(new Set([
+    ...documentLines,
+    ...buildWorkspaceFactLines(rootEntries),
+  ])).slice(0, 5);
+}
+
 export async function buildInitialRepoMapMarkdown(workspaceRoot: string): Promise<string> {
   const summarySource = await readRepositorySummarySource(workspaceRoot);
-  const summaryLines = collectSeedSummaryLines(summarySource);
+  const summaryLines = await buildBootstrapRepositorySummaryLines(workspaceRoot, summarySource);
   const workspaceEntries = await collectWorkspaceSeedEntries(workspaceRoot);
 
   const lines = [
@@ -350,8 +576,8 @@ export async function buildInitialRepoMapMarkdown(workspaceRoot: string): Promis
       summaryLines.length > 0
         ? summaryLines.map((line) => `- ${line}`)
         : [
-            "- Zace is a CLI coding agent built with Bun + TypeScript.",
-            "- It runs as a planner-executor loop where side effects go through typed tools.",
+            "- Repository summary unavailable during bootstrap.",
+            "- This map reflects only the detected workspace layout.",
           ]
     ),
     "",

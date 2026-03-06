@@ -20,6 +20,7 @@ import {
 } from "./memory-graph-manager";
 import { getBrainPaths, toWorkspaceRelativePath } from "./paths";
 import {
+  buildBootstrapRepositorySummaryLines,
   buildInitialRepoMapMarkdown,
   readRepositorySummarySource,
   updateRepoMapWithTouchedFiles,
@@ -80,8 +81,7 @@ type TurnFinalizationInput = {
 };
 
 function buildIdentityMemoryMarkdown(input: {
-  agentsContent?: string;
-  readmeContent?: string;
+  repoSummaryLines: string[];
 }): string {
   const systemPromptLines = BASE_SYSTEM_PROMPT
     .split(/\r?\n/u)
@@ -96,11 +96,6 @@ function buildIdentityMemoryMarkdown(input: {
       .slice(0, 6)
       .map((line) => line.replace(/^\d+\.\s*/u, ""))
     : [];
-  const repoSummaryLines = Array.from(new Set([
-    ...extractSummaryLines(input.agentsContent),
-    ...extractSummaryLines(input.readmeContent),
-  ])).slice(0, 5);
-
   const lines = [
     "# Identity Memory",
     "",
@@ -122,11 +117,11 @@ function buildIdentityMemoryMarkdown(input: {
     "",
     "## Repository Summary",
     ...(
-      repoSummaryLines.length > 0
-        ? repoSummaryLines.map((line) => `- ${line}`)
+      input.repoSummaryLines.length > 0
+        ? input.repoSummaryLines.map((line) => `- ${line}`)
         : [
-            "- Zace is a CLI coding agent built with Bun + TypeScript.",
-            "- The repository uses a planner-executor architecture with a strict tool boundary.",
+            "- Repository summary unavailable during bootstrap.",
+            "- Use `repo_map.md` and working memory to accumulate project-specific context.",
           ]
     ),
     "",
@@ -159,27 +154,6 @@ function buildDecisionMemoryMarkdown(): string {
     "Files affected:",
     "",
   ].join("\n")}\n`;
-}
-
-function extractSummaryLines(content: string | undefined): string[] {
-  if (!content) {
-    return [];
-  }
-
-  return content
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) =>
-      Boolean(line) &&
-      (
-        line.startsWith("- ") ||
-        line.toLowerCase().includes("zace is") ||
-        line.toLowerCase().includes("planner-executor") ||
-        line.toLowerCase().includes("typed tools")
-      )
-    )
-    .map((line) => line.replace(/^[-*]\s*/u, ""))
-    .slice(0, 5);
 }
 
 async function readExistingFile(pathValue: string): Promise<string | undefined> {
@@ -353,6 +327,10 @@ export async function ensureBrainStructure(input?: {
   const createdDirectories: string[] = [];
   const createdFiles: string[] = [];
   const summarySource = await readRepositorySummarySource(workspaceRoot);
+  const repoSummaryLines = await buildBootstrapRepositorySummaryLines(
+    workspaceRoot,
+    summarySource
+  );
 
   for (const directoryPath of [
     paths.rootDirectory,
@@ -369,7 +347,7 @@ export async function ensureBrainStructure(input?: {
 
   await ensureFile(
     paths.identityFile,
-    buildIdentityMemoryMarkdown(summarySource),
+    buildIdentityMemoryMarkdown({ repoSummaryLines }),
     createdFiles,
     workspaceRoot
   );
