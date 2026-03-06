@@ -133,7 +133,7 @@ describe("brain turn updates integration", () => {
       expect(workingMemory.goal).toBe("fix auth bug");
       expect(workingMemory.sessionId).toBe(sessionId);
       expect(workingMemory.relevantFiles).toContain("src/auth.ts");
-      expect(repoMap).toContain("`src/auth.ts` - updated during agent execution.");
+      expect(repoMap).toContain("`src/auth.ts` - TypeScript source file; updated during agent execution.");
       expect(nodes.some((node) => node.type === "file" && node.filePath === "src/auth.ts")).toBeTrue();
       expect(nodes.some((node) => node.type === "session" && node.sessionId === sessionId)).toBeTrue();
       expect(fileImportance["src/auth.ts"]).toBeGreaterThan(0);
